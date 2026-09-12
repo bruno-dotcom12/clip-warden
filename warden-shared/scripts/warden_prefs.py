@@ -16,44 +16,80 @@ is the payment.
 import json
 import os
 
-# Each entry: the question in plain words, the accepted answers, and why it
-# changes the render. The last column is not documentation, it is the test for
-# whether the question earns its place.
+# Each entry: key, the question in plain words, the accepted answers, why it
+# changes what happens, and which group it belongs to. `None` for the answers
+# means free text. The fourth column is not documentation, it is the test for
+# whether the question earns its place: a question whose answer changes nothing
+# is a question that spends the owner's patience on their first minute.
+#
+# Two groups, asked at different moments. The `search` group is asked only when
+# someone wants campaigns found for them, because a person who arrives with a
+# link already knows which campaign they are doing and being interviewed about
+# their niche is noise. The `edit` group is asked before the first render.
 QUESTIONS = [
+    ("region",
+     "Which audience are you posting to?",
+     ["br", "us", "both"],
+     "campaigns usually require most of the audience in one country",
+     "search"),
+    ("niches",
+     "What footage can you actually work with? (music, anime, podcast, sport, whatever)",
+     None,
+     "decides which open campaigns are worth showing you at all",
+     "search"),
+    ("platforms",
+     "Where do you post?",
+     ["tiktok", "reels", "shorts", "multi"],
+     "campaigns accept different platforms and pay differently per platform",
+     "search"),
+    ("payout",
+     "What makes a campaign worth your time? (a CPM, a minimum, or just say 'any')",
+     None,
+     "filters the list instead of handing you thirty campaigns",
+     "search"),
     ("delivery",
      "Clean cuts from the archive, or an edit built on a beat?",
      ["cuts", "edit"],
-     "cuts burn the spoken words and keep the source pacing; edit cuts to music"),
+     "cuts burn the spoken words and keep the source pacing; edit cuts to music",
+     "edit"),
     ("captions",
      "Burn the words into the picture?",
      ["yes", "no"],
-     "decides whether the subtitle track is rendered in"),
+     "decides whether the subtitle track is rendered in",
+     "edit"),
     ("hook",
      "Want a line across the top of the frame, and in which language?",
      ["none", "pt", "en", "es"],
-     "decides the overlay and the language it is written in"),
+     "decides the overlay and the language it is written in",
+     "edit"),
     ("sound",
      "Sound added on the platform, or carried inside the file?",
      ["platform", "embedded"],
-     "a platform sound means the file ships silent, which the campaign may also require"),
+     "a platform sound means the file ships silent, which the campaign may also require",
+     "edit"),
     ("target_s",
      "How long should a clip be, when the campaign leaves room?",
      ["a number of seconds"],
-     "picks the length inside the campaign's window"),
+     "picks the length inside the campaign's window",
+     "edit"),
     ("batch",
      "How many clips per round?",
      ["a number"],
-     "how many moments are rendered before you look at them"),
+     "how many moments are rendered before you look at them",
+     "edit"),
     ("approval",
      "Show you the chosen moments before rendering?",
      ["yes", "no"],
-     "yes costs a round trip and saves renders you did not want"),
+     "yes costs a round trip and saves renders you did not want",
+     "edit"),
 ]
 
-DEFAULTS = {"delivery": "cuts", "captions": "yes", "hook": "pt",
+DEFAULTS = {"region": "both", "niches": "", "platforms": "tiktok", "payout": "any",
+            "delivery": "cuts", "captions": "yes", "hook": "pt",
             "sound": "platform", "target_s": 30, "batch": 3, "approval": "yes"}
 
 KEYS = [q[0] for q in QUESTIONS]
+GROUPS = {q[0]: q[4] for q in QUESTIONS}
 
 
 def path(state_dir):
@@ -75,9 +111,14 @@ def save(state_dir, prefs):
     os.replace(tmp, path(state_dir))
 
 
-def missing(prefs):
-    """What still has to be asked. Never asks twice for the same thing."""
-    return [key for key in KEYS if key not in prefs]
+def missing(prefs, group=None):
+    """What still has to be asked, optionally only for one group.
+
+    Never returns something already answered, because being asked the same
+    question twice is how an agent tells someone it was not listening.
+    """
+    return [key for key in KEYS
+            if key not in prefs and (group is None or GROUPS[key] == group)]
 
 
 def effective(prefs, rules=None):

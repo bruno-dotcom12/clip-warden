@@ -511,6 +511,21 @@ def cmd_cut(args):
 
 
 def cmd_discover(args):
+    """Every listing, with what this owner said they are looking for on top.
+
+    The filtering is the agent's, not this command's. A downloader that decides
+    which campaign suits somebody is a ranking invented by a program that has
+    never seen their footage, wearing the clothes of advice.
+    """
+    prefs = P.load(state_dir())
+    wanted = {k: prefs[k] for k in P.KEYS
+              if P.GROUPS[k] == "search" and k in prefs}
+    if wanted:
+        print("# what this owner is looking for: "
+              + json.dumps(wanted, ensure_ascii=False))
+    still = P.missing(prefs, "search")
+    if still:
+        print(f"# not answered yet, so do not filter on it: {', '.join(still)}")
     pages, failed = _media().discover()
     if not pages:
         die("no campaign directory could be read from this network", code=1)
@@ -543,11 +558,14 @@ def cmd_prefs(args):
                          indent=2, ensure_ascii=False))
         return 0
     if args.action == "ask":
-        for key in P.missing(prefs):
+        left = P.missing(prefs, args.group)
+        for key in left:
             question = next(q for q in P.QUESTIONS if q[0] == key)
-            print(f"{key}: {question[1]}  ({', '.join(question[2])})")
-        if not P.missing(prefs):
-            print("nothing left to ask")
+            answers = f"  ({', '.join(question[2])})" if question[2] else "  (free text)"
+            print(f"{key}: {question[1]}{answers}")
+        if not left:
+            print("nothing left to ask"
+                  + (f" in the {args.group} group" if args.group else ""))
         return 0
     if args.action == "set":
         if not args.key:
@@ -562,11 +580,11 @@ def cmd_prefs(args):
                 die(f"{args.key} is a number, got {value!r}")
         else:
             allowed = next(q for q in P.QUESTIONS if q[0] == args.key)[2]
-            if value not in allowed:
+            if allowed and value not in allowed:
                 die(f"{args.key} takes one of: {', '.join(allowed)}")
         prefs[args.key] = value
         P.save(state_dir(), prefs)
-        left = P.missing(prefs)
+        left = P.missing(prefs, P.GROUPS[args.key])
         print(f"{args.key} = {value}"
               + (f", still to ask: {', '.join(left)}" if left else ", nothing left to ask"))
         return 0
@@ -651,6 +669,9 @@ def main(argv=None):
     p.add_argument("--key")
     p.add_argument("--value")
     p.add_argument("--campaign", help="show what this campaign overrules")
+    p.add_argument("--group", choices=["search", "edit"],
+                   help="ask only the questions for finding campaigns, or only "
+                        "the ones for making clips")
     p.set_defaults(func=cmd_prefs)
 
     sub.add_parser("status").set_defaults(func=cmd_status)

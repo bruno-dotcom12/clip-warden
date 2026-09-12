@@ -17,18 +17,29 @@ find or read the campaign  ->  ask what they like  ->  pull the archive
 
 A link: `warden-campaign` turns it into a stored rule set.
 
-No link, they want you to look: `warden discover` returns the public campaign
-directories as text. Read them and come back with a short list of what is open,
-what it pays, and what footage it gives you, with the link to each. Three or four
-options, not thirty, and say plainly which one you would take and why. Then wait.
-You are choosing where their next hours go, and that is their call, not yours.
+No link, they want you to look: ask the search questions first.
+`warden prefs ask --group search` lists only the ones not answered yet, which is
+which audience they post to, what footage they can actually work with, where they
+post, and what makes a campaign worth their time. Ask them in the conversation,
+store each with `warden prefs set`, and never ask a second time.
+
+Then `warden discover`, which returns the public campaign directories as text
+with those answers printed on top. The filtering is yours: read the listings,
+keep what matches what they told you, and come back with a short list of what is
+open, what it pays, and what footage it gives you, with the link to each. Three
+or four options, not thirty, and say plainly which one you would take and why.
+Then wait. You are choosing where their next hours go, and that is their call.
+
+If a search answer is still missing, the command says so and you do not filter on
+it. Guessing that someone only wants music campaigns and hiding the rest is worse
+than showing too many.
 
 If a page could not be read, say which and move on. Never describe a campaign
 you did not read.
 
 ## 2. Ask what they like, once
 
-`warden prefs ask` lists only what has not been answered yet. Ask those, in the
+`warden prefs ask --group edit` lists only what has not been answered yet. Ask those, in the
 conversation, in their language, a couple at a time rather than as a form. Store
 each answer as it arrives with `warden prefs set --key <k> --value <v>`.
 
