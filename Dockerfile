@@ -1,3 +1,7 @@
+# check=skip=FromPlatformFlagConstDisallowed
+# The constant platform below is deliberate and the linter's advice does not
+# apply: this base publishes one architecture, so resolving it from the build
+# host would only ask for an image that does not exist.
 # Clip Warden, built for the Plow cloud image.
 #
 # The base tag is an immutable `base-<sha>` naming one commit of
