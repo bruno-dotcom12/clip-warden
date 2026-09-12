@@ -4,7 +4,13 @@
 # plow-pbc/plow-hermes-agent, pinned by digest as well: every install of this
 # agent runs while holding that owner's Plow credential, so a moving tag would
 # substitute code underneath them.
-FROM public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-4747960eaa8a44ac24424bf0cc6c22559af61f43@sha256:fe9b0f428f9ed2da1698ecf0b504c79eceb9e016e770291ff6b3418b9f65449d
+#
+# `--platform` is explicit because this base publishes linux/amd64 only. On an
+# Apple Silicon host the build then runs emulated, which is slow but correct;
+# without the flag the same thing happens with a warning that reads like a
+# problem somebody should fix, and there is nothing to fix until the base ships
+# arm64.
+FROM --platform=linux/amd64 public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-4747960eaa8a44ac24424bf0cc6c22559af61f43@sha256:fe9b0f428f9ed2da1698ecf0b504c79eceb9e016e770291ff6b3418b9f65449d
 
 # Identity. plow-init composes SOUL.md at boot as the base persona followed by
 # this file; nothing here restates what the base already carries.
@@ -23,8 +29,22 @@ RUN command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null \
 # faster-whisper rather than openai-whisper: this runs on a container CPU with no
 # GPU passthrough on any host, and int8 CTranslate2 is the difference between
 # eight minutes per source hour and forty.
-RUN /opt/hermes/.venv/bin/python3 -m pip install --no-cache-dir \
-      "yt-dlp>=2025.1.1" "gdown>=5.2" "faster-whisper>=1.1"
+# The venv in this base has no pip: it was built with uv, which installs into a
+# virtualenv without leaving pip inside it. So ask what is actually there rather
+# than assuming, and fail with the reason if none of the three ways exist.
+RUN set -eu; \
+    PY=/opt/hermes/.venv/bin/python3; \
+    PKGS="yt-dlp>=2025.1.1 gdown>=5.2 faster-whisper>=1.1"; \
+    if "$PY" -m pip --version >/dev/null 2>&1; then \
+      "$PY" -m pip install --no-cache-dir $PKGS; \
+    elif command -v uv >/dev/null 2>&1; then \
+      uv pip install --python "$PY" --no-cache-dir $PKGS; \
+    elif "$PY" -m ensurepip --version >/dev/null 2>&1; then \
+      "$PY" -m ensurepip --upgrade && "$PY" -m pip install --no-cache-dir $PKGS; \
+    else \
+      echo "no pip, no uv and no ensurepip in this base image" >&2; exit 1; \
+    fi; \
+    "$PY" -c "import yt_dlp, gdown, faster_whisper" 
 
 # The transcription model, fetched at build. Lazily downloading it would put a
 # silent five-minute wait inside a stranger's first request, which reads as a
