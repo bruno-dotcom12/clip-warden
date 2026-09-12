@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import warden_rules as R
+import warden_prefs as P
 
 REPROVA, ATENCAO, OK = "REJECT", "WARN", "ok"
 
@@ -430,7 +431,19 @@ def _media():
 
 
 def cmd_fetch(args):
-    print(_media().fetch_text(args.url))
+    """A brief as text, or an honest failure.
+
+    This runs wherever the container runs, and a campaign page can be behind a
+    login, behind a bot wall, or simply unreachable from that network. None of
+    those are reasons to invent what the brief says, so the command fails with
+    the one instruction that always works.
+    """
+    try:
+        print(_media().fetch_text(args.url))
+    except Exception as exc:
+        die(f"could not read {args.url}: {type(exc).__name__}. "
+            "Ask the owner to paste the brief instead; never fill a rule set "
+            "from a page you could not read.", code=1)
     return 0
 
 
@@ -494,6 +507,59 @@ def cmd_cut(args):
     return 0
 
 
+def cmd_discover(args):
+    pages, failed = _media().discover()
+    if not pages:
+        die("no campaign directory could be read from this network", code=1)
+    for name, url, text in pages:
+        print(f"\n===== {name}  {url} =====\n")
+        print(text)
+    for name, url, why in failed:
+        print(f"could not read {name} ({url}): {why}", file=sys.stderr)
+    return 0
+
+
+def cmd_prefs(args):
+    prefs = P.load(state_dir())
+    if args.action == "show":
+        rules = load_campaign(args.campaign) if args.campaign else None
+        settings, overruled = P.effective(prefs, rules)
+        print(json.dumps({"stored": prefs, "effective": settings,
+                          "missing": P.missing(prefs),
+                          "overruled_by_campaign": overruled},
+                         indent=2, ensure_ascii=False))
+        return 0
+    if args.action == "ask":
+        for key in P.missing(prefs):
+            question = next(q for q in P.QUESTIONS if q[0] == key)
+            print(f"{key}: {question[1]}  ({', '.join(question[2])})")
+        if not P.missing(prefs):
+            print("nothing left to ask")
+        return 0
+    if args.action == "set":
+        if not args.key:
+            die("set needs --key and --value")
+        if args.key not in P.KEYS:
+            die(f"unknown preference {args.key!r}. Known: {', '.join(P.KEYS)}")
+        value = args.value
+        if args.key in ("target_s", "batch"):
+            try:
+                value = int(float(value))
+            except (TypeError, ValueError):
+                die(f"{args.key} is a number, got {value!r}")
+        else:
+            allowed = next(q for q in P.QUESTIONS if q[0] == args.key)[2]
+            if value not in allowed:
+                die(f"{args.key} takes one of: {', '.join(allowed)}")
+        prefs[args.key] = value
+        P.save(state_dir(), prefs)
+        left = P.missing(prefs)
+        print(f"{args.key} = {value}"
+              + (f", still to ask: {', '.join(left)}" if left else ", nothing left to ask"))
+        return 0
+    die(f"unknown prefs action {args.action!r}")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="warden", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -555,6 +621,15 @@ def main(argv=None):
     p.add_argument("--subtitles")
     p.add_argument("--hook")
     p.set_defaults(func=cmd_cut)
+
+    sub.add_parser("discover").set_defaults(func=cmd_discover)
+
+    p = sub.add_parser("prefs")
+    p.add_argument("action", choices=["show", "ask", "set"])
+    p.add_argument("--key")
+    p.add_argument("--value")
+    p.add_argument("--campaign", help="show what this campaign overrules")
+    p.set_defaults(func=cmd_prefs)
 
     sub.add_parser("status").set_defaults(func=cmd_status)
 

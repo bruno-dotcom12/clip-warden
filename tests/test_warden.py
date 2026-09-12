@@ -156,3 +156,40 @@ class Packaging(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class Preferences(unittest.TestCase):
+    """Taste is asked once, and the campaign still wins."""
+
+    def setUp(self):
+        import warden_prefs
+        self.P = warden_prefs
+        self.dir = tempfile.mkdtemp(prefix="warden-prefs-")
+
+    def test_nothing_stored_means_everything_is_asked(self):
+        self.assertEqual(self.P.missing({}), self.P.KEYS)
+
+    def test_an_answer_is_never_asked_again(self):
+        self.assertNotIn("delivery", self.P.missing({"delivery": "edit"}))
+
+    def test_the_campaign_overrules_the_sound_and_says_so(self):
+        settings, overruled = self.P.effective({"sound": "embedded"}, rules())
+        self.assertEqual(settings["sound"], "platform")
+        self.assertTrue(overruled)
+
+    def test_the_campaign_caps_a_length_the_owner_asked_for(self):
+        settings, overruled = self.P.effective({"target_s": 90}, rules())
+        self.assertEqual(settings["target_s"], 30)
+        self.assertTrue(any("caps a clip" in reason for reason in overruled))
+
+    def test_a_length_inside_the_window_is_left_alone(self):
+        settings, overruled = self.P.effective({"target_s": 25}, rules())
+        self.assertEqual(settings["target_s"], 25)
+        self.assertEqual(overruled, [])
+
+    def test_preferences_survive_a_write_and_a_read(self):
+        self.P.save(self.dir, {"delivery": "cuts", "batch": 5})
+        self.assertEqual(self.P.load(self.dir)["batch"], 5)
+
+    def test_every_question_has_a_default_and_every_default_a_question(self):
+        self.assertEqual(sorted(self.P.DEFAULTS), sorted(self.P.KEYS))

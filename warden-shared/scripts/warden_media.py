@@ -67,6 +67,52 @@ def fetch_text(url, limit=200_000):
     return body[:limit]
 
 
+# ---------------------------------------------------------------- finding
+
+# Where open campaigns are listed in public. Fetched as text and handed to the
+# model to read, rather than parsed here: these are marketing pages that get
+# redesigned, and a scraper that silently stops matching is worse than no
+# scraper, because it reports "no campaigns" instead of "I could not read this".
+#
+# Editable without touching the image: WARDEN_DIRECTORIES takes a comma
+# separated list and replaces this one.
+DIRECTORIES = [
+    ("clipmap", "https://clipmap.gg/"),
+    ("whop", "https://whop.com/discover/content-rewards/"),
+    ("clipradar", "https://clipradar.co/"),
+    ("realoficial", "https://realoficial.com.br/"),
+]
+
+
+def directories():
+    custom = os.environ.get("WARDEN_DIRECTORIES")
+    if not custom:
+        return DIRECTORIES
+    out = []
+    for item in custom.split(","):
+        item = item.strip()
+        if item:
+            out.append((urlparse(item).netloc or item, item))
+    return out
+
+
+def discover(limit_chars=12_000):
+    """Every listing page, as text, with whatever failed named out loud.
+
+    The agent reads these and tells the owner what is open and what it pays.
+    Nothing here decides which campaign is good: that depends on what the owner
+    can actually make, and a ranking invented by a downloader would be noise
+    wearing the clothes of advice.
+    """
+    pages, failed = [], []
+    for name, url in directories():
+        try:
+            pages.append((name, url, fetch_text(url, limit=limit_chars)))
+        except Exception as exc:
+            failed.append((name, url, f"{type(exc).__name__}"))
+    return pages, failed
+
+
 # ---------------------------------------------------------------- footage
 
 def archive(rules, out_dir, limit=None):

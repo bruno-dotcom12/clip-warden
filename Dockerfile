@@ -37,6 +37,7 @@ RUN mkdir -p /opt/plow/models \
 
 # The skills, outside every home, so a bind-mounted home still gets them and an
 # image update still reaches a skill the agent has not customised.
+COPY warden-run/      /opt/hermes/skills/warden-run/
 COPY warden-campaign/ /opt/hermes/skills/warden-campaign/
 COPY warden-check/    /opt/hermes/skills/warden-check/
 COPY warden-clip/     /opt/hermes/skills/warden-clip/
