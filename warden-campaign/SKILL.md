@@ -8,6 +8,10 @@ description: Read a clipping campaign's brief and store what it demands as a rul
 A brief is prose. The checker needs numbers. You are the step between, and you
 are the only step that is allowed to interpret.
 
+**This skill is not finished until `warden campaign save` has printed
+`stored and verified`.** Extracting the rules in your head and telling the person
+about them is not this skill; it is the failure this skill exists to prevent.
+
 ## Do this
 
 1. `warden schema` prints the structure to fill. Read it before reading the brief.
