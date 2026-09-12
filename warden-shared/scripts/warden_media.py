@@ -176,12 +176,46 @@ def _download_one(url, out_dir):
 
 # ---------------------------------------------------------------- words
 
+# Measured on this base image, emulated amd64 on Apple Silicon, 12 Sep 2026:
+# `small` transcribes at 0.62x realtime, so 2m18s of source took 1m25s. Fine for
+# a campaign archive, which is clips. An hour-long podcast at that rate is 37
+# minutes of silence in a chat, which reads as a dead agent.
+SMALL_CEILING_S = 900
+
+
+def pick_model(duration_s):
+    """The model this source can afford.
+
+    An override always wins: someone who set WARDEN_WHISPER has a reason. With
+    no override, short sources get `small`, which is the better text, and long
+    ones get `base`, which is roughly three times faster and still good enough
+    to choose a moment from. The trade is deliberate and it is stated to the
+    owner rather than hidden, because the captions are burned from this text.
+    """
+    override = os.environ.get("WARDEN_WHISPER")
+    if override:
+        return override, "set by WARDEN_WHISPER"
+    if duration_s and duration_s > SMALL_CEILING_S:
+        return "base", (f"source is {duration_s / 60:.0f} minutes, so the faster "
+                        "model, to keep this under ten minutes")
+    return "small", "short enough for the better model"
+
+
+def duration_of(path):
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=nw=1:nk=1", path], capture_output=True, text=True).stdout.strip()
+    try:
+        return float(out)
+    except ValueError:
+        return None
+
+
 def transcribe(path, model_size=None):
     """Words with timing. A published subtitle beats a transcription.
 
-    Whisper on a container CPU costs eight to fifteen minutes per hour of source.
     When the archive shipped subtitles, using them is not a shortcut, it is the
-    better text: it is what the rights holder wrote.
+    better text: it is what the rights holder wrote, and it costs nothing.
     """
     sidecar = _subtitle_beside(path)
     if sidecar:
@@ -193,12 +227,17 @@ def transcribe(path, model_size=None):
         raise RuntimeError(
             "no subtitles beside this file and faster-whisper is not installed, "
             "so there is no text to choose a moment from")
-    size = model_size or os.environ.get("WARDEN_WHISPER", "small")
+    seconds = duration_of(path)
+    if model_size:
+        size, why = model_size, "asked for"
+    else:
+        size, why = pick_model(seconds)
     model = WhisperModel(size, device="cpu", compute_type="int8")
     segments, _info = model.transcribe(path, vad_filter=True, word_timestamps=True)
     rows = [{"start": round(s.start, 2), "end": round(s.end, 2),
              "text": s.text.strip()} for s in segments]
-    return {"source": f"faster-whisper {size}", "path": None, "segments": rows}
+    return {"source": f"faster-whisper {size} ({why})", "path": None,
+            "segments": rows, "duration_s": seconds}
 
 
 def _subtitle_beside(path):

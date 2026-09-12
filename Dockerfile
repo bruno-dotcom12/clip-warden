@@ -50,13 +50,22 @@ RUN set -eu; \
     fi; \
     "$PY" -c "import yt_dlp, gdown, faster_whisper" 
 
-# The transcription model, fetched at build. Lazily downloading it would put a
+# The transcription models, fetched at build. Lazily downloading one would put a
 # silent five-minute wait inside a stranger's first request, which reads as a
 # hung agent and is how a verified install gets uninstalled.
+#
+# Two of them, because one size cannot serve both shapes of source. Measured on
+# this image, emulated amd64 on Apple Silicon: `small` runs at 0.62x realtime,
+# which is right for a campaign archive of short clips and is 37 minutes for an
+# hour-long podcast. `base` is roughly three times faster and still good enough
+# to choose a moment from, so the runtime picks it past fifteen minutes of
+# source and says why.
 ENV HF_HOME=/opt/plow/models
 RUN mkdir -p /opt/plow/models \
  && /opt/hermes/.venv/bin/python3 -c \
-      "from faster_whisper import WhisperModel; WhisperModel('small', device='cpu', compute_type='int8')" \
+      "from faster_whisper import WhisperModel; \
+       WhisperModel('small', device='cpu', compute_type='int8'); \
+       WhisperModel('base', device='cpu', compute_type='int8')" \
  && chmod -R a+rX /opt/plow/models
 
 # The skills, outside every home, so a bind-mounted home still gets them and an

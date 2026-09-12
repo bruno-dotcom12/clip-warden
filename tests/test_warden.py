@@ -224,3 +224,35 @@ class Beat(unittest.TestCase):
         length, bars = self.B.snap(17.3, 0, 10, 60)
         self.assertEqual(length, 17.3)
         self.assertIsNone(bars)
+
+
+class ModelChoice(unittest.TestCase):
+    """The transcription model is chosen by what the source costs."""
+
+    def setUp(self):
+        import warden_media
+        self.M = warden_media
+        self.saved = os.environ.pop("WARDEN_WHISPER", None)
+
+    def tearDown(self):
+        if self.saved is not None:
+            os.environ["WARDEN_WHISPER"] = self.saved
+
+    def test_a_short_source_gets_the_better_model(self):
+        size, why = self.M.pick_model(300)
+        self.assertEqual(size, "small")
+
+    def test_a_long_source_gets_the_faster_model(self):
+        size, why = self.M.pick_model(3600)
+        self.assertEqual(size, "base")
+        self.assertIn("minutes", why)
+
+    def test_an_override_always_wins(self):
+        os.environ["WARDEN_WHISPER"] = "medium"
+        size, why = self.M.pick_model(3600)
+        self.assertEqual(size, "medium")
+        self.assertIn("WARDEN_WHISPER", why)
+
+    def test_an_unknown_duration_does_not_downgrade(self):
+        size, _ = self.M.pick_model(None)
+        self.assertEqual(size, "small")
