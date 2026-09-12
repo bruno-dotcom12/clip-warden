@@ -1,0 +1,18 @@
+#!/bin/sh
+# `warden` is the command every skill and the persona call. It exists because a
+# path to a .py file is not a stable thing to hand a model.
+#
+# The runtime copies skills into the agent's home with its own idea of file
+# modes, and the executable bit does not survive that copy: a stranger's install
+# would answer "Permission denied" to every documented command. And the home
+# copy belongs to the agent's uid, so the tool that decides whether a clip may
+# be posted would be a file a single injected turn could rewrite.
+#
+# So this runs the image's own copy, root-owned and out of reach of any turn,
+# with the interpreter named explicitly rather than whatever `python3` a login
+# shell happens to resolve.
+set -eu
+HF_HOME="${HF_HOME:-/opt/plow/models}"
+export HF_HOME
+exec /opt/hermes/.venv/bin/python3 \
+  /opt/hermes/skills/warden-shared/scripts/warden.py "$@"

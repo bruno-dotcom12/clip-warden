@@ -1,0 +1,566 @@
+#!/usr/bin/env python3
+"""clip-warden: the command the skills and the persona call.
+
+One message with one campaign link has to end in a clip the owner can post
+without losing the work. Everything measurable on that path lives here, and
+nothing here asks a model for an opinion: durations, pixels, hashtags and caps
+are arithmetic, and arithmetic that a turn can talk itself out of is not a
+guardrail. The model reads the brief and writes the rule set; this file decides.
+
+  warden schema                         the rule set a campaign skill fills
+  warden campaign save --file -         store one, after validating its shape
+  warden campaign list | show <id>
+  warden check <video> --campaign <id> [--caption -]
+  warden package --campaign <id> --hook "..."
+  warden log --campaign <id> --clip <name> --platform tiktok --url <url>
+  warden status
+
+Exit codes are the contract, because the caller is usually a shell: 0 the clip
+may be posted, 1 it may not, 2 the command itself was wrong.
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import unicodedata
+from datetime import datetime, timezone
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import warden_rules as R
+
+REPROVA, ATENCAO, OK = "REJECT", "WARN", "ok"
+
+
+def state_dir():
+    """Where campaigns and the post ledger live.
+
+    The image puts this at /var/lib/hermes/warden and owns it. Outside the
+    image, a developer running the tests gets a directory under their home
+    rather than a permission error on a path that does not exist.
+    """
+    explicit = os.environ.get("WARDEN_DIR")
+    if explicit:
+        path = explicit
+    elif os.path.isdir("/var/lib/hermes"):
+        path = "/var/lib/hermes/warden"
+    else:
+        path = os.path.expanduser("~/.clip-warden")
+    os.makedirs(os.path.join(path, "campaigns"), exist_ok=True)
+    return path
+
+
+def campaign_path(cid):
+    return os.path.join(state_dir(), "campaigns", f"{cid}.json")
+
+
+def load_campaign(cid):
+    path = campaign_path(cid)
+    if not os.path.exists(path):
+        known = list_campaigns()
+        hint = f" Known: {', '.join(known)}." if known else " None stored yet."
+        die(f"no campaign called {cid!r}.{hint}")
+    with open(path) as fh:
+        return json.load(fh)
+
+
+def list_campaigns():
+    root = os.path.join(state_dir(), "campaigns")
+    return sorted(f[:-5] for f in os.listdir(root) if f.endswith(".json"))
+
+
+def die(message, code=2):
+    print(f"warden: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def read_text(spec):
+    """A path, or '-' for stdin. Captions arrive both ways."""
+    if spec is None:
+        return None
+    if spec == "-":
+        return sys.stdin.read()
+    if not os.path.exists(spec):
+        die(f"no such file: {spec}")
+    with open(spec, encoding="utf-8") as fh:
+        return fh.read()
+
+
+# ---------------------------------------------------------------- probing
+
+def probe(path):
+    """What the file actually is, from ffprobe, never from its name.
+
+    A clip named 1080x1920 is not a 1080x1920 clip, and the campaign checks the
+    file. ffprobe ships in the base image; its absence is a broken install and
+    is reported as one rather than skipped as an optional nicety.
+    """
+    if not shutil.which("ffprobe"):
+        die("ffprobe is not on PATH, so no clip can be measured")
+    def run(args):
+        return subprocess.run(["ffprobe", "-v", "error", *args, path],
+                              capture_output=True, text=True).stdout.strip()
+    video = run(["-select_streams", "v:0", "-show_entries",
+                 "stream=width,height,r_frame_rate,codec_name",
+                 "-of", "default=nw=1"])
+    fields = dict(line.split("=", 1) for line in video.splitlines() if "=" in line)
+    duration = run(["-show_entries", "format=duration", "-of", "default=nw=1:nk=1"])
+    audio = run(["-select_streams", "a:0", "-show_entries", "stream=codec_name",
+                 "-of", "csv=p=0"])
+    def number(value, cast=float):
+        try:
+            return cast(value)
+        except (TypeError, ValueError):
+            return None
+    return {
+        "width": number(fields.get("width"), int),
+        "height": number(fields.get("height"), int),
+        "codec": fields.get("codec_name"),
+        "fps": fields.get("r_frame_rate"),
+        "duration_s": number(duration),
+        "audio_codec": audio or None,
+        "size_mb": round(os.path.getsize(path) / (1024 * 1024), 2),
+    }
+
+
+def fold(text):
+    """Lowercase, accent-stripped. A banned word does not stop being banned
+    because the caption spelled it with an accent or in capitals."""
+    stripped = unicodedata.normalize("NFD", text or "")
+    stripped = "".join(c for c in stripped if unicodedata.category(c) != "Mn")
+    return stripped.lower()
+
+
+# ---------------------------------------------------------------- checking
+
+def check(rules, media, caption, ledger):
+    """Every finding, in the order a person would want to read them."""
+    out = []
+    def reject(m): out.append((REPROVA, m))
+    def warn(m):   out.append((ATENCAO, m))
+    def ok(m):     out.append((OK, m))
+
+    # Shape of the file.
+    want_w = R.get(rules, "video.width")
+    want_h = R.get(rules, "video.height")
+    w, h = media.get("width"), media.get("height")
+    if want_w and want_h:
+        if (w, h) != (want_w, want_h):
+            reject(f"{w}x{h}: the campaign asks for {want_w}x{want_h}")
+        else:
+            ok(f"resolution {w}x{h}")
+    want_aspect = R.get(rules, "video.aspect")
+    if want_aspect and w and h:
+        try:
+            a, b = (int(n) for n in str(want_aspect).split(":"))
+            if abs((w / h) - (a / b)) > 0.01:
+                reject(f"aspect {w}:{h} is not the {want_aspect} the campaign asks for")
+            else:
+                ok(f"aspect {want_aspect}")
+        except (ValueError, ZeroDivisionError):
+            warn(f"the rule set has an aspect this tool cannot read: {want_aspect!r}")
+
+    # Duration, the single most common reason a submission is thrown out.
+    dur = media.get("duration_s")
+    lo, hi = R.get(rules, "video.duration_min_s"), R.get(rules, "video.duration_max_s")
+    if dur is None:
+        reject("the file has no readable duration")
+    else:
+        if lo is not None and dur < lo:
+            reject(f"{dur:.1f}s is under the {lo}s minimum")
+        if hi is not None and dur > hi:
+            reject(f"{dur:.1f}s is over the {hi}s maximum")
+        if (lo is None) and (hi is None):
+            warn(f"{dur:.1f}s, and the brief sets no duration limit this tool knows")
+        elif not any(level == REPROVA and "s is " in msg for level, msg in out):
+            ok(f"duration {dur:.1f}s")
+
+    # Audio. Some campaigns require it; the ones that add the official track on
+    # the platform require its absence, and a clip that arrives with a scratch
+    # track gets the sound rejected at upload.
+    policy = R.get(rules, "video.audio")
+    has_audio = bool(media.get("audio_codec"))
+    if policy == "required" and not has_audio:
+        reject("no audio track, and the campaign requires one")
+    elif policy == "forbidden" and has_audio:
+        reject(f"carries an audio track ({media['audio_codec']}), and the campaign "
+               "requires the sound to be added on the platform")
+    elif policy:
+        ok(f"audio: {media.get('audio_codec') or 'none'}, as required")
+    else:
+        warn(f"audio: {media.get('audio_codec') or 'none'}, and the brief is silent "
+             "about where sound must come from")
+
+    cap_mb = R.get(rules, "video.max_file_mb")
+    if cap_mb and media.get("size_mb", 0) > cap_mb:
+        reject(f"{media['size_mb']} MB is over the {cap_mb} MB the campaign accepts")
+
+    # The caption. Cheap to get right, and it is what the reviewer reads first.
+    required_tags = R.get(rules, "caption.required_hashtags", [])
+    required_ats = R.get(rules, "caption.required_mentions", [])
+    required_text = R.get(rules, "caption.required_text", [])
+    banned = R.get(rules, "caption.banned_terms", [])
+    max_len = R.get(rules, "caption.max_len")
+    if caption is None:
+        if required_tags or required_ats or required_text:
+            warn("no caption was given to check, and this campaign has caption rules")
+    else:
+        folded = fold(caption)
+        missing = [t for t in required_tags if fold(t) not in folded]
+        if missing:
+            reject("the caption is missing " + ", ".join(missing))
+        elif required_tags:
+            ok(f"all {len(required_tags)} required hashtags present")
+        missing_ats = [a for a in required_ats if fold(a) not in folded]
+        if missing_ats:
+            reject("the caption is missing " + ", ".join(missing_ats))
+        elif required_ats:
+            ok("required mentions present")
+        for phrase in required_text:
+            if fold(phrase) not in folded:
+                reject(f"the caption must carry the exact words: {phrase!r}")
+        hits = [term for term in banned if re.search(rf"\b{re.escape(fold(term))}", folded)]
+        if hits:
+            reject("the caption uses terms this campaign bans: " + ", ".join(hits))
+        if max_len and len(caption) > max_len:
+            reject(f"the caption is {len(caption)} characters, over the {max_len} allowed")
+
+    # The cap and the deadline, from this install's own ledger of what it has
+    # already submitted. A clipper past the cap is working for free.
+    cap = R.get(rules, "posting.per_clipper_cap")
+    already = len(ledger)
+    if cap:
+        if already >= cap:
+            reject(f"{already} posts already logged for this campaign and the cap is {cap}")
+        else:
+            ok(f"{already} of {cap} posts used")
+    deadline = R.get(rules, "posting.deadline")
+    if deadline:
+        try:
+            left = (datetime.strptime(deadline, "%Y-%m-%d").date()
+                    - datetime.now(timezone.utc).date()).days
+            if left < 0:
+                reject(f"the campaign closed on {deadline}")
+            elif left <= 2:
+                warn(f"{left} day(s) left: the campaign closes {deadline}")
+            else:
+                ok(f"{left} days left")
+        except ValueError:
+            warn(f"the rule set has a deadline this tool cannot read: {deadline!r}")
+
+    # What nobody checked. Repeated on every verdict on purpose: an approval
+    # that hides its blind spots is how a clipper learns about a rule from a
+    # rejection notice.
+    for item in R.get(rules, "unknown", []):
+        warn(f"not checked, the brief does not settle it: {item}")
+    for item in R.get(rules, "sources.allowed", []):
+        warn(f"only you can confirm this: footage must be {item}")
+    for item in R.get(rules, "sources.forbidden", []):
+        warn(f"only you can confirm this: footage must not be {item}")
+    pct = R.get(rules, "sources.official_min_screen_pct")
+    if pct:
+        warn(f"only you can confirm this: official footage must fill at least {pct}% of screen")
+    return out
+
+
+def verdict(findings):
+    return REPROVA if any(level == REPROVA for level, _ in findings) else OK
+
+
+def render(findings, rules, media):
+    lines = [f"{rules.get('name', rules.get('id'))}  |  "
+             f"{media.get('width')}x{media.get('height')}, "
+             f"{(media.get('duration_s') or 0):.1f}s, {media.get('size_mb')} MB", ""]
+    order = {REPROVA: 0, ATENCAO: 1, OK: 2}
+    label = {REPROVA: "REJECT ", ATENCAO: "CHECK  ", OK: "ok     "}
+    for level, message in sorted(findings, key=lambda f: order[f[0]]):
+        lines.append(f"  {label[level]} {message}")
+    lines.append("")
+    if verdict(findings) == REPROVA:
+        lines.append("Do not post this one. Fix what is marked REJECT and run it again.")
+    else:
+        lines.append("Nothing blocks this clip. The CHECK lines are yours to confirm.")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- ledger
+
+def ledger_path():
+    return os.path.join(state_dir(), "posts.json")
+
+
+def ledger_all():
+    path = ledger_path()
+    if not os.path.exists(path):
+        return []
+    with open(path) as fh:
+        return json.load(fh)
+
+
+def ledger_for(cid):
+    return [row for row in ledger_all() if row.get("campaign") == cid]
+
+
+def ledger_add(row):
+    rows = ledger_all()
+    rows.append(row)
+    tmp = ledger_path() + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(rows, fh, indent=2, ensure_ascii=False)
+    os.replace(tmp, ledger_path())
+
+
+# ---------------------------------------------------------------- commands
+
+def cmd_schema(args):
+    print(json.dumps(R.blank(), indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_campaign(args):
+    if args.action == "list":
+        names = list_campaigns()
+        print("\n".join(names) if names else "no campaigns stored yet")
+        return 0
+    if args.action == "show":
+        if not args.id:
+            die("show needs --id")
+        print(json.dumps(load_campaign(args.id), indent=2, ensure_ascii=False))
+        return 0
+    if args.action == "save":
+        raw = read_text(args.file or "-")
+        try:
+            rules = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            die(f"that is not valid JSON: {exc}")
+        problems = R.validate(rules)
+        if problems:
+            for p in problems:
+                print(f"  - {p}", file=sys.stderr)
+            die("the rule set was not stored")
+        with open(campaign_path(rules["id"]), "w", encoding="utf-8") as fh:
+            json.dump(rules, fh, indent=2, ensure_ascii=False)
+        unknown = len(rules.get("unknown") or [])
+        print(f"stored {rules['id']}"
+              + (f", with {unknown} thing(s) the brief left open" if unknown else ""))
+        return 0
+    die(f"unknown campaign action {args.action!r}")
+
+
+def cmd_check(args):
+    if not os.path.exists(args.video):
+        die(f"no such clip: {args.video}")
+    rules = load_campaign(args.campaign)
+    media = probe(args.video)
+    caption = read_text(args.caption)
+    findings = check(rules, media, caption, ledger_for(args.campaign))
+    if args.json:
+        print(json.dumps({"verdict": verdict(findings), "media": media,
+                          "findings": [{"level": l, "message": m} for l, m in findings]},
+                         indent=2, ensure_ascii=False))
+    else:
+        print(render(findings, rules, media))
+    return 1 if verdict(findings) == REPROVA else 0
+
+
+def cmd_package(args):
+    """The caption, assembled from the campaign's own requirements.
+
+    Not a creative act and not meant to be one: the hook is the owner's, and
+    everything after it is what the brief demands, in the brief's own spelling.
+    """
+    rules = load_campaign(args.campaign)
+    parts = [args.hook.strip()] if args.hook else []
+    parts += [t for t in R.get(rules, "caption.required_text", [])]
+    tail = " ".join(R.get(rules, "caption.required_mentions", [])
+                    + R.get(rules, "caption.required_hashtags", []))
+    if tail:
+        parts.append(tail)
+    caption = "\n".join(p for p in parts if p)
+    max_len = R.get(rules, "caption.max_len")
+    print(caption)
+    if max_len and len(caption) > max_len:
+        print(f"\n[{len(caption)} characters, over the {max_len} this campaign allows]",
+              file=sys.stderr)
+        return 1
+    policy = R.get(rules, "posting.sound_policy")
+    if policy:
+        print(f"\n[sound: {policy}]", file=sys.stderr)
+    days = R.get(rules, "posting.min_days_live")
+    if days:
+        print(f"[leave it up for at least {days} days]", file=sys.stderr)
+    return 0
+
+
+def cmd_log(args):
+    load_campaign(args.campaign)
+    ledger_add({"campaign": args.campaign, "clip": args.clip,
+                "platform": args.platform, "url": args.url,
+                "at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+    rows = ledger_for(args.campaign)
+    print(f"logged. {len(rows)} post(s) recorded for {args.campaign}")
+    return 0
+
+
+def cmd_status(args):
+    root = state_dir()
+    names = list_campaigns()
+    print(f"state: {root}")
+    print(f"campaigns: {', '.join(names) if names else 'none'}")
+    for cid in names:
+        rules = load_campaign(cid)
+        cap = R.get(rules, "posting.per_clipper_cap")
+        used = len(ledger_for(cid))
+        print(f"  {cid}: {used} post(s)" + (f" of {cap}" if cap else "")
+              + (f", closes {R.get(rules, 'posting.deadline')}"
+                 if R.get(rules, "posting.deadline") else ""))
+    print("ffprobe: " + (shutil.which("ffprobe") or "MISSING"))
+    print("ffmpeg:  " + (shutil.which("ffmpeg") or "MISSING"))
+    return 0
+
+
+
+# ---------------------------------------------------------------- media
+
+def _media():
+    import warden_media
+    return warden_media
+
+
+def cmd_fetch(args):
+    print(_media().fetch_text(args.url))
+    return 0
+
+
+def cmd_archive(args):
+    rules = load_campaign(args.campaign)
+    out = args.out or os.path.join(state_dir(), "footage", args.campaign)
+    try:
+        got, failed = _media().archive(rules, out, limit=args.limit)
+    except RuntimeError as exc:
+        die(str(exc), code=1)
+    for path in got:
+        print(path)
+    for url, why in failed:
+        print(f"could not pull {url}: {why}", file=sys.stderr)
+    if not got:
+        die("nothing came down from this campaign's archive", code=1)
+    return 0
+
+
+def cmd_transcribe(args):
+    try:
+        result = _media().transcribe(args.file, model_size=args.model)
+    except RuntimeError as exc:
+        die(str(exc), code=1)
+    target = args.out or os.path.splitext(args.file)[0] + ".transcript.json"
+    with open(target, "w", encoding="utf-8") as fh:
+        json.dump(result, fh, ensure_ascii=False, indent=1)
+    print(f"{target}  ({result['source']}, {len(result['segments'])} segments)")
+    return 0
+
+
+def cmd_digest(args):
+    with open(args.transcript, encoding="utf-8") as fh:
+        data = json.load(fh)
+    window = None
+    if args.window:
+        a, b = args.window.split("-")
+        window = (float(a), float(b))
+    print(_media().digest(data["segments"], window=window))
+    return 0
+
+
+def cmd_cut(args):
+    rules = load_campaign(args.campaign)
+    try:
+        result = _media().cut(args.source, args.out, rules, args.start, args.end,
+                              caption_srt=args.subtitles, hook=args.hook)
+    except RuntimeError as exc:
+        die(str(exc), code=1)
+    for note in result["notes"]:
+        print(f"  note: {note}", file=sys.stderr)
+    media = probe(result["out"])
+    findings = check(rules, media, None, ledger_for(args.campaign))
+    blocking = [m for level, m in findings if level == REPROVA]
+    print(result["out"])
+    if blocking:
+        print("this render does not clear the campaign yet:", file=sys.stderr)
+        for message in blocking:
+            print(f"  REJECT {message}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="warden", description=__doc__.splitlines()[0])
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("schema").set_defaults(func=cmd_schema)
+
+    p = sub.add_parser("campaign")
+    p.add_argument("action", choices=["save", "list", "show"])
+    p.add_argument("--id")
+    p.add_argument("--file", help="path, or - for stdin")
+    p.set_defaults(func=cmd_campaign)
+
+    p = sub.add_parser("check")
+    p.add_argument("video")
+    p.add_argument("--campaign", required=True)
+    p.add_argument("--caption", help="path, or - for stdin")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_check)
+
+    p = sub.add_parser("package")
+    p.add_argument("--campaign", required=True)
+    p.add_argument("--hook", default="")
+    p.set_defaults(func=cmd_package)
+
+    p = sub.add_parser("log")
+    p.add_argument("--campaign", required=True)
+    p.add_argument("--clip", required=True)
+    p.add_argument("--platform", required=True)
+    p.add_argument("--url", default="")
+    p.set_defaults(func=cmd_log)
+
+    p = sub.add_parser("fetch")
+    p.add_argument("url")
+    p.set_defaults(func=cmd_fetch)
+
+    p = sub.add_parser("archive")
+    p.add_argument("--campaign", required=True)
+    p.add_argument("--out")
+    p.add_argument("--limit", type=int)
+    p.set_defaults(func=cmd_archive)
+
+    p = sub.add_parser("transcribe")
+    p.add_argument("file")
+    p.add_argument("--out")
+    p.add_argument("--model")
+    p.set_defaults(func=cmd_transcribe)
+
+    p = sub.add_parser("digest")
+    p.add_argument("transcript")
+    p.add_argument("--window", help="seconds, as 120-240")
+    p.set_defaults(func=cmd_digest)
+
+    p = sub.add_parser("cut")
+    p.add_argument("source")
+    p.add_argument("--campaign", required=True)
+    p.add_argument("--start", type=float, required=True)
+    p.add_argument("--end", type=float, required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--subtitles")
+    p.add_argument("--hook")
+    p.set_defaults(func=cmd_cut)
+
+    sub.add_parser("status").set_defaults(func=cmd_status)
+
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

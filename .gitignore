@@ -1,0 +1,10 @@
+.env
+__pycache__/
+.pytest_cache/
+# The agent credential `plow-agents mint` writes here. A live bearer token.
+plow-credentials
+
+# Fetched by hand when registering on the Index. The image fetches its own
+# copy at build, pinned by sha in vendor/client.pin, so a loose copy here would
+# only drift from the one that actually runs.
+agent_index_client.py

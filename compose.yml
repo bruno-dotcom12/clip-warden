@@ -1,0 +1,19 @@
+services:
+  agent:
+    build: .
+    environment:
+      # The Agent Index project id this install reports to. Registered once by
+      # the publisher; every installer reports to the same id. The reporter
+      # stands down without it, so an install that never sets it never counts.
+      AGENT_ID: ${AGENT_ID:-clip-warden}
+    volumes:
+      # `.host`, not the path the agent reads: a bind carries this machine's
+      # ownership in, and the image copies the file into place as root itself.
+      - ./plow-credentials:/var/lib/plow/credentials.host:ro
+      # The agent's home, kept across up/down for its sessions, its campaigns
+      # and the footage it has already pulled.
+      - agent-home:/var/lib/hermes
+    stop_grace_period: 35s
+
+volumes:
+  agent-home:

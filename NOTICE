@@ -1,0 +1,15 @@
+Clip Warden, an agent that keeps a paid clipping submission inside its
+campaign's rules.
+Copyright (c) 2026 Bruno Arantes.
+
+This project is released under the MIT License; see LICENSE.
+
+It is built on the Plow cloud agent base image (plow-pbc/plow-hermes-agent) and
+the Plow Chat plugin, Copyright 2026 The Plow Collective, Inc., distributed by
+their authors under the Apache License 2.0. Those components keep their own
+license and notices; nothing here relicenses them. "Plow" and the Plow logo are
+trademarks of The Plow Collective, Inc., and use of the base image grants no
+trademark rights.
+
+The shape of the image, the s6 service layout and the pinned agent-index client
+follow plow-pbc/life-assistant-hermes-agent, Apache-2.0.
