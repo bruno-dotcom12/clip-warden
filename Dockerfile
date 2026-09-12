@@ -16,11 +16,6 @@
 # arm64.
 FROM --platform=linux/amd64 public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-4747960eaa8a44ac24424bf0cc6c22559af61f43@sha256:fe9b0f428f9ed2da1698ecf0b504c79eceb9e016e770291ff6b3418b9f65449d
 
-# Identity. plow-init composes SOUL.md at boot as the base persona followed by
-# this file; nothing here restates what the base already carries.
-COPY --chmod=0644 runtime/persona.md /opt/hermes/plow-seed/persona.md
-COPY LICENSE /usr/share/doc/clip-warden/
-
 # ffmpeg decides every number this agent states about a clip. The base carries
 # it; if a future base stops carrying it, the build is where that should be
 # found out, not a tenant's first cut.
@@ -67,6 +62,12 @@ RUN mkdir -p /opt/plow/models \
        WhisperModel('small', device='cpu', compute_type='int8'); \
        WhisperModel('base', device='cpu', compute_type='int8')" \
  && chmod -R a+rX /opt/plow/models
+
+# Identity, and the licence. Late on purpose: the persona is the file that gets
+# reworded most, and copying it before the package install and the model download
+# meant every wording fix paid for both again.
+COPY --chmod=0644 runtime/persona.md /opt/hermes/plow-seed/persona.md
+COPY LICENSE /usr/share/doc/clip-warden/
 
 # The skills, outside every home, so a bind-mounted home still gets them and an
 # image update still reaches a skill the agent has not customised.
