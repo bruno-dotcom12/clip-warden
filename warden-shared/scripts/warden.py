@@ -421,7 +421,13 @@ def cmd_log(args):
 def cmd_status(args):
     root = state_dir()
     names = list_campaigns()
-    print(f"state: {root}")
+    # Where the state lives, and why it lives there. An override is legitimate,
+    # but a silent one turns "campaigns: none" into a mystery: two people look at
+    # two directories and reach opposite conclusions about the same agent.
+    source = ("WARDEN_DIR in the environment" if os.environ.get("WARDEN_DIR")
+              else "the default for this image")
+    print(f"state: {root}  ({source})")
+    print(f"writable: {'yes' if os.access(root, os.W_OK) else 'NO, and that is why nothing saves'}")
     print(f"campaigns: {', '.join(names) if names else 'none'}")
     for cid in names:
         rules = load_campaign(cid)

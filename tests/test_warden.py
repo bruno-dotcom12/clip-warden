@@ -280,3 +280,18 @@ class Saving(unittest.TestCase):
             warden.main(["campaign", "save", "--json", payload])
         self.assertIn("stored and verified", out.getvalue())
         self.assertEqual(warden.load_campaign("roundtrip")["name"], "Round trip")
+
+
+class StateLocation(unittest.TestCase):
+    """Where state lives is never a mystery, because two people looking at two
+    directories is how an agent gets accused of lying."""
+
+    def test_status_names_the_source_of_the_path(self):
+        import io
+        from contextlib import redirect_stdout
+        out = io.StringIO()
+        with redirect_stdout(out):
+            warden.main(["status"])
+        text = out.getvalue()
+        self.assertIn("WARDEN_DIR in the environment", text)
+        self.assertIn("writable:", text)

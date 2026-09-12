@@ -4,6 +4,17 @@
 PATH=/command:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
 export PATH
 
+# The state directory, owned by the agent, every boot.
+#
+# It lives in a named volume, so whatever created it first owns it forever, and
+# the first thing to run `warden` in a fresh container is often an operator
+# poking around with `docker compose exec`, which is root. The agent then finds
+# its own state directory locked and either fails or, worse, quietly writes
+# somewhere else. Repairing it here costs nothing and closes that whole class of
+# confusion.
+install -d -o 10000 -g 10000 -m 0700 /var/lib/hermes/warden /var/lib/hermes/models
+chown -R 10000:10000 /var/lib/hermes/warden /var/lib/hermes/models 2>/dev/null || true
+
 /command/s6-setuidgid hermes \
   env HOME=/var/lib/hermes HF_HOME=/var/lib/hermes/models \
   /usr/local/bin/warden-models || true
