@@ -256,3 +256,27 @@ class ModelChoice(unittest.TestCase):
     def test_an_unknown_duration_does_not_downgrade(self):
         size, _ = self.M.pick_model(None)
         self.assertEqual(size, "small")
+
+
+class Saving(unittest.TestCase):
+    """A rule set is stored or the agent is told plainly that it is not."""
+
+    def test_empty_input_is_refused_loudly(self):
+        import io
+        from contextlib import redirect_stderr
+        err = io.StringIO()
+        with redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+            warden.main(["campaign", "save", "--json", "   "])
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("do not report this campaign as stored", err.getvalue())
+
+    def test_a_saved_rule_set_reads_back(self):
+        import io
+        from contextlib import redirect_stdout
+        out = io.StringIO()
+        payload = json.dumps({"schema": 1, "id": "roundtrip", "name": "Round trip",
+                              "video": {"duration_max_s": 30}})
+        with redirect_stdout(out):
+            warden.main(["campaign", "save", "--json", payload])
+        self.assertIn("stored and verified", out.getvalue())
+        self.assertEqual(warden.load_campaign("roundtrip")["name"], "Round trip")

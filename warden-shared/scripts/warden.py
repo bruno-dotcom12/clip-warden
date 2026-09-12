@@ -331,7 +331,13 @@ def cmd_campaign(args):
         print(json.dumps(load_campaign(args.id), indent=2, ensure_ascii=False))
         return 0
     if args.action == "save":
-        raw = read_text(args.file or "-")
+        # --json first, because a model driving this through a shell cannot
+        # always be sure its heredoc reached stdin, and a rule set that silently
+        # arrives empty is how an agent ends up believing it saved something.
+        raw = args.json if args.json else read_text(args.file or "-")
+        if not (raw or "").strip():
+            die("nothing arrived on stdin. Pass the rule set with --json '<json>' "
+                "or --file <path>; do not report this campaign as stored.")
         try:
             rules = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -343,8 +349,15 @@ def cmd_campaign(args):
             die("the rule set was not stored")
         with open(campaign_path(rules["id"]), "w", encoding="utf-8") as fh:
             json.dump(rules, fh, indent=2, ensure_ascii=False)
-        unknown = len(rules.get("unknown") or [])
-        print(f"stored {rules['id']}"
+        # Read it back before saying it is there. The whole agent rests on the
+        # stored rule set, and "saved" is a claim, not a hope.
+        try:
+            with open(campaign_path(rules["id"])) as fh:
+                back = json.load(fh)
+        except Exception as exc:
+            die(f"wrote {rules['id']} but could not read it back: {exc}")
+        unknown = len(back.get("unknown") or [])
+        print(f"stored and verified {back['id']} at {campaign_path(back['id'])}"
               + (f", with {unknown} thing(s) the brief left open" if unknown else ""))
         return 0
     die(f"unknown campaign action {args.action!r}")
@@ -611,6 +624,7 @@ def main(argv=None):
     p.add_argument("action", choices=["save", "list", "show"])
     p.add_argument("--id")
     p.add_argument("--file", help="path, or - for stdin")
+    p.add_argument("--json", help="the rule set inline, instead of a file or stdin")
     p.set_defaults(func=cmd_campaign)
 
     p = sub.add_parser("check")

@@ -18,9 +18,17 @@ are the only step that is allowed to interpret.
    including case, and put the links to the authorised footage in
    `sources.archive_urls`.
 4. Everything the brief does not settle goes in `unknown`, by name.
-5. `warden campaign save --file -` with the JSON on stdin. It refuses a rule set
-   whose shape is wrong, and the complaint tells you which key.
-6. Show the person what you stored, in their language, and say what the brief
+5. `warden campaign save --json '<the json>'`. Inline, not on stdin: a heredoc
+   that silently arrives empty is how an agent ends up believing it saved
+   something. The command refuses a rule set whose shape is wrong, and the
+   complaint names the key.
+6. Read it back with `warden campaign show <id>` before you say a word about it.
+   The save prints `stored and verified` with the path when it is really there.
+   If you did not see that line, it is not stored: say so, do not tell the
+   person their campaign is saved, and do not carry on from memory. Everything
+   downstream, every check on every clip, reads this file and not this
+   conversation.
+7. Show the person what you stored, in their language, and say what the brief
    left open.
 
 ## The rule you do not bend
