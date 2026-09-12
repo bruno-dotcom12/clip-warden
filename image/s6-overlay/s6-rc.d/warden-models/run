@@ -1,0 +1,11 @@
+#!/bin/sh
+# Fetch the models, then stand still. A longrun that exits gets restarted by s6,
+# which on a failing network would turn a missing model into a download loop.
+PATH=/command:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+export PATH
+
+/command/s6-setuidgid hermes \
+  env HOME=/var/lib/hermes HF_HOME=/var/lib/hermes/models \
+  /usr/local/bin/warden-models || true
+
+exec /bin/sleep infinity

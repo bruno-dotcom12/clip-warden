@@ -1,0 +1,24 @@
+#!/bin/sh
+# Pull the transcription models once, in the background, at boot.
+#
+# Baking them into the image cost every installer 600 MB before the agent had
+# said a word, on a leaderboard that counts installs that finish. Fetching them
+# on first use instead would move that cost into a stranger's first request,
+# which is worse: a silent five-minute wait is indistinguishable from a broken
+# agent. So it happens here, while the owner is reading the welcome message.
+#
+# Never fatal. No models means transcription falls back to downloading one when
+# it is first needed, which is slow but correct; a crash here would take the
+# whole agent down over a file it can fetch later.
+set -eu
+HF_HOME="${HF_HOME:-/var/lib/hermes/models}"
+export HF_HOME
+mkdir -p "$HF_HOME"
+for size in small base; do
+  /opt/hermes/.venv/bin/python3 - "$size" <<'PY' || echo "warden-models: $size not fetched this boot; it will be fetched when first needed" >&2
+import sys
+from faster_whisper import WhisperModel
+WhisperModel(sys.argv[1], device="cpu", compute_type="int8")
+print(f"warden-models: {sys.argv[1]} ready")
+PY
+done

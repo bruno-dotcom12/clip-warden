@@ -6,8 +6,9 @@ Ten minutes, and nothing of yours goes into it.
 
 - Docker, running.
 - A Plow account, for the agent's chat line.
-- Roughly 6 GB of disk. The image carries ffmpeg and the transcription model;
-  footage you pull lands in a Docker volume, not in your folders.
+- Roughly 5 GB of disk, most of it the Plow base image that every agent in
+  this hackathon shares, so if you have run another one you already have it.
+  Footage you pull lands in a Docker volume, not in your folders.
 
 ## Steps
 
@@ -19,8 +20,10 @@ plow-agents mint           # writes ./plow-credentials, a live token: never comm
 docker compose up --build -d
 ```
 
-The first build takes 10 to 25 minutes, almost all of it the transcription
-model. Later builds are seconds.
+The first build takes a few minutes, almost all of it the base image. The
+transcription models are not in the image: a background service pulls them on
+first boot while you are reading the agent's first reply. `warden status` says
+whether they have arrived.
 
 ## Check it came up
 

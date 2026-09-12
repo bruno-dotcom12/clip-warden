@@ -12,7 +12,7 @@
 # with the interpreter named explicitly rather than whatever `python3` a login
 # shell happens to resolve.
 set -eu
-HF_HOME="${HF_HOME:-/opt/plow/models}"
+HF_HOME="${HF_HOME:-/var/lib/hermes/models}"
 export HF_HOME
 exec /opt/hermes/.venv/bin/python3 \
   /opt/hermes/skills/warden-shared/scripts/warden.py "$@"

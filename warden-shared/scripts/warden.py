@@ -419,6 +419,16 @@ def cmd_status(args):
                  if R.get(rules, "posting.deadline") else ""))
     print("ffprobe: " + (shutil.which("ffprobe") or "MISSING"))
     print("ffmpeg:  " + (shutil.which("ffmpeg") or "MISSING"))
+    # The models arrive after boot rather than inside the image, so whether they
+    # are here yet is a real question with a real answer, not a constant.
+    home = os.environ.get("HF_HOME", "/var/lib/hermes/models")
+    found = []
+    for root, dirs, files in os.walk(home):
+        for name in dirs:
+            if "faster-whisper" in name:
+                found.append(name.split("faster-whisper-")[-1])
+    print("whisper models: " + (", ".join(sorted(set(found))) if found
+                                else "still downloading, or not fetched yet"))
     return 0
 
 

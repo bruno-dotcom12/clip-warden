@@ -45,23 +45,18 @@ RUN set -eu; \
     fi; \
     "$PY" -c "import yt_dlp, gdown, faster_whisper" 
 
-# The transcription models, fetched at build. Lazily downloading one would put a
-# silent five-minute wait inside a stranger's first request, which reads as a
-# hung agent and is how a verified install gets uninstalled.
+# The transcription models are NOT baked. They used to be, and it cost about
+# 600 MB of download on every install of this agent.
 #
-# Two of them, because one size cannot serve both shapes of source. Measured on
-# this image, emulated amd64 on Apple Silicon: `small` runs at 0.62x realtime,
-# which is right for a campaign archive of short clips and is 37 minutes for an
-# hour-long podcast. `base` is roughly three times faster and still good enough
-# to choose a moment from, so the runtime picks it past fifteen minutes of
-# source and says why.
-ENV HF_HOME=/opt/plow/models
-RUN mkdir -p /opt/plow/models \
- && /opt/hermes/.venv/bin/python3 -c \
-      "from faster_whisper import WhisperModel; \
-       WhisperModel('small', device='cpu', compute_type='int8'); \
-       WhisperModel('base', device='cpu', compute_type='int8')" \
- && chmod -R a+rX /opt/plow/models
+# The reason they were baked still stands: a model fetched during a stranger's
+# first request is a five-minute silence that reads as a hung agent. So the
+# fetch moved rather than disappearing. A supervised service pulls both models
+# in the background at boot, into the agent's own volume, while the owner is
+# still reading the first reply. The image stays small, the wait lands where
+# nobody is watching, and a second install on the same machine keeps the models
+# it already pulled.
+ENV HF_HOME=/var/lib/hermes/models
+COPY --chmod=0755 image/bin/warden-models /usr/local/bin/warden-models
 
 # Identity, and the licence. Late on purpose: the persona is the file that gets
 # reworded most, and copying it before the package install and the model download
@@ -108,4 +103,5 @@ COPY image/s6-overlay/ /etc/s6-overlay/
 # State and working room: agent-owned, 0700, empty until a campaign is stored.
 # Footage lands under here, so the host's disk is where a long source goes.
 RUN install -d -o 10000 -g 10000 -m 0700 /var/lib/hermes/warden \
- && install -d -o 10000 -g 10000 -m 0700 /var/lib/hermes/warden/footage
+ && install -d -o 10000 -g 10000 -m 0700 /var/lib/hermes/warden/footage \
+ && install -d -o 10000 -g 10000 -m 0700 /var/lib/hermes/models
