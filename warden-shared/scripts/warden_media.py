@@ -264,7 +264,8 @@ def _stamp(seconds):
 
 # ---------------------------------------------------------------- rendering
 
-def cut(source, out, rules, start, end, caption_srt=None, hook=None):
+def cut(source, out, rules, start, end, caption_srt=None, hook=None,
+        track=None, track_start=None, sound="platform"):
     """One clip, with the campaign's numbers rather than a house style.
 
     Duration is clamped to the campaign's window before a frame is written: a
@@ -288,6 +289,24 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None):
         notes.append(f"extended from {length:.1f}s to the {lo}s minimum")
         length = float(lo)
 
+    # An edit is cut to the bar, and it is cut to the bar even when the file
+    # ships silent. The platform's own sound player starts where you tell it,
+    # so a clip that is a whole number of bars long still lands on the beat
+    # once the track is added in the app, which is the only way a campaign that
+    # bans embedded audio can have an edit at all.
+    grid = None
+    if track:
+        import warden_beat
+        grid = warden_beat.analyse(track)
+        snapped, bars = warden_beat.snap(length, grid["bar_s"], lo, hi)
+        if snapped is None:
+            notes.append(f"no whole number of bars of {grid['track']} fits between "
+                         f"{lo}s and {hi}s, so this cut is not on the grid")
+        else:
+            notes.append(f"{bars} bars of {grid['track']} at {grid['bpm']} BPM "
+                         f"({grid['bar_s']:.3f}s a bar), so {snapped:.2f}s")
+            length = snapped
+
     safe = R.get(rules, "safe_area", {}) or {}
     x0 = int(safe.get("x0", 86)); x1 = int(safe.get("x1", width - 140))
     y1 = int(safe.get("y1", int(height * 0.83)))
@@ -308,15 +327,47 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None):
                   f"x=(w-text_w)/2:y={max(40, int(safe.get('y0', 200)))}")
 
     audio_policy = R.get(rules, "video.audio")
-    args = ["ffmpeg", "-y", "-ss", f"{float(start):.3f}", "-i", source,
-            "-t", f"{length:.3f}", "-vf", chain,
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-            "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
-    if audio_policy == "forbidden":
-        args += ["-an"]
-        notes.append("audio stripped: this campaign adds the sound on the platform")
+    silent = audio_policy == "forbidden" or (sound == "platform" and audio_policy != "required")
+    embed = bool(track) and not silent
+
+    args = ["ffmpeg", "-y", "-ss", f"{float(start):.3f}", "-i", source]
+    if embed:
+        # The track enters at its drop unless told otherwise, because an edit
+        # that opens on an intro has spent its first second on nothing.
+        at = track_start if track_start is not None else (grid or {}).get("drop_s", 0.0)
+        args += ["-ss", f"{float(at):.3f}", "-i", track]
+    args += ["-t", f"{length:.3f}", "-filter_complex" if embed else "-vf"]
+
+    if embed:
+        fade = max(0.5, min(3.0, length * 0.12))
+        music = (f"[1:a]atrim=duration={length:.3f},asetpts=N/SR/TB,"
+                 f"volume=-6dB,afade=t=out:st={max(0, length - fade):.3f}:d={fade:.3f}[m]")
+        has_source_audio = bool(subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+             "stream=codec_name", "-of", "csv=p=0", source],
+            capture_output=True, text=True).stdout.strip())
+        if has_source_audio:
+            # Speech over music, not music over speech: the track carries the
+            # cut, the words carry the clip.
+            mix = (f"[0:a]atrim=duration={length:.3f},asetpts=N/SR/TB,volume=1.0[v];"
+                   f"[v][m]amix=inputs=2:duration=first:weights=1 0.55[a]")
+        else:
+            mix = "[m]anull[a]"
+        args += [f"[0:v]{chain}[vid];{music};{mix}", "-map", "[vid]", "-map", "[a]"]
+        notes.append(f"track mixed in from {float(at):.2f}s with a {fade:.1f}s fade out")
     else:
-        args += ["-c:a", "aac", "-b:a", "128k", "-ar", "48000"]
+        args += [chain]
+
+    args += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+             "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+    if silent:
+        args += ["-an"]
+        notes.append("ships silent: the sound is added on the platform"
+                     + (", and the cut is on the bar so it will land"
+                        if grid else ""))
+    else:
+        args += ["-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
     args += [out]
     run(args, TIMEOUT_RENDER, "ffmpeg")
-    return {"out": out, "duration_s": round(length, 2), "notes": notes}
+    return {"out": out, "duration_s": round(length, 2), "notes": notes,
+            "grid": grid}

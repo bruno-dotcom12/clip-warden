@@ -490,7 +490,10 @@ def cmd_cut(args):
     rules = load_campaign(args.campaign)
     try:
         result = _media().cut(args.source, args.out, rules, args.start, args.end,
-                              caption_srt=args.subtitles, hook=args.hook)
+                              caption_srt=args.subtitles, hook=args.hook,
+                              track=args.track, track_start=args.track_start,
+                              sound=args.sound or P.effective(P.load(state_dir()),
+                                                              rules)[0]["sound"])
     except RuntimeError as exc:
         die(str(exc), code=1)
     for note in result["notes"]:
@@ -516,6 +519,16 @@ def cmd_discover(args):
         print(text)
     for name, url, why in failed:
         print(f"could not read {name} ({url}): {why}", file=sys.stderr)
+    return 0
+
+
+def cmd_beat(args):
+    """Tempo, grid and drop of one track, so a cut can land on a bar."""
+    import warden_beat
+    try:
+        print(json.dumps(warden_beat.analyse(args.track), indent=2, ensure_ascii=False))
+    except Exception as exc:
+        die(f"could not find a tempo in {os.path.basename(args.track)}: {exc}", code=1)
     return 0
 
 
@@ -620,7 +633,16 @@ def main(argv=None):
     p.add_argument("--out", required=True)
     p.add_argument("--subtitles")
     p.add_argument("--hook")
+    p.add_argument("--track", help="audio file to cut to, for an edit")
+    p.add_argument("--track-start", type=float,
+                   help="where the track enters; its drop by default")
+    p.add_argument("--sound", choices=["platform", "embedded"],
+                   help="overrides the stored preference for this one render")
     p.set_defaults(func=cmd_cut)
+
+    p = sub.add_parser("beat")
+    p.add_argument("track")
+    p.set_defaults(func=cmd_beat)
 
     sub.add_parser("discover").set_defaults(func=cmd_discover)
 

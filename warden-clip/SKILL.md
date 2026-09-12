@@ -44,6 +44,17 @@ it is not a moment yet. Go back to the text.
 adding `--subtitles <srt>` to burn the words and `--hook "<line>"` for the
 overlay at the top.
 
+For an edit, add `--track <audio>`. `warden beat <track>` shows what it found:
+tempo, where the grid starts, how long a bar is, and where the track gains body.
+The cut is then a whole number of bars, and the track enters at its drop rather
+than at its intro.
+
+An edit is cut to the bar **even when the file ships silent**. A campaign that
+requires the sound to be added on the platform still gets an edit, because a
+clip that is a whole number of bars long lands on the beat once the owner picks
+the track in the app. Tell them which second to start the sound at, which is the
+`drop_s` from `warden beat`.
+
 It clamps the length to the campaign's window and tells you when it did. It
 strips the audio when the campaign adds its own sound on the platform. It keeps
 burned text inside the safe area, because the platform's own furniture covers

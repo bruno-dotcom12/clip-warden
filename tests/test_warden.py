@@ -193,3 +193,34 @@ class Preferences(unittest.TestCase):
 
     def test_every_question_has_a_default_and_every_default_a_question(self):
         self.assertEqual(sorted(self.P.DEFAULTS), sorted(self.P.KEYS))
+
+
+class Beat(unittest.TestCase):
+    """A cut lands on a bar, and never outside the campaign's window."""
+
+    def setUp(self):
+        import warden_beat
+        self.B = warden_beat
+
+    def test_snaps_to_the_nearest_whole_bar(self):
+        length, bars = self.B.snap(17.3, 2.7842, 10, 60)
+        self.assertEqual(bars, 6)
+        self.assertAlmostEqual(length, 6 * 2.7842, places=2)
+
+    def test_never_snaps_past_the_campaign_maximum(self):
+        length, bars = self.B.snap(29.5, 2.7842, 10, 30)
+        self.assertLessEqual(length, 30)
+        self.assertEqual(bars, 10)
+
+    def test_never_snaps_under_the_campaign_minimum(self):
+        length, bars = self.B.snap(9.0, 2.7842, 20, 60)
+        self.assertGreaterEqual(length, 20)
+
+    def test_says_so_when_no_bar_count_fits(self):
+        length, bars = self.B.snap(10, 9.0, 10, 12)     # a bar is longer than the window
+        self.assertIsNone(length)
+
+    def test_a_missing_grid_leaves_the_length_alone(self):
+        length, bars = self.B.snap(17.3, 0, 10, 60)
+        self.assertEqual(length, 17.3)
+        self.assertIsNone(bars)
