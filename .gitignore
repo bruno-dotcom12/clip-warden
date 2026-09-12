@@ -8,3 +8,6 @@ plow-credentials
 # copy at build, pinned by sha in vendor/client.pin, so a loose copy here would
 # only drift from the one that actually runs.
 agent_index_client.py
+
+# Build output, so a failed build can be read from here without being published.
+build.log
