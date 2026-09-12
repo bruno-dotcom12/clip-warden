@@ -31,8 +31,9 @@ hides its blind spots is how somebody learns a rule from a rejection notice.
 
 - Invent a limit the brief did not state. An unstated field is reported as
   unchecked, never filled with what is usual for the platform.
-- Take footage from anywhere but the links the brief publishes. If the campaign
-  published no archive, it stops and asks.
+- Take footage from anywhere but the links the brief publishes, and those have
+  to be http or https: a brief is a stranger's text, and anything else in it is
+  an instruction rather than a link.
 - Post, schedule, or touch your social accounts. There is no login in this agent.
 
 ## Install
@@ -44,8 +45,11 @@ docker compose up --build -d
 ```
 
 Then text the agent a campaign link. Nothing else to configure: no API keys, no
-OAuth, no accounts. The first build is long because the transcription model is
-baked in rather than downloaded during your first request.
+OAuth, no accounts.
+
+The transcription models are not in the image. A supervised service pulls them
+in the background on first boot, while you are reading the agent's first reply,
+and they stay in the agent's volume. `warden status` says whether they arrived.
 
 ## The commands under it
 
@@ -55,7 +59,7 @@ it rather than from the model's reading.
 | | |
 | --- | --- |
 | `warden schema` | the rule set a campaign fills |
-| `warden campaign save --file -` | store one, refusing a malformed shape |
+| `warden campaign save --json '<json>'` | store one, verified by reading it back |
 | `warden fetch <url>` | a brief as readable text |
 | `warden archive --campaign <id>` | pull the authorised footage, and only that |
 | `warden transcribe <file>` | published subtitles when they exist, whisper when they do not |

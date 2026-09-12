@@ -53,8 +53,35 @@ def state_dir():
     return path
 
 
+def safe_id(cid):
+    """A campaign id is one flat name, and this is checked on the way in AND on
+    the way out. Validating it only at save time was worth nothing: every read
+    takes the id straight from a turn, and `../../something` walked out of the
+    state directory and read a file that was never ours."""
+    cid = str(cid or "")
+    if not cid or not all(c.isalnum() or c in "-_" for c in cid):
+        die(f"{cid!r} is not a campaign id: letters, digits, - and _ only")
+    return cid
+
+
 def campaign_path(cid):
-    return os.path.join(state_dir(), "campaigns", f"{cid}.json")
+    return os.path.join(state_dir(), "campaigns", f"{safe_id(cid)}.json")
+
+
+def safe_out(path, what="output"):
+    """Where this agent is allowed to write.
+
+    Anything a turn can name, a prompt injection can name. ffmpeg runs with -y,
+    so an unchecked path is an overwrite of any file the agent can reach. Output
+    belongs under the agent's own state, or in scratch.
+    """
+    resolved = os.path.realpath(os.path.expanduser(path))
+    allowed = [os.path.realpath(state_dir()), os.path.realpath("/tmp")]
+    for root in allowed:
+        if resolved == root or resolved.startswith(root + os.sep):
+            return resolved
+    die(f"refusing to write the {what} outside this agent's own directories: "
+        f"{resolved}. Write it under {allowed[0]} or /tmp.")
 
 
 def load_campaign(cid):
@@ -100,6 +127,8 @@ def probe(path):
     """
     if not shutil.which("ffprobe"):
         die("ffprobe is not on PATH, so no clip can be measured")
+    if not os.path.isfile(path):
+        die(f"there is no file at {path} to measure", code=1)
     def run(args):
         return subprocess.run(["ffprobe", "-v", "error", *args, path],
                               capture_output=True, text=True).stdout.strip()
@@ -166,16 +195,20 @@ def check(rules, media, caption, ledger):
     # Duration, the single most common reason a submission is thrown out.
     dur = media.get("duration_s")
     lo, hi = R.get(rules, "video.duration_min_s"), R.get(rules, "video.duration_max_s")
+    duration_rejected = False
     if dur is None:
         reject("the file has no readable duration")
+        duration_rejected = True
     else:
         if lo is not None and dur < lo:
             reject(f"{dur:.1f}s is under the {lo}s minimum")
+            duration_rejected = True
         if hi is not None and dur > hi:
             reject(f"{dur:.1f}s is over the {hi}s maximum")
+            duration_rejected = True
         if (lo is None) and (hi is None):
             warn(f"{dur:.1f}s, and the brief sets no duration limit this tool knows")
-        elif not any(level == REPROVA and "s is " in msg for level, msg in out):
+        elif not duration_rejected:
             ok(f"duration {dur:.1f}s")
 
     # Audio. Some campaigns require it; the ones that add the official track on
@@ -326,9 +359,10 @@ def cmd_campaign(args):
         print("\n".join(names) if names else "no campaigns stored yet")
         return 0
     if args.action == "show":
-        if not args.id:
-            die("show needs --id")
-        print(json.dumps(load_campaign(args.id), indent=2, ensure_ascii=False))
+        cid = args.id or args.which
+        if not cid:
+            die("show needs the campaign id, as `campaign show <id>`")
+        print(json.dumps(load_campaign(cid), indent=2, ensure_ascii=False))
         return 0
     if args.action == "save":
         # --json first, because a model driving this through a shell cannot
@@ -478,11 +512,12 @@ def cmd_fetch(args):
 
 def cmd_archive(args):
     rules = load_campaign(args.campaign)
-    out = args.out or os.path.join(state_dir(), "footage", args.campaign)
+    out = safe_out(args.out or os.path.join(state_dir(), "footage", safe_id(args.campaign)),
+                   "footage directory")
     try:
         got, failed = _media().archive(rules, out, limit=args.limit)
-    except RuntimeError as exc:
-        die(str(exc), code=1)
+    except Exception as exc:
+        die(f"{type(exc).__name__}: {exc}", code=1)
     for path in got:
         print(path)
     for url, why in failed:
@@ -493,11 +528,12 @@ def cmd_archive(args):
 
 
 def cmd_transcribe(args):
+    target = safe_out(args.out or os.path.splitext(args.file)[0] + ".transcript.json",
+                      "transcript")
     try:
         result = _media().transcribe(args.file, model_size=args.model)
-    except RuntimeError as exc:
-        die(str(exc), code=1)
-    target = args.out or os.path.splitext(args.file)[0] + ".transcript.json"
+    except Exception as exc:
+        die(f"{type(exc).__name__}: {exc}", code=1)
     with open(target, "w", encoding="utf-8") as fh:
         json.dump(result, fh, ensure_ascii=False, indent=1)
     print(f"{target}  ({result['source']}, {len(result['segments'])} segments)")
@@ -505,8 +541,13 @@ def cmd_transcribe(args):
 
 
 def cmd_digest(args):
-    with open(args.transcript, encoding="utf-8") as fh:
-        data = json.load(fh)
+    try:
+        with open(args.transcript, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception as exc:
+        die(f"could not read {args.transcript}: {type(exc).__name__}", code=1)
+    if not isinstance(data, dict) or not isinstance(data.get("segments"), list):
+        die(f"{args.transcript} is not a transcript this tool wrote", code=1)
     window = None
     if args.window:
         a, b = args.window.split("-")
@@ -518,13 +559,14 @@ def cmd_digest(args):
 def cmd_cut(args):
     rules = load_campaign(args.campaign)
     try:
-        result = _media().cut(args.source, args.out, rules, args.start, args.end,
+        result = _media().cut(args.source, safe_out(args.out, "clip"), rules,
+                              args.start, args.end,
                               caption_srt=args.subtitles, hook=args.hook,
                               track=args.track, track_start=args.track_start,
                               sound=args.sound or P.effective(P.load(state_dir()),
                                                               rules)[0]["sound"])
-    except RuntimeError as exc:
-        die(str(exc), code=1)
+    except Exception as exc:
+        die(f"{type(exc).__name__}: {exc}", code=1)
     for note in result["notes"]:
         print(f"  note: {note}", file=sys.stderr)
     media = probe(result["out"])
@@ -628,6 +670,7 @@ def main(argv=None):
 
     p = sub.add_parser("campaign")
     p.add_argument("action", choices=["save", "list", "show"])
+    p.add_argument("which", nargs="?", help="the campaign id, for show")
     p.add_argument("--id")
     p.add_argument("--file", help="path, or - for stdin")
     p.add_argument("--json", help="the rule set inline, instead of a file or stdin")

