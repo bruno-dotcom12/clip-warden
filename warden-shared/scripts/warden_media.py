@@ -437,7 +437,7 @@ def _ass_stamp(t):
     return f"{h:d}:{m:02d}:{s:02d}.{cs:02d}"
 
 
-def to_ass(segments, width, height, safe=None):
+def to_ass(segments, width, height, safe=None, offset=0.0, length=None):
     """The caption as an ASS file, with the style baked into the file itself.
 
     Not force_style on the subtitles filter: that option takes comma-separated
@@ -446,8 +446,15 @@ def to_ass(segments, width, height, safe=None):
     or renders NOTHING at all -- which is why a burned caption never actually
     appeared. An ASS style line carries its own commas inside the file, where the
     filtergraph never sees them, so libass reads size, outline, alignment and the
-    safe-area margins with nothing to escape. The words still come from the
-    transcript; only where they sit is decided here.
+    safe-area margins with nothing to escape.
+
+    `offset` and `length` place the words on the CLIP's timeline, not the source's.
+    A clip is cut with `-ss` seeking the source, so the render starts at 0 while
+    the transcript's timestamps are still the source's -- burn them unshifted and
+    every line shows at the wrong second, two at once, over the wrong shot. So each
+    cue is moved back by `offset` (the cut's start), kept only if it overlaps the
+    window, and clamped to `[0, length]`. The words come from the transcript; when
+    they show, and that they stay on screen, is decided here.
     """
     safe = safe or {}
     x0 = int(safe.get("x0", 86))
@@ -462,7 +469,9 @@ def to_ass(segments, width, height, safe=None):
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
         f"PlayResX: {width}\nPlayResY: {height}\n"
-        "WrapStyle: 2\nScaledBorderAndShadow: yes\n\n"
+        # WrapStyle 0: wrap long lines inside the margins. WrapStyle 2 (no wrap)
+        # let a real transcript line run off the right of the frame.
+        "WrapStyle: 0\nScaledBorderAndShadow: yes\n\n"
         "[V4+ Styles]\n"
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, "
@@ -474,6 +483,7 @@ def to_ass(segments, width, height, safe=None):
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
         "Effect, Text\n")
+    offset = float(offset or 0.0)
     rows = []
     for seg in segments or []:
         text = (seg.get("text") or "").strip()
@@ -487,6 +497,15 @@ def to_ass(segments, width, height, safe=None):
         except (TypeError, ValueError):
             continue
         if not (end > start >= 0):
+            continue
+        start -= offset
+        end -= offset
+        if length is not None:
+            if end <= 0 or start >= float(length):     # outside the clip window
+                continue
+            end = min(end, float(length))
+        start = max(0.0, start)
+        if end <= start:
             continue
         # A newline in ASS is \N; a lone brace opens an override block. Neither
         # belongs in a transcript line, so both are neutralised.
@@ -680,7 +699,11 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         #  - safety. The path sits in the filter string, and a quote or colon in
         #    it leaves the filter and could name another file. The name is ours
         #    and hashed, so it carries neither.
-        ass_text = to_ass(_read_srt(caption_srt), width, height, safe)
+        # offset=start, length=length: the srt is in source time, the render
+        # starts at 0. Shift the cues onto the clip's own timeline and keep only
+        # the ones inside it, or the words land on the wrong shot.
+        ass_text = to_ass(_read_srt(caption_srt), width, height, safe,
+                          offset=start, length=length)
         if ass_text.strip():
             ass_path = os.path.join(os.path.dirname(os.path.abspath(out)) or ".",
                                     "captions-%s.ass" % hashlib.sha256(

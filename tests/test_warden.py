@@ -601,6 +601,31 @@ class Subtitles(unittest.TestCase):
     def test_an_all_empty_transcript_writes_no_ass(self):
         self.assertEqual(self.M.to_ass([], 1080, 1920), "")
 
+    def test_captions_are_shifted_onto_the_clip_timeline(self):
+        """The clip is cut with -ss, so it starts at 0 while the transcript is
+        still in source time. A cue at source 19-21s on a clip cut from 20s must
+        land at clip 0-1s, not 19-21s -- burn it unshifted and it shows over the
+        wrong shot, two at once. Cues outside the window are dropped."""
+        segs = [{"start": 19.0, "end": 21.0, "text": "no comeco"},
+                {"start": 39.0, "end": 42.0, "text": "no fim"},
+                {"start": 5.0, "end": 8.0, "text": "antes do corte"}]
+        ass = self.M.to_ass(segs, 1080, 1920, offset=20.0, length=20.0)
+        self.assertIn("no comeco", ass)                       # 19-21 -> clip 0-1
+        self.assertIn("Dialogue: 0,0:00:00.00,0:00:01.00", ass)
+        self.assertIn("no fim", ass)                          # 39-42 -> clip 19-20 (clamped)
+        self.assertNotIn("antes do corte", ass)               # source 5-8s is before the window
+
+    def test_a_cue_fully_before_the_window_is_dropped(self):
+        ass = self.M.to_ass([{"start": 2.0, "end": 4.0, "text": "fora"}],
+                            1080, 1920, offset=20.0, length=20.0)
+        self.assertEqual(ass, "")
+
+    def test_wrap_is_enabled_so_a_long_line_stays_in_frame(self):
+        ass = self.M.to_ass([{"start": 0.0, "end": 2.0, "text": "linha"}],
+                            1080, 1920)
+        self.assertIn("WrapStyle: 0", ass)
+        self.assertNotIn("WrapStyle: 2", ass)
+
 
 class DeliveryLine(unittest.TestCase):
     """The MEDIA: line is the only thing that leaves this container, so it must
