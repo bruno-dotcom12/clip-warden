@@ -815,6 +815,49 @@ class Framing(unittest.TestCase):
             self.M.FACE_MODEL = saved
 
 
+class Signals(unittest.TestCase):
+    """Evidence for viral moments, never a verdict. The tool marks where the
+    language spikes; the model, which can read the clip, decides what to cut."""
+
+    def setUp(self):
+        import warden_media
+        self.M = warden_media
+
+    def test_a_question_is_a_signal(self):
+        self.assertIn("question", self.M.text_signals("é sério isso?"))
+        self.assertEqual(self.M.text_signals("uma frase comum"), [])
+
+    def test_conflict_words_in_both_languages(self):
+        self.assertIn("conflict", self.M.text_signals("isso é mentira"))
+        self.assertIn("conflict", self.M.text_signals("that is a lie"))
+
+    def test_a_superlative_is_a_signal(self):
+        self.assertIn("superlative", self.M.text_signals("o melhor de todos"))
+        self.assertIn("superlative", self.M.text_signals("the best ever"))
+
+    def test_laughter_is_a_signal(self):
+        self.assertIn("laugh", self.M.text_signals("kkkkk não acredito"))
+        self.assertIn("laugh", self.M.text_signals("lmao that's wild"))
+
+    def test_a_substring_does_not_false_match(self):
+        # 'contra' is a conflict word; 'contrato' must not trip it.
+        self.assertNotIn("conflict", self.M.text_signals("assinamos o contrato"))
+
+    def test_analyze_keeps_only_segments_with_a_signal(self):
+        segs = [{"start": 1.0, "end": 2.0, "text": "bom dia a todos"},
+                {"start": 3.0, "end": 4.0, "text": "isso é um absurdo!"},
+                {"start": 5.0, "end": 6.0, "text": "tudo bem por aqui"}]
+        rows = self.M.analyze_signals(segs)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["text"], "isso é um absurdo!")
+        self.assertIn("superlative", rows[0]["signals"])
+
+    def test_analyze_without_audio_adds_no_loud_tag(self):
+        segs = [{"start": 0.0, "end": 1.0, "text": "o pior de todos?"}]
+        rows = self.M.analyze_signals(segs)          # no source
+        self.assertNotIn("loud", rows[0]["signals"])
+
+
 class Hostile(unittest.TestCase):
     """Everything here arrives from a stranger: the brief is pasted, the archive
     links are read off a web page, the file names come from a remote server."""

@@ -50,6 +50,7 @@ you did not get.
 | `warden prefs ask --group search\|edit` / `set` / `show` | what this owner wants |
 | `warden archive --campaign <id>` | pull the authorised footage, and only that |
 | `warden transcribe <file>` / `digest <transcript>` | words, then words you can afford |
+| `warden signals <transcript> --source <file>` | where the words and the sound spike: hooks, conflict, reactions |
 | `warden beat <track>` | tempo, grid and drop |
 | `warden cut <src> --campaign <id> --start --end --out` | render inside the rules |
 | `warden check <clip> --campaign <id> --caption -` | the gate; exit 1 means do not post |

@@ -553,6 +553,146 @@ def to_srt(segments):
         for i, (a, b, t) in enumerate(rows, 1))
 
 
+# -------------------------------------------------------------- viral signals
+#
+# Where the language of a clip tends to spike, as hints -- never as a verdict.
+# The tool cannot know what is funny, what is damning, what will travel. It can
+# see where a question is asked, where an absolute is claimed, where a fight is
+# named, where the room got loud. Those are evidence a model reads on top of the
+# words; the judgement of what to cut stays with the thing that can read the
+# clip, because a program scoring "viral" without watching is the ranking this
+# agent refuses to be.
+_SIGNAL_WORDS = {
+    "superlative": {
+        "pt": ["melhor", "pior", "nunca", "sempre", "jamais", "ninguém",
+               "ninguem", "todo mundo", "maior", "incrível", "incrivel",
+               "absurdo", "chocante", "inacreditável", "inacreditavel",
+               "impossível", "impossivel", "recorde", "o mais", "a mais"],
+        "en": ["best", "worst", "never", "always", "nobody", "everyone",
+               "biggest", "insane", "crazy", "shocking", "unbelievable",
+               "impossible", "record", "the most"],
+    },
+    "conflict": {
+        "pt": ["mentira", "errado", "errada", "discordo", "polêmica", "polemica",
+               "briga", "brigar", "contra", "ódio", "odio", "cancelado",
+               "cancelada", "processo", "revoltante", "expôs", "expos",
+               "acusou", "acusa"],
+        "en": ["lie", "wrong", "disagree", "fight", "versus", "hate", "cancel",
+               "cancelled", "controversy", "exposed", "sue", "beef", "accused"],
+    },
+    "reaction": {
+        "pt": ["meu deus", "caramba", "nossa", "pelo amor", "que isso",
+               "não acredito", "nao acredito", "surreal", "chocado", "chocada"],
+        "en": ["oh my god", "wtf", "holy", "no way", "i can't", "i cant",
+               "unreal", "speechless"],
+    },
+}
+_LAUGH_RE = re.compile(r"(?:k{3,}|(?:ha){2,}|(?:he){2,}|rs{2,}|lmao|lol|haha)",
+                       re.IGNORECASE)
+
+
+def text_signals(text):
+    """The signal tags a line of transcript carries, as a sorted list.
+
+    A question, a laugh, an absolute claim, a named conflict, a reaction. Cheap
+    keyword and punctuation matching in Portuguese and English -- a hint that a
+    moment might carry, not proof that it does.
+    """
+    raw = str(text or "")
+    # Punctuation stripped before matching, so "absurdo!" and "lie." still match
+    # the word lists. The question mark and laughter are read off the raw text
+    # first, before it is flattened.
+    flat = re.sub(r"[^\w\s]", " ", raw.lower(), flags=re.UNICODE)
+    padded = " " + " ".join(flat.split()) + " "
+    tags = set()
+    if "?" in raw:
+        tags.add("question")
+    if _LAUGH_RE.search(raw):
+        tags.add("laugh")
+    for tag, langs in _SIGNAL_WORDS.items():
+        for words in langs.values():
+            if any((" " + w + " ") in padded for w in words):
+                tags.add(tag)
+                break
+    return sorted(tags)
+
+
+def _loudness_envelope(source):
+    """(second, momentary loudness) across the source, in one ffmpeg pass.
+
+    ebur128 prints a momentary reading every tenth of a second; a spike in it is
+    a laugh, a shout, a crowd -- the sound of a reaction, which is the strongest
+    signal a live or a podcast gives that a moment landed. No audio, or no
+    ffmpeg, means an empty envelope and text signals carry alone.
+    """
+    try:
+        done = subprocess.run(
+            ["ffmpeg", "-nostats", "-hide_banner", "-i", source, "-map", "0:a:0",
+             "-af", "ebur128=metadata=1,ametadata=print:key=lavfi.r128.M",
+             "-f", "null", "-"],
+            capture_output=True, text=True, timeout=TIMEOUT_RENDER)
+    except Exception:
+        return []
+    # ametadata prints two lines per reading: `... pts_time:X` then a line
+    # `lavfi.r128.M=Y`. Pair them.
+    env, cur_t = [], None
+    for line in done.stderr.splitlines():
+        mt = re.search(r"pts_time:([\d.]+)", line)
+        if mt:
+            cur_t = float(mt.group(1))
+            continue
+        mm = re.search(r"lavfi\.r128\.M=(-?[\d.]+)", line)
+        if mm and cur_t is not None:
+            env.append((cur_t, float(mm.group(1))))
+            cur_t = None
+    return env
+
+
+def loud_segment_indexes(segments, source, top_fraction=0.25):
+    """Which segments sit in the loudest quarter of the source.
+
+    The reaction peaks: the model reads them as 'the room got loud here'. A
+    quarter is a threshold, not a truth -- it says where the sound is, and the
+    model says whether that is a moment.
+    """
+    env = _loudness_envelope(source)
+    if not env or not segments:
+        return set()
+    peaks = []
+    for seg in segments:
+        s, e = seg.get("start"), seg.get("end")
+        if s is None or e is None:
+            peaks.append(None)
+            continue
+        vals = [lufs for t, lufs in env if s <= t <= e and lufs > -70]
+        peaks.append(max(vals) if vals else None)
+    have = sorted(p for p in peaks if p is not None)
+    if not have:
+        return set()
+    thr = have[min(len(have) - 1, int(len(have) * (1 - top_fraction)))]
+    return {i for i, p in enumerate(peaks) if p is not None and p >= thr}
+
+
+def analyze_signals(segments, source=None):
+    """The moments worth a second look, in time order, each with why.
+
+    A segment surfaces when its words carry a signal or the sound spikes on it.
+    Everything else is dropped, because a list that keeps every line is the
+    transcript again, not a shortlist. Nothing here is ranked: it is time order
+    with evidence attached, for the model to cluster into clips and judge.
+    """
+    loud = loud_segment_indexes(segments, source) if source else set()
+    out = []
+    for i, seg in enumerate(segments or []):
+        tags = text_signals(seg.get("text", ""))
+        if i in loud:
+            tags = sorted(set(tags) | {"loud"})
+        if tags:
+            out.append({"start": seg.get("start"), "end": seg.get("end"),
+                        "text": (seg.get("text") or "").strip(), "signals": tags})
+    return out
+
+
 def digest(segments, window=None, seconds_per_line=12):
     """The transcript a model can afford to read.
 

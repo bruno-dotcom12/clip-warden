@@ -96,6 +96,7 @@ it rather than from the model's reading.
 | `warden archive --campaign <id>` | pull the authorised footage, and only that |
 | `warden transcribe <file>` | published subtitles when they exist, whisper when they do not |
 | `warden digest <transcript>` | the transcript a model can afford to read |
+| `warden signals <transcript>` | the moments the words and sound point at, for viral cuts |
 | `warden beat <track>` | tempo, grid and drop, so a cut can land on a bar |
 | `warden cut <src> --campaign <id> --start --end --out` | render inside the rules, then check the render |
 | `warden check <clip> --campaign <id> --caption -` | the gate: exit 1 means do not post |

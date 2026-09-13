@@ -594,6 +594,38 @@ def cmd_digest(args):
     return 0
 
 
+def cmd_signals(args):
+    """The moments the words and the sound point at, for choosing viral cuts.
+
+    Evidence, not a verdict: where a question is asked, an absolute claimed, a
+    fight named, the room loud. The model reads these on top of the digest and
+    decides which become clips -- the tool does not rank them, because it cannot
+    watch.
+    """
+    try:
+        with open(args.transcript, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception as exc:
+        die(f"could not read {args.transcript}: {type(exc).__name__}", code=1)
+    if not isinstance(data, dict) or not isinstance(data.get("segments"), list):
+        die(f"{args.transcript} is not a transcript this tool wrote", code=1)
+    try:
+        rows = _media().analyze_signals(data["segments"], source=args.source)
+    except Exception as exc:
+        die(f"{type(exc).__name__}: {exc}", code=1)
+    if not rows:
+        print("no strong signals stood out. Read the digest and choose on the "
+              "words; a quiet transcript is not a bad one.", file=sys.stderr)
+        return 0
+    print(f"# {len(rows)} moments carry a signal, in time order. Evidence, not a "
+          "ranking: cluster them into clips and judge on the words.")
+    for r in rows:
+        start = r["start"] or 0
+        stamp = "%d:%02d" % (int(start // 60), int(start % 60))
+        print(f"[{stamp}] {','.join(r['signals'])}: {r['text']}")
+    return 0
+
+
 def clip_out(path):
     """A bare filename becomes a deliverable path; a full path is left alone.
 
@@ -783,6 +815,12 @@ def main(argv=None):
     p.add_argument("transcript")
     p.add_argument("--window", help="seconds, as 120-240")
     p.set_defaults(func=cmd_digest)
+
+    p = sub.add_parser("signals")
+    p.add_argument("transcript")
+    p.add_argument("--source", help="the video/audio file, to add reaction "
+                   "(loudness) peaks to the text signals")
+    p.set_defaults(func=cmd_signals)
 
     p = sub.add_parser("cut")
     p.add_argument("source")

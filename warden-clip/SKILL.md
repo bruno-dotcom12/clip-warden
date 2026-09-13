@@ -41,6 +41,23 @@ a version you can afford to read.
 Never read the raw transcript JSON. Word-level timing is for the renderer, and
 on a long source the raw artefact does not fit in a window worth paying for.
 
+## Finding the moments that travel
+
+`warden signals <transcript> --source <file>` is where you start on a long
+source -- a podcast, a live, an interview. It reads the words and the sound and
+returns, in time order, only the moments that carry a signal: a question, an
+absolute claim, a named fight, a burst of laughter, a spike in loudness where
+the room reacted. It does not rank them and it cannot: what is funny or damning
+is yours to see, and a tool that scored "viral" without watching would be
+guessing. What it gives you is where to look.
+
+Read those against the digest and build clips from the clusters, not the single
+lines. A clip that travels has a shape: a **hook** in its first seconds -- a
+question, a claim, the loud line -- then a **middle** that pays it off, then a
+**close** that lands. The signals mark the spikes; you decide which spike opens
+a clip and where it ends. A polemic is a hook followed by the reaction to it;
+a laugh is a close; a question with no answer in the window is not a clip yet.
+
 For each candidate window, be able to say three things before it becomes a clip:
 what the hook is, what sustains the middle, and what closes it. If you cannot,
 it is not a moment yet. Go back to the text.
