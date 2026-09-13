@@ -14,7 +14,8 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "warden-shared", "scripts"))
 
-os.environ["WARDEN_DIR"] = tempfile.mkdtemp(prefix="warden-tests-")
+WARDEN_DIR = tempfile.mkdtemp(prefix="warden-tests-")
+os.environ["WARDEN_DIR"] = WARDEN_DIR
 
 import warden
 import warden_rules as R
@@ -295,6 +296,45 @@ class StateLocation(unittest.TestCase):
         text = out.getvalue()
         self.assertIn("WARDEN_DIR in the environment", text)
         self.assertIn("writable:", text)
+
+
+class Delivery(unittest.TestCase):
+    """A clip nobody can open is the same as no clip.
+
+    The runtime attaches a file only from a short list of directories, and the
+    one this agent's state lives in is not on it. These pin the two halves of
+    that: where a render lands, and the line that hands it over.
+    """
+
+    def test_a_bare_filename_lands_in_the_deliverable_directory(self):
+        got = warden.clip_out("clip-01.mp4")
+        self.assertEqual(os.path.dirname(got),
+                         os.path.realpath(warden.clips_dir()))
+
+    def test_the_deliverable_directory_is_a_place_this_agent_may_write(self):
+        inside = os.path.join(warden.clips_dir(), "clip.mp4")
+        self.assertEqual(warden.safe_out(inside, "clip"), os.path.realpath(inside))
+
+    def test_a_full_path_outside_is_still_refused(self):
+        with self.assertRaises(SystemExit):
+            warden.clip_out("/etc/anything.mp4")
+
+    def test_in_the_image_the_directory_is_the_one_the_runtime_allows(self):
+        """/var/lib is denied by the runtime's media validator and
+        /var/lib/hermes/cache/videos is allowlisted back in ahead of it. The
+        path is not ours to choose, so it is pinned here rather than described
+        in a comment somebody can edit."""
+        seen = []
+        real_isdir, real_makedirs = os.path.isdir, os.makedirs
+        os.environ.pop("WARDEN_DIR", None)
+        try:
+            os.path.isdir = lambda p: True if p == "/var/lib/hermes" else real_isdir(p)
+            os.makedirs = lambda p, **kw: seen.append(p)
+            self.assertEqual(warden.clips_dir(), "/var/lib/hermes/cache/videos")
+        finally:
+            os.path.isdir, os.makedirs = real_isdir, real_makedirs
+            os.environ["WARDEN_DIR"] = WARDEN_DIR
+        self.assertEqual(seen, ["/var/lib/hermes/cache/videos"])
 
 
 class Hostile(unittest.TestCase):

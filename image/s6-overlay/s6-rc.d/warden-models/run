@@ -15,6 +15,13 @@ export PATH
 install -d -o 10000 -g 10000 -m 0700 /var/lib/hermes/warden /var/lib/hermes/models
 chown -R 10000:10000 /var/lib/hermes/warden /var/lib/hermes/models 2>/dev/null || true
 
+# The delivery directory, same repair for the same reason. It is the only place
+# the runtime will attach a clip from, so an operator's `docker compose exec`
+# creating it as root is the difference between a clip that arrives and a clip
+# the owner is told about and never receives.
+install -d -o 10000 -g 10000 -m 0755 /var/lib/hermes/cache /var/lib/hermes/cache/videos
+chown 10000:10000 /var/lib/hermes/cache /var/lib/hermes/cache/videos 2>/dev/null || true
+
 /command/s6-setuidgid hermes \
   env HOME=/var/lib/hermes HF_HOME=/var/lib/hermes/models \
   /usr/local/bin/warden-models || true

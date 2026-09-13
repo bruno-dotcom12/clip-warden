@@ -102,6 +102,15 @@ COPY image/s6-overlay/ /etc/s6-overlay/
 
 # State and working room: agent-owned, 0700, empty until a campaign is stored.
 # Footage lands under here, so the host's disk is where a long source goes.
+#
+# cache/videos is not more state: it is the one directory the runtime will
+# attach a file from. Its media validator denies /var/lib outright and
+# allowlists that path back in ahead of the denial, so a finished clip has to
+# land there or it cannot be handed over at all. Created here, agent-owned, for
+# the same reason as the rest -- whatever creates it first in a named volume
+# owns it forever, and root creating it locks the agent out of its own delivery.
 RUN install -d -o 10000 -g 10000 -m 0700 /var/lib/hermes/warden \
  && install -d -o 10000 -g 10000 -m 0700 /var/lib/hermes/warden/footage \
- && install -d -o 10000 -g 10000 -m 0700 /var/lib/hermes/models
+ && install -d -o 10000 -g 10000 -m 0700 /var/lib/hermes/models \
+ && install -d -o 10000 -g 10000 -m 0755 /var/lib/hermes/cache \
+ && install -d -o 10000 -g 10000 -m 0755 /var/lib/hermes/cache/videos

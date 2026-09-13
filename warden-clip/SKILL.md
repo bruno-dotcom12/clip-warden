@@ -65,7 +65,20 @@ not clear the campaign. Do not send a clip whose cut exited non-zero.
 
 ## 5. Send
 
-One message per clip: the file, the caption from `warden-package`, and the one
+On a render that clears, `warden cut` prints the path and then the line that
+delivers it:
+
+```
+/var/lib/hermes/cache/videos/clip-01.mp4
+MEDIA:/var/lib/hermes/cache/videos/clip-01.mp4
+```
+
+The second line goes into your reply on a line of its own, copied exactly. That
+is what attaches the file; without it the person gets prose about a clip they
+cannot open. It is stripped from what they read, so it costs nothing to include
+and everything to leave out.
+
+One message per clip: that line, the caption from `warden-package`, and the one
 thing they must do on the platform, which is usually the sound.
 
 Tell them before you start that a source of an hour takes ten to thirty minutes,

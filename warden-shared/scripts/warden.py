@@ -53,6 +53,28 @@ def state_dir():
     return path
 
 
+def clips_dir():
+    """Where a finished clip has to sit for the chat to accept it.
+
+    The runtime will not attach a file from just anywhere. Its media validator
+    denies the whole of /var/lib -- which is where this agent's state lives --
+    and then allowlists a short list of cache directories back in, ahead of that
+    denial. /var/lib/hermes/cache/videos is on that list; /var/lib/hermes/warden
+    is not, and a clip written there is refused with a warning in a log the owner
+    never reads. So the render lands where delivery is possible, and the rest of
+    the state stays where it was.
+
+    Outside the image there is no runtime to satisfy, so this follows the state
+    directory and the tests get a writable path rather than a permission error.
+    """
+    if os.path.isdir("/var/lib/hermes") and not os.environ.get("WARDEN_DIR"):
+        path = "/var/lib/hermes/cache/videos"
+    else:
+        path = os.path.join(state_dir(), "clips")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def safe_id(cid):
     """A campaign id is one flat name, and this is checked on the way in AND on
     the way out. Validating it only at save time was worth nothing: every read
@@ -76,7 +98,8 @@ def safe_out(path, what="output"):
     belongs under the agent's own state, or in scratch.
     """
     resolved = os.path.realpath(os.path.expanduser(path))
-    allowed = [os.path.realpath(state_dir()), os.path.realpath("/tmp")]
+    allowed = [os.path.realpath(state_dir()), os.path.realpath(clips_dir()),
+               os.path.realpath("/tmp")]
     for root in allowed:
         if resolved == root or resolved.startswith(root + os.sep):
             return resolved
@@ -556,10 +579,24 @@ def cmd_digest(args):
     return 0
 
 
+def clip_out(path):
+    """A bare filename becomes a deliverable path; a full path is left alone.
+
+    The skills document `--out <file>`, and a bare name resolves against whatever
+    the turn's working directory happens to be -- which is not a directory this
+    agent is allowed to write to, so the documented form failed. It now lands in
+    the one directory the chat will attach from.
+    """
+    path = os.path.expanduser(str(path or ""))
+    if not os.path.dirname(path):
+        path = os.path.join(clips_dir(), path)
+    return safe_out(path, "clip")
+
+
 def cmd_cut(args):
     rules = load_campaign(args.campaign)
     try:
-        result = _media().cut(args.source, safe_out(args.out, "clip"), rules,
+        result = _media().cut(args.source, clip_out(args.out), rules,
                               args.start, args.end,
                               caption_srt=args.subtitles, hook=args.hook,
                               track=args.track, track_start=args.track_start,
@@ -578,6 +615,12 @@ def cmd_cut(args):
         for message in blocking:
             print(f"  REJECT {message}", file=sys.stderr)
         return 1
+    # The line that actually hands the file over. Printed by the tool rather
+    # than composed by the model, for the same reason every other number here
+    # comes from the tool: a path typed from memory is a path that does not
+    # exist, and the failure is silent -- the runtime drops an unattachable
+    # MEDIA line and the person is told about a clip that never arrived.
+    print(f"MEDIA:{result['out']}")
     return 0
 
 
