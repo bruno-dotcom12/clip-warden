@@ -15,5 +15,43 @@ services:
       - agent-home:/var/lib/hermes
     stop_grace_period: 35s
 
+    # Measured, not guessed. On this machine, sampling `docker stats` once a
+    # second through the heaviest thing this agent does -- a transcription and a
+    # render at the same time -- the container peaked at 1815 MiB and 99 tasks,
+    # against 277 MiB and 30 tasks at rest.
+    #
+    # This is not a tuning preference. The gateway's own ledger recorded a life
+    # that "exited UNCLEANLY (no exit path ran -- SIGKILL / OOM / VM death)" on
+    # 2026-09-12 with mem_total_kib=4012336, and an unbounded container on a
+    # 3.8 GiB Docker VM can take the VM down with it rather than dying alone.
+    # A limit turns "the machine froze" into "the agent restarted".
+    #
+    # 3g is 1.7x the measured peak, which is room for a longer source without
+    # room for a runaway. If Docker Desktop is set to less than 4 GiB this is
+    # the number to lower, or raise the VM -- the agent needs about 2 GiB to
+    # transcribe and render at once, and saying so here beats a stranger
+    # discovering it as a kill.
+    mem_limit: 3g
+    mem_reservation: 768m
+
+    # 99 tasks measured at peak; ffmpeg's threads are most of it. 512 is five
+    # times that, which stops a fork bomb without being a number any honest
+    # render can reach.
+    pids_limit: 512
+
+    # DISK IS NOT LIMITED HERE, and that is a finding rather than an omission.
+    # `storage_opt: size` is accepted by this Docker and silently ignored --
+    # with it set to 20G a probe container still reported 223.6G available,
+    # because the containerd/overlayfs snapshotter on this host enforces no
+    # quota. A limit that is quietly ignored is worse than none: it reads as
+    # protection while the footage directory can still fill the host's disk.
+    #
+    # The cap that does hold is in the downloader: warden_media refuses a direct
+    # download over MAX_DIRECT_BYTES. It is per file and it covers only the
+    # direct path, so the two gaps are the total across an archive and the
+    # gdown/yt-dlp paths. Those belong in the downloader, where they can be
+    # enforced, and are tracked in the security pass rather than papered over
+    # with a compose key that does nothing.
+
 volumes:
   agent-home:
