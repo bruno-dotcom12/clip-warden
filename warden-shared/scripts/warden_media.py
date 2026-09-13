@@ -346,6 +346,16 @@ def duration_of(path):
         return None
 
 
+def _dimensions(path):
+    """(width, height) of the first video stream, as integers."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=width,height", "-of", "csv=p=0", path],
+        capture_output=True, text=True).stdout.strip()
+    w, h = out.split(",")[:2]
+    return int(w), int(h)
+
+
 def transcribe(path, model_size=None):
     """Words with timing. A published subtitle beats a transcription.
 
@@ -438,8 +448,34 @@ def _stamp(seconds):
 
 # ---------------------------------------------------------------- rendering
 
+CROP_PRESETS = {"left": 0.25, "center": 0.5, "right": 0.75}
+
+
+def _crop_fraction(crop):
+    """Where the vertical window sits across a wider source, 0.0 to 1.0.
+
+    A landscape source does not fit a 9:16 frame, so a band of it is kept and
+    the rest is thrown away. Centre is the default and it is a guess: it is
+    wrong for a side-by-side, a two-shot, a gameplay with the face in a corner.
+    `left`/`center`/`right`, or a percentage, let the caller say where the
+    subject actually is instead of hoping it is in the middle.
+    """
+    if crop is None or crop == "":
+        return 0.5
+    if crop in CROP_PRESETS:
+        return CROP_PRESETS[crop]
+    try:
+        pct = float(crop)
+    except (TypeError, ValueError):
+        raise RuntimeError(
+            f"crop {crop!r} is not left, center, right or a number from 0 to 100")
+    if not 0 <= pct <= 100:
+        raise RuntimeError("crop as a percentage is 0 (far left) to 100 (far right)")
+    return pct / 100.0
+
+
 def cut(source, out, rules, start, end, caption_srt=None, hook=None,
-        track=None, track_start=None, sound="platform"):
+        track=None, track_start=None, sound="platform", crop=None):
     """One clip, with the campaign's numbers rather than a house style.
 
     Duration is clamped to the campaign's window before a frame is written: a
@@ -485,8 +521,39 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     x0 = int(safe.get("x0", 86)); x1 = int(safe.get("x1", width - 140))
     y1 = int(safe.get("y1", int(height * 0.83)))
 
+    # The horizontal window is chosen, not assumed centre. crop x is an ffmpeg
+    # expression over the scaled frame -- (in_w-out_w) is the slack a landscape
+    # source leaves after scaling -- so the fraction shifts the kept band
+    # without this code needing the scaled dimensions.
+    fx = _crop_fraction(crop)
     chain = (f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-             f"crop={width}:{height},setsar=1,fps=30")
+             f"crop={width}:{height}:(in_w-out_w)*{fx:.4f}:(in_h-out_h)*0.5,"
+             f"setsar=1,fps=30")
+
+    # If a real horizontal crop is happening, say so and say what was kept, so a
+    # blind centre crop through a side-by-side is caught here rather than by the
+    # owner watching half a face. Measured off the source, not guessed.
+    try:
+        sw, sh = _dimensions(source)
+        target_ar = width / height
+        source_ar = sw / sh
+        if source_ar > target_ar * 1.05:          # wider than the target frame
+            # Height binds the scale (increase to cover the taller target), so
+            # the frame widens to sw*height/sh and the kept band is width of that.
+            scaled_w = sw * height / sh
+            kept = width / scaled_w                # fraction of source width kept
+            left_edge = fx * (1 - kept)
+            note_band = (f"{int(left_edge * sw)}–{int((left_edge + kept) * sw)} of "
+                         f"{sw}px")
+            if crop is None:
+                notes.append(
+                    f"framed on the centre by default: keeping x {note_band}. "
+                    "If the subject is not there -- a side-by-side, a two-shot, a "
+                    "corner cam -- re-cut with --crop left|right or a percentage.")
+            else:
+                notes.append(f"crop {crop}: keeping x {note_band}")
+    except Exception:
+        pass                                       # a note is not worth a failed render
     if caption_srt and os.path.exists(caption_srt):
         # Copied to a name of our own before it reaches the filter graph. ffmpeg
         # does not accept a backslash-escaped quote inside a single-quoted

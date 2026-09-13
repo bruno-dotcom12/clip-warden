@@ -601,7 +601,8 @@ def cmd_cut(args):
                               caption_srt=args.subtitles, hook=args.hook,
                               track=args.track, track_start=args.track_start,
                               sound=args.sound or P.effective(P.load(state_dir()),
-                                                              rules)[0]["sound"])
+                                                              rules)[0]["sound"],
+                              crop=args.crop)
     except Exception as exc:
         die(f"{type(exc).__name__}: {exc}", code=1)
     for note in result["notes"]:
@@ -772,6 +773,8 @@ def main(argv=None):
                    help="where the track enters; its drop by default")
     p.add_argument("--sound", choices=["platform", "embedded"],
                    help="overrides the stored preference for this one render")
+    p.add_argument("--crop", help="which side of a wider source to keep: "
+                   "left, center, right, or a percentage; center by default")
     p.set_defaults(func=cmd_cut)
 
     p = sub.add_parser("beat")

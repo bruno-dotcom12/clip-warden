@@ -337,6 +337,31 @@ class Delivery(unittest.TestCase):
         self.assertEqual(seen, ["/var/lib/hermes/cache/videos"])
 
 
+class Framing(unittest.TestCase):
+    """A landscape source cropped to 9:16 keeps a band, and the default centre
+    is a guess. These pin the lever the agent uses when the guess is wrong."""
+
+    def setUp(self):
+        import warden_media
+        self.M = warden_media
+
+    def test_crop_names_map_to_left_centre_right(self):
+        self.assertEqual(self.M._crop_fraction(None), 0.5)
+        self.assertEqual(self.M._crop_fraction("center"), 0.5)
+        self.assertLess(self.M._crop_fraction("left"), 0.5)
+        self.assertGreater(self.M._crop_fraction("right"), 0.5)
+
+    def test_a_percentage_places_the_band(self):
+        self.assertEqual(self.M._crop_fraction("0"), 0.0)
+        self.assertEqual(self.M._crop_fraction("100"), 1.0)
+        self.assertAlmostEqual(self.M._crop_fraction("25"), 0.25)
+
+    def test_a_crop_that_is_not_a_place_is_refused(self):
+        for bad in ("middle", "-5", "150", "left;rm"):
+            with self.assertRaises(RuntimeError):
+                self.M._crop_fraction(bad)
+
+
 class Hostile(unittest.TestCase):
     """Everything here arrives from a stranger: the brief is pasted, the archive
     links are read off a web page, the file names come from a remote server."""

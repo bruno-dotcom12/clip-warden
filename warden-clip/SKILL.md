@@ -51,6 +51,15 @@ it is not a moment yet. Go back to the text.
 adding `--subtitles <srt>` to burn the words and `--hook "<line>"` for the
 overlay at the top.
 
+A landscape source does not fit 9:16, so a vertical band of it is kept and the
+rest is dropped. The band is the centre unless you say otherwise, and the centre
+is a guess that is wrong for a side-by-side, a two-shot, or a gameplay with the
+face in a corner. When the cut keeps a real band, `cut` prints which pixels it
+kept; read that line. If the subject is not in it, re-cut with
+`--crop left`, `--crop right`, or a percentage from 0 (far left) to 100 (far
+right). Look at the first clip before sending a batch cut the same way, because
+a blind centre crop through a comparison video is half a face and a black bar.
+
 For an edit, add `--track <audio>`. `warden beat <track>` shows what it found:
 tempo, where the grid starts, how long a bar is, and where the track gains body.
 The cut is then a whole number of bars, and the track enters at its drop rather
