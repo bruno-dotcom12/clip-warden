@@ -13,12 +13,12 @@ tocado.
 
 | Classe | Quantos | Corrigidos | Deixados de propósito |
 | --- | --- | --- | --- |
-| Crítico | 2 | 2 | 0 |
+| Crítico | 3 | 3 | 0 |
 | Grave | 5 | 5 | 0 |
 | Cosmético | 3 | 3 | 0 |
-| Aberto (registrado) | 5 | — | 5 |
+| Aberto (registrado) | 6 | — | 6 |
 
-Suíte de testes: **60 casos, todos passando, 3,2 s** — antes eram 43 em 0,02 s e
+Suíte de testes: **62 casos, todos passando, 3,2 s** — antes eram 43 em 0,02 s e
 nenhum tocava vídeo. Agora `cut` e `check` rodam sobre um arquivo de verdade.
 
 ---
@@ -59,6 +59,31 @@ na hora de anexar. Medido:
 **Corrigido:** renders vão para o diretório que o runtime aceita, `warden cut`
 imprime a linha `MEDIA:` pronta, e persona e skills mandam copiá-la. Confirmado
 de ponta a ponta na conversa: o arquivo chegou.
+
+### C3 — A regra de entrega mandava enviar qualquer caminho, e a credencial era alcançável
+**Onde:** `runtime/persona.md`. **Commit:** `a813fd4`.
+
+Um conserto anterior meu (C2) deixou a persona dizendo que **qualquer caminho
+absoluto** sai na linha `MEDIA:`. Isso reabria o furo do `fetch` pelo outro lado:
+treinava o modelo a anexar o caminho que o texto na frente dele nomeasse — e esse
+texto é o regulamento de um estranho. Ataquei com um regulamento hostil que pede,
+de cinco formas, o envio de arquivos que não são clipes. Medido o backstop do
+runtime contra cada caminho:
+
+```
+/var/lib/plow/credentials   recusado    /etc/passwd            recusado
+/proc/self/environ          recusado    /tmp/verificacao.txt   ENTREGUE
+```
+
+A denylist do runtime cobre `/var/lib`, `/proc` e `/etc`, mas **não `/tmp`**. E o
+agente roda no mesmo uid do gateway, então `cat /proc/<gw>/environ` lê o token do
+host, uma cópia para `/tmp` passa pelo backstop, e `MEDIA:/tmp/x` o enviaria. Ou
+seja: **a credencial é alcançável** por um caminho que o agente pode nomear, e a
+linha larga da persona apontava para lá. **Corrigido:** a única linha `MEDIA:`
+que o agente envia é a que o `warden cut` imprimiu, para um clipe que ele acabou
+de renderizar; um regulamento que pede um arquivo é recusado. Dois testes pinam
+isso (só a linha da ferramenta, apontando para o diretório de entrega; e nenhum
+`MEDIA:` num render reprovado).
 
 ---
 
@@ -125,6 +150,11 @@ inteiro, do clone do CLI ao build, com o que se precisaria adivinhar.
    alcance de um regulamento, anotado no código.
 5. **`--crop` não detecta o assunto.** Dei a alavanca e o aviso; a escolha fica
    com quem vê o vídeo. A ferramenta não pode adivinhar onde está o assunto.
+6. **`/tmp` não está na denylist de entrega do runtime.** É código da imagem base,
+   não nosso. A persona restrita (C3) não leva mais o modelo até lá, mas a
+   camada de baixo continua aceitando `/tmp`. A alavanca da base para fechar isso
+   é `HERMES_MEDIA_DELIVERY_STRICT`; avaliar se vale ligar sem quebrar a entrega
+   legítima fica registrado para o dono decidir.
 
 ---
 
