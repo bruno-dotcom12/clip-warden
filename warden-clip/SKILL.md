@@ -25,6 +25,13 @@ link. Do not go looking for the footage. A clip built from material the campaign
 did not authorise is rejected after the views, which is the loss this agent
 exists to prevent.
 
+Each file it prints is a path you pass straight to `warden cut`. It names them
+itself and pulls one video per playlist link, so there is nothing to rename and
+no stray file to sort through. If a download fails, `archive` says which link
+and why on its own line; pulling footage by hand from outside the archive
+rebuilds the exact failure this skill exists to prevent. Send the owner the
+failing link instead.
+
 ## 3. Choose on the text, never on the video
 
 `warden transcribe <file>` writes words with timing, preferring subtitles the

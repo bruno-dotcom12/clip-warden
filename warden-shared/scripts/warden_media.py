@@ -256,25 +256,57 @@ def _download_one(url, out_dir):
         new = sorted(set(os.listdir(out_dir)) - before)
         if not new:
             raise RuntimeError("gdown wrote nothing, the folder may need permission")
-        return os.path.join(out_dir, new[0])
+        # gdown writes the name the remote chose -- the one download path where
+        # the filename comes from the far side rather than from us. Renamed to a
+        # name of ours before anything downstream touches it, for the same reason
+        # the direct path never trusts the remote basename: it ends up as an
+        # ffmpeg input argument. And its size is checked here, because gdown has
+        # no --max-filesize and would otherwise be the one path with no size cap.
+        got = os.path.join(out_dir, new[0])
+        if os.path.getsize(got) > MAX_DIRECT_BYTES:
+            os.remove(got)
+            raise RuntimeError(
+                f"{url} is over {MAX_DIRECT_BYTES // (1024**3)} GB; that is not "
+                "a clip source, and it would fill the host's disk")
+        ours = os.path.join(out_dir, "footage-%s%s" % (
+            hashlib.sha256(url.encode()).hexdigest()[:12],
+            os.path.splitext(new[0])[1].lower() or ".mp4"))
+        os.replace(got, ours)
+        return ours
     if not have("yt-dlp"):
         raise RuntimeError("yt-dlp is not installed, so this link cannot be pulled")
+    # A playlist link is a playlist, and --no-playlist on one is undefined: it is
+    # what left a stray intermediate file behind and made the archive step look
+    # broken. So the two cases are told apart -- a single video keeps
+    # --no-playlist, a playlist link takes exactly its first item -- and both are
+    # bounded per file by --max-filesize, which is the size cap the direct path
+    # has and this path did not, on the one path a campaign link most often uses.
+    is_playlist = (parsed.path.rstrip("/").endswith("/playlist")
+                   or ("list=" in (parsed.query or "") and "v=" not in (parsed.query or "")))
+    playlist_args = (["--yes-playlist", "--playlist-items", "1"]
+                     if is_playlist else ["--no-playlist"])
     # --restrict-filenames, and a name we chose: the remote title is attacker
     # text and it ends up inside an ffmpeg filter string.
     stem = "source-" + hashlib.sha256(url.encode()).hexdigest()[:12]
     template = os.path.join(out_dir, stem + ".%(ext)s")
-    run(["yt-dlp", "--no-playlist", "--restrict-filenames",
+    run(["yt-dlp", *playlist_args, "--restrict-filenames",
+         "--max-filesize", str(MAX_DIRECT_BYTES),
          "--write-auto-subs", "--write-subs",
          "--sub-langs", "pt,pt-BR,en", "--convert-subs", "srt",
          "-f", "bv*[height<=1080]+ba/b[height<=1080]/b",
          "--merge-output-format", "mp4", "-o", template, "--", url],
         TIMEOUT_DOWNLOAD, "yt-dlp")
-    videos = [f for f in os.listdir(out_dir)
-              if f.startswith(stem)
-              and os.path.splitext(f)[1].lower() in (".mp4", ".mkv", ".webm")]
+    videos = sorted(f for f in os.listdir(out_dir)
+                    if f.startswith(stem)
+                    and os.path.splitext(f)[1].lower() in (".mp4", ".mkv", ".webm"))
     if not videos:
         raise RuntimeError("yt-dlp returned no video file for that link")
-    return os.path.join(out_dir, videos[0])
+    # The merged output is stem.mp4; prefer it over any intermediate a partial
+    # merge left with the same prefix, and fall back to a stable sorted choice
+    # rather than to whatever os.listdir happened to return first.
+    merged = stem + ".mp4"
+    chosen = merged if merged in videos else videos[0]
+    return os.path.join(out_dir, chosen)
 
 
 # ---------------------------------------------------------------- words

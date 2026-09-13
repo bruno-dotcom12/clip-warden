@@ -387,6 +387,64 @@ class Hostile(unittest.TestCase):
             handler.redirect_request(None, None, 302, "Found", {},
                                      "http://169.254.169.254/x")
 
+    def test_a_playlist_link_is_bounded_and_the_output_is_deterministic(self):
+        """The bug the agent hit: --no-playlist on a real playlist URL left a
+        stray intermediate, and videos[0] over an unordered listdir sometimes
+        returned it instead of the merged file. So it picked the wrong file and
+        a human 'corrected it manually', which is the archive being bypassed.
+        A playlist link is now pulled as a playlist bounded to one item and
+        capped per file, and the merged stem.mp4 is chosen over any residue."""
+        import tempfile
+        calls = {}
+        out_dir = tempfile.mkdtemp(prefix="warden-dl-")
+
+        def fake_run(args, timeout, label):
+            calls["args"] = args
+            stem = next(a.split(os.sep)[-1].split(".")[0]
+                        for a in args if "source-" in a)
+            # A partial merge left an intermediate with the same prefix, listed
+            # (by chance) before the merged output.
+            open(os.path.join(out_dir, stem + ".f251.webm"), "wb").write(b"x")
+            open(os.path.join(out_dir, stem + ".mp4"), "wb").write(b"x")
+            return ""
+
+        real_run, real_have = self.M.run, self.M.have
+        self.M.run = fake_run
+        self.M.have = lambda b: True
+        try:
+            got = self.M._download_one(
+                "https://youtube.com/playlist?list=PLabc", out_dir)
+        finally:
+            self.M.run, self.M.have = real_run, real_have
+
+        self.assertTrue(got.endswith(".mp4"), got)
+        self.assertNotIn(".f251.", got)
+        self.assertIn("--max-filesize", calls["args"])
+        self.assertIn("--playlist-items", calls["args"])
+        self.assertNotIn("--no-playlist", calls["args"])
+
+    def test_a_single_video_link_stays_no_playlist(self):
+        import tempfile
+        calls = {}
+        out_dir = tempfile.mkdtemp(prefix="warden-dl-")
+
+        def fake_run(args, timeout, label):
+            calls["args"] = args
+            stem = next(a.split(os.sep)[-1].split(".")[0]
+                        for a in args if "source-" in a)
+            open(os.path.join(out_dir, stem + ".mp4"), "wb").write(b"x")
+            return ""
+
+        real_run, real_have = self.M.run, self.M.have
+        self.M.run = fake_run
+        self.M.have = lambda b: True
+        try:
+            self.M._download_one("https://www.youtube.com/watch?v=abc123", out_dir)
+        finally:
+            self.M.run, self.M.have = real_run, real_have
+        self.assertIn("--no-playlist", calls["args"])
+        self.assertNotIn("--yes-playlist", calls["args"])
+
     def test_a_campaign_id_cannot_walk_out_of_its_directory(self):
         for bad in ("../../etc/passwd", "a/b", "..", "x\x00y"):
             with self.assertRaises(SystemExit):
