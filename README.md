@@ -36,6 +36,25 @@ hides its blind spots is how somebody learns a rule from a rejection notice.
   an instruction rather than a link.
 - Post, schedule, or touch your social accounts. There is no login in this agent.
 
+## Where it connects
+
+You are running a stranger's agent on your machine, so here is every place it
+reaches out, and why:
+
+- **Plow**, for its chat line. This is how you talk to it.
+- **The campaign links you send it**, and only those, to read a brief.
+- **The archive links published inside a brief**, to pull footage, `http` and
+  `https` only.
+- **Hugging Face**, once per install, for the two transcription models.
+- **The AI Worth Using Agent Index**, hourly, with day and model token counts
+  and nothing else — no prompts, no file paths, no costs. It has no switch;
+  an owner who does not want it builds the image without that service.
+- **Four public campaign directories** — `clipmap.gg`, `whop.com`,
+  `clipradar.co`, `realoficial.com.br` — only when you ask it to go find a
+  campaign, and only through `warden discover`.
+
+It does not reach anywhere else. There is no social login, and it never posts.
+
 ## Install
 
 `plow-agents` is a checkout you put on your PATH, not something Docker brings:
