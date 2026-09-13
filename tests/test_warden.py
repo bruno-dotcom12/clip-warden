@@ -522,6 +522,25 @@ class RealRender(unittest.TestCase):
         # And it warned about the doubling rather than burning silently.
         self.assertTrue(any("check the first clip" in n for n in result["notes"]))
 
+    def test_a_campaign_that_says_the_archive_is_captioned_burns_nothing(self):
+        """The owner's per-campaign answer, enforced: when the archive already
+        carries captions, --subtitles is ignored rather than stacked on top."""
+        _subtitles_filter_or_skip()
+        black = os.path.join(self.dir, "black.mp4")
+        _make_source(black, seconds=4, w=1920, h=1080, audio=False, pattern="black")
+        srt = os.path.join(self.dir, "cap.srt")
+        with open(srt, "w") as fh:
+            fh.write(self.M.to_srt([{"start": 0.0, "end": 4.0, "text": "NAO DEVE"}]))
+        r = rules(video={"duration_max_s": 5, "width": 1080, "height": 1920,
+                         "audio": "forbidden"},
+                  sources={"archive_has_captions": True})
+        out = os.path.join(self.dir, "nocap.mp4")
+        result = self.M.cut(black, out, r, start=0, end=3, sound="platform",
+                            caption_srt=srt)
+        self.assertLess(self._white_pixels(out), 500,
+                        "captions were burned despite archive_has_captions=true")
+        self.assertTrue(any("already carries its own" in n for n in result["notes"]))
+
 
 class Subtitles(unittest.TestCase):
     """Whisper's words become a caption track, and a wrong or empty line is worse
@@ -625,6 +644,13 @@ class Subtitles(unittest.TestCase):
                             1080, 1920)
         self.assertIn("WrapStyle: 0", ass)
         self.assertNotIn("WrapStyle: 2", ass)
+
+    def test_archive_has_captions_only_takes_a_bool_or_null(self):
+        for good in (True, False, None):
+            r = rules(sources={"archive_has_captions": good})
+            self.assertEqual(R.validate(r), [], good)
+        bad = rules(sources={"archive_has_captions": "yes"})
+        self.assertTrue(any("archive_has_captions" in p for p in R.validate(bad)))
 
 
 class DeliveryLine(unittest.TestCase):

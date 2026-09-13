@@ -688,7 +688,16 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                 notes.append(f"crop {crop}: keeping x {note_band}")
     except Exception:
         pass                                       # a note is not worth a failed render
-    if caption_srt and os.path.exists(caption_srt):
+    if caption_srt and os.path.exists(caption_srt) and \
+            R.get(rules, "sources.archive_has_captions") is True:
+        # The campaign says this archive already burns its own captions. Burning
+        # ours over them is the doubling the owner set this flag to prevent, so
+        # the tool refuses it here rather than leaving it to be caught by eye on
+        # the first clip. The words are still on disk in the srt if they change
+        # the flag; nothing is lost, only not stacked.
+        notes.append("not burning captions: this campaign's archive already "
+                     "carries its own (sources.archive_has_captions is true)")
+    elif caption_srt and os.path.exists(caption_srt):
         # The transcript's lines, restyled into an ASS file the tool writes next
         # to the render. Two reasons it is an ASS and not the srt passed straight
         # to the filter:

@@ -48,6 +48,13 @@ TEMPLATE = {
         # for an unauthorised source.
         "archive_urls": [],
         "official_min_screen_pct": None,
+        # Whether the archive's own footage already carries burned-in captions.
+        # Not in any brief -- it is a fact about the footage that the owner sees
+        # and the tool cannot: a Prime archive burns Portuguese subtitles, a raw
+        # gameplay does not. Set once when the campaign is stored. When true, the
+        # renderer refuses to burn a second caption over the first; when false or
+        # null, it burns the transcript's words if asked. null means nobody said.
+        "archive_has_captions": None,
     },
     "caption": {
         "required_hashtags": [],      # ["#primevideobr", "#invincible", "#ad"]
@@ -124,6 +131,10 @@ def validate(rules):
     audio = video.get("audio")
     if audio not in (None, "required", "forbidden"):
         problems.append("video.audio must be 'required', 'forbidden' or null")
+
+    has_caps = (rules.get("sources") or {}).get("archive_has_captions")
+    if has_caps not in (None, True, False):
+        problems.append("sources.archive_has_captions must be true, false or null")
 
     caption = rules.get("caption") or {}
     for tag in caption.get("required_hashtags") or []:

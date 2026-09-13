@@ -22,6 +22,13 @@ about them is not this skill; it is the failure this skill exists to prevent.
    including case, and put the links to the authorised footage in
    `sources.archive_urls`.
 4. Everything the brief does not settle goes in `unknown`, by name.
+   One thing the brief will not say and you must ask the owner once: does the
+   archive's footage already carry captions burned into the picture? A Prime
+   archive burns Portuguese subtitles; a raw gameplay does not. Their answer
+   goes in `sources.archive_has_captions` as `true` or `false`. When it is
+   `true`, the renderer will not burn a second caption over the first; when it
+   is `false`, it burns the transcript's words if the owner wants them. Leave it
+   `null` only if they truly do not know.
 5. `warden campaign save --json '<the json>'`. Inline, not on stdin: a heredoc
    that silently arrives empty is how an agent ends up believing it saved
    something. The command refuses a rule set whose shape is wrong, and the
