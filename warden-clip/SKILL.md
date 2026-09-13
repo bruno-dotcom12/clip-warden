@@ -59,6 +59,17 @@ of those before you pick, not after you render.
 adding `--subtitles <srt>` to burn the words and `--hook "<line>"` for the
 overlay at the top.
 
+`warden transcribe` writes an `.srt` beside the transcript JSON, and that is
+what `--subtitles` takes -- so the words the tool heard can go on the screen even
+when the archive shipped no subtitles of its own. Two things it cannot decide for
+you. First, whisper mishears, and a wrong word burned on the screen is worse than
+no caption: read the transcript before you burn, and if a line is wrong, fix the
+srt or leave captions off. Second, the tool measures pixels, not meaning, so it
+cannot see text the footage already carries -- a lower-third, a channel's own
+burned captions, the Prime archive's own subtitles. Burn over those and you have
+two. The cut says so every time it burns; look at the first clip, and if the
+source already shows text, do not pass `--subtitles`.
+
 A landscape source does not fit 9:16, so a vertical band of it is kept and the
 rest is dropped. The band is the centre unless you say otherwise, and the centre
 is a guess that is wrong for a side-by-side, a two-shot, or a gameplay with the

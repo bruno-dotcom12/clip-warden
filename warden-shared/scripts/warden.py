@@ -560,6 +560,21 @@ def cmd_transcribe(args):
     with open(target, "w", encoding="utf-8") as fh:
         json.dump(result, fh, ensure_ascii=False, indent=1)
     print(f"{target}  ({result['source']}, {len(result['segments'])} segments)")
+    # An SRT beside the JSON, so `warden cut --subtitles` has something to burn
+    # when the archive shipped no subtitles of its own. The JSON is for choosing
+    # the moment; this is for putting the words on the screen. Only the usable
+    # lines survive to_srt, so a transcript that was all silence writes no file
+    # and says so rather than leaving an empty one that looks like a caption.
+    srt_text = _media().to_srt(result["segments"])
+    if srt_text.strip():
+        srt_path = safe_out(os.path.splitext(target)[0].replace(".transcript", "")
+                            + ".srt", "subtitles")
+        with open(srt_path, "w", encoding="utf-8") as fh:
+            fh.write(srt_text)
+        print(f"{srt_path}  (subtitles to burn with --subtitles, if you want them)")
+    else:
+        print("  no usable lines for a caption track: nothing to burn",
+              file=sys.stderr)
     return 0
 
 

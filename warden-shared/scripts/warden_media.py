@@ -419,6 +419,121 @@ def _read_srt(path):
     return rows
 
 
+def _srt_stamp(t):
+    if t is None or t < 0:
+        t = 0.0
+    ms = int(round(float(t) * 1000))
+    h, ms = divmod(ms, 3_600_000)
+    m, ms = divmod(ms, 60_000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def _ass_stamp(t):
+    cs = int(round(max(0.0, float(t)) * 100))
+    h, cs = divmod(cs, 360_000)
+    m, cs = divmod(cs, 6_000)
+    s, cs = divmod(cs, 100)
+    return f"{h:d}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+def to_ass(segments, width, height, safe=None):
+    """The caption as an ASS file, with the style baked into the file itself.
+
+    Not force_style on the subtitles filter: that option takes comma-separated
+    fields, and a filtergraph treats a comma as the end of a filter. Measured on
+    the image's ffmpeg, every escaping of a multi-field force_style either errors
+    or renders NOTHING at all -- which is why a burned caption never actually
+    appeared. An ASS style line carries its own commas inside the file, where the
+    filtergraph never sees them, so libass reads size, outline, alignment and the
+    safe-area margins with nothing to escape. The words still come from the
+    transcript; only where they sit is decided here.
+    """
+    safe = safe or {}
+    x0 = int(safe.get("x0", 86))
+    x1 = int(safe.get("x1", width - 140))
+    y1 = int(safe.get("y1", int(height * 0.83)))
+    fontsize = max(18, height // 22)
+    outline = 3
+    margin_l = max(10, x0)
+    margin_r = max(10, width - x1)
+    margin_v = max(10, height - y1)
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {width}\nPlayResY: {height}\n"
+        "WrapStyle: 2\nScaledBorderAndShadow: yes\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, "
+        "ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
+        "MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Default,Arial,{fontsize},&H00FFFFFF,&H000000FF,&H00000000,"
+        f"&H00000000,-1,0,0,0,100,100,0,0,1,{outline},0,2,"
+        f"{margin_l},{margin_r},{margin_v},1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
+        "Effect, Text\n")
+    rows = []
+    for seg in segments or []:
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        start, end = seg.get("start"), seg.get("end")
+        if start is None or end is None:
+            continue
+        try:
+            start, end = float(start), float(end)
+        except (TypeError, ValueError):
+            continue
+        if not (end > start >= 0):
+            continue
+        # A newline in ASS is \N; a lone brace opens an override block. Neither
+        # belongs in a transcript line, so both are neutralised.
+        text = text.replace("\\", "").replace("{", "(").replace("}", ")")
+        text = " ".join(text.split())
+        rows.append((start, end, text))
+    rows.sort(key=lambda r: r[0])
+    body = "".join(
+        f"Dialogue: 0,{_ass_stamp(a)},{_ass_stamp(b)},Default,,0,0,0,,{t}\n"
+        for a, b, t in rows)
+    return header + body if rows else ""
+
+
+def to_srt(segments):
+    """An SRT from a transcript, carrying only lines a viewer could actually read.
+
+    Whisper is not a court reporter. It returns empty segments, segments with no
+    timing, and now and then a word it simply got wrong -- and a wrong word burned
+    on the screen is worse than no caption, because the clipper cannot see it is
+    wrong until a viewer does. This tool cannot tell a wrong word from a right one;
+    that judgement stays with the person who can check it against the video. What
+    it CAN do is refuse to burn what is structurally unusable: a blank line, a line
+    with no start or end, a line whose end is not after its start. Those are
+    dropped, the rest are renumbered so there is no gap, and an empty result comes
+    back as an empty string -- nothing to burn, said by its emptiness.
+    """
+    rows = []
+    for seg in segments or []:
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        start, end = seg.get("start"), seg.get("end")
+        if start is None or end is None:
+            continue
+        try:
+            start, end = float(start), float(end)
+        except (TypeError, ValueError):
+            continue
+        if not (end > start >= 0):
+            continue
+        rows.append((start, end, text))
+    rows.sort(key=lambda r: r[0])
+    return "\n".join(
+        f"{i}\n{_srt_stamp(a)} --> {_srt_stamp(b)}\n{t}\n"
+        for i, (a, b, t) in enumerate(rows, 1))
+
+
 def digest(segments, window=None, seconds_per_line=12):
     """The transcript a model can afford to read.
 
@@ -555,23 +670,36 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     except Exception:
         pass                                       # a note is not worth a failed render
     if caption_srt and os.path.exists(caption_srt):
-        # Copied to a name of our own before it reaches the filter graph. ffmpeg
-        # does not accept a backslash-escaped quote inside a single-quoted
-        # filter argument, so a subtitle path carrying one leaves the filter and
-        # can name any file the agent can read, including the host's credential.
-        import shutil as _shutil
-        safe_srt = os.path.join(os.path.dirname(os.path.abspath(out)) or ".",
-                                "captions-%s.srt" % hashlib.sha256(
-                                    caption_srt.encode()).hexdigest()[:10])
-        if os.path.abspath(safe_srt) != os.path.abspath(caption_srt):
-            _shutil.copyfile(caption_srt, safe_srt)
-        caption_srt = safe_srt
-        margin_v = max(10, height - y1)
-        style = (f"Fontsize={max(18, height // 26)},Outline=3,Shadow=0,"
-                 f"Alignment=2,MarginV={margin_v},"
-                 f"MarginL={x0},MarginR={max(10, width - x1)}")
-        escaped = caption_srt.replace("'", r"\'").replace(":", r"\:")
-        chain += f",subtitles='{escaped}':force_style='{style}'"
+        # The transcript's lines, restyled into an ASS file the tool writes next
+        # to the render. Two reasons it is an ASS and not the srt passed straight
+        # to the filter:
+        #  - style. force_style takes comma-separated fields and a filtergraph
+        #    ends a filter at a comma; every escaping of a multi-field force_style
+        #    measured on this ffmpeg renders nothing, so the safe-area margins go
+        #    into the ASS style line instead, where no comma reaches the graph.
+        #  - safety. The path sits in the filter string, and a quote or colon in
+        #    it leaves the filter and could name another file. The name is ours
+        #    and hashed, so it carries neither.
+        ass_text = to_ass(_read_srt(caption_srt), width, height, safe)
+        if ass_text.strip():
+            ass_path = os.path.join(os.path.dirname(os.path.abspath(out)) or ".",
+                                    "captions-%s.ass" % hashlib.sha256(
+                                        os.path.abspath(caption_srt).encode()
+                                    ).hexdigest()[:10])
+            with open(ass_path, "w", encoding="utf-8") as fh:
+                fh.write(ass_text)
+            chain += f",subtitles='{ass_path}'"
+            # The one thing this tool cannot see. It measures pixels, not meaning,
+            # so it has no way to know the footage already carries its own
+            # burned-in captions -- and if it does, this lays a second line over
+            # the first. It will not decide that silently: it burns and says so,
+            # and leaves the look at the first clip to the person who can see both.
+            notes.append("burned the transcript's words in. The tool cannot see "
+                         "text the footage already shows, so if this archive burns "
+                         "its own captions you now have two -- check the first clip.")
+        else:
+            notes.append("the subtitle file had no usable lines, so nothing was "
+                         "burned")
     if hook:
         text = hook.replace("'", "").replace(":", " ").replace("\\", "")
         chain += (f",drawtext=text='{text}':fontcolor=white:fontsize={max(28, width // 22)}:"
