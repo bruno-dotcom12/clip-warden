@@ -469,6 +469,65 @@ class RealRender(unittest.TestCase):
         self.assertTrue(any("trimmed" in n for n in result["notes"]))
 
 
+class DeliveryLine(unittest.TestCase):
+    """The MEDIA: line is the only thing that leaves this container, so it must
+    come from the tool and point only at a clip the tool rendered -- never at a
+    path some brief named. A stranger's brief that asks for a file cannot be
+    honoured by pointing MEDIA: at it, because the tool never prints such a line.
+    """
+
+    def setUp(self):
+        _ffmpeg_or_skip()
+        import io, warden_media
+        self.io = io
+        self.dir = tempfile.mkdtemp(prefix="warden-line-")
+        self.src = _make_source(os.path.join(self.dir, "src.mp4"))
+
+    def _store(self, cid, **video):
+        r = rules(id=cid, video=video, caption={"required_hashtags": [],
+                  "required_mentions": [], "banned_terms": []})
+        os.makedirs(os.path.dirname(warden.campaign_path(cid)), exist_ok=True)
+        with open(warden.campaign_path(cid), "w") as fh:
+            json.dump(r, fh)
+
+    def _run_cut(self, argv):
+        from contextlib import redirect_stdout
+        buf = self.io.StringIO()
+        with redirect_stdout(buf):
+            code = warden.main(argv)
+        return code, buf.getvalue()
+
+    def test_the_only_media_line_is_the_one_the_tool_prints(self):
+        """grep proves warden.py has exactly one MEDIA: emitter; this proves it
+        fires on a clean render and points into the deliverable directory."""
+        self._store("line-ok", duration_min_s=3, duration_max_s=5,
+                    width=1080, height=1920, aspect="9:16", audio="forbidden")
+        code, out = self._run_cut(["cut", self.src, "--campaign", "line-ok",
+                                   "--start", "1", "--end", "4", "--out", "c.mp4"])
+        media_lines = [l for l in out.splitlines() if l.startswith("MEDIA:")]
+        self.assertEqual(code, 0)
+        self.assertEqual(len(media_lines), 1)
+        path = media_lines[0][len("MEDIA:"):]
+        # It is the clip the tool wrote, under the deliverable directory, never
+        # the source and never anything a brief could have named.
+        self.assertTrue(path.startswith(os.path.realpath(warden.clips_dir()) + os.sep),
+                        path)
+        self.assertTrue(os.path.isfile(path))
+        self.assertNotEqual(os.path.realpath(path), os.path.realpath(self.src))
+
+    def test_a_rejected_render_prints_no_media_line(self):
+        """No line, no send. A render the check rejects must not offer a path to
+        deliver -- exit 1, and nothing that starts with MEDIA:."""
+        # A tiny file cap the render cannot meet, so check rejects after cut.
+        self._store("line-reject", duration_max_s=5, width=1080, height=1920,
+                    audio="forbidden", max_file_mb=0.001)
+        code, out = self._run_cut(["cut", self.src, "--campaign", "line-reject",
+                                   "--start", "0", "--end", "4", "--out", "r.mp4"])
+        self.assertEqual(code, 1)
+        self.assertFalse(any(l.startswith("MEDIA:") for l in out.splitlines()),
+                         "a rejected render must not print a MEDIA: line")
+
+
 class Framing(unittest.TestCase):
     """A landscape source cropped to 9:16 keeps a band, and the default centre
     is a guess. These pin the lever the agent uses when the guess is wrong."""
