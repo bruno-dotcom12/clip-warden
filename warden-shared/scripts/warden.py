@@ -789,7 +789,8 @@ def main(argv=None):
     p.add_argument("--sound", choices=["platform", "embedded"],
                    help="overrides the stored preference for this one render")
     p.add_argument("--crop", help="which side of a wider source to keep: "
-                   "left, center, right, or a percentage; center by default")
+                   "left, center, right, auto, or a percentage. A side or auto "
+                   "follows the detected face; a percentage is exact. Center by default")
     p.set_defaults(func=cmd_cut)
 
     p = sub.add_parser("beat")

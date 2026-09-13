@@ -71,13 +71,18 @@ two. The cut says so every time it burns; look at the first clip, and if the
 source already shows text, do not pass `--subtitles`.
 
 A landscape source does not fit 9:16, so a vertical band of it is kept and the
-rest is dropped. The band is the centre unless you say otherwise, and the centre
-is a guess that is wrong for a side-by-side, a two-shot, or a gameplay with the
-face in a corner. When the cut keeps a real band, `cut` prints which pixels it
-kept; read that line. If the subject is not in it, re-cut with
-`--crop left`, `--crop right`, or a percentage from 0 (far left) to 100 (far
-right). Look at the first clip before sending a batch cut the same way, because
-a blind centre crop through a comparison video is half a face and a black bar.
+rest is dropped. `--crop` chooses the band, and a side name follows the subject's
+face rather than a fixed fraction: `--crop left` centres on the face in the left
+half, `right` on the right, `auto` on the most prominent face anywhere. A
+percentage (0 far left to 100 far right) overrides detection and places the band
+exactly. `cut` prints which pixels it kept and whether a face chose them or it
+fell back to the centre; read that line.
+
+Detection is not sight. It follows a face, so a shot with no clear face -- a wide
+plate, a creature, an object -- falls back to the centre and says so, and there
+`--crop <percentage>` is how you place the band by hand. Look at the first clip
+before a batch: a comparison video with the subject off to one side is exactly
+what a fixed centre crop gets wrong.
 
 For an edit, add `--track <audio>`. `warden beat <track>` shows what it found:
 tempo, where the grid starts, how long a bar is, and where the track gains body.

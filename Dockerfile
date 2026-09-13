@@ -31,9 +31,16 @@ RUN command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null \
 # The venv in this base has no pip: it was built with uv, which installs into a
 # virtualenv without leaving pip inside it. So ask what is actually there rather
 # than assuming, and fail with the reason if none of the three ways exist.
+# opencv-python-headless is here for one job: pointing the vertical crop at the
+# subject instead of the middle. The footage is animation and game capture, where
+# a Haar cascade trained on photographs finds nothing, so the crop landed on
+# whatever sat at the centre -- the creature behind the man, the divider of a
+# side-by-side. cv2's YuNet DNN detector finds those faces (measured: 7 of 7
+# sampled frames on the test footage). headless because the container has no
+# display, which drops the GUI libs and most of the weight.
 RUN set -eu; \
     PY=/opt/hermes/.venv/bin/python3; \
-    PKGS="yt-dlp>=2025.1.1 gdown>=5.2 faster-whisper>=1.1"; \
+    PKGS="yt-dlp>=2025.1.1 gdown>=5.2 faster-whisper>=1.1 opencv-python-headless>=4.9"; \
     if "$PY" -m pip --version >/dev/null 2>&1; then \
       "$PY" -m pip install --no-cache-dir $PKGS; \
     elif command -v uv >/dev/null 2>&1; then \
@@ -43,7 +50,23 @@ RUN set -eu; \
     else \
       echo "no pip, no uv and no ensurepip in this base image" >&2; exit 1; \
     fi; \
-    "$PY" -c "import yt_dlp, gdown, faster_whisper" 
+    "$PY" -c "import yt_dlp, gdown, faster_whisper, cv2"
+
+# The YuNet face-detection model, fetched at build from the commit vendor/yunet.pin
+# names and checked against the hash beside it -- the same discipline as the
+# agent-index client, because a model file is code the detector runs. It is a
+# git-lfs object, so the fetch goes through the media host that serves lfs
+# content at a pinned commit rather than the raw host, which serves the pointer.
+COPY vendor/yunet.pin /opt/plow/yunet.pin
+RUN set -eu; \
+    sha="$(sed -n 's/^sha=//p' /opt/plow/yunet.pin)"; \
+    want="$(sed -n 's/^sha256=//p' /opt/plow/yunet.pin)"; \
+    path="$(sed -n 's/^path=//p' /opt/plow/yunet.pin)"; \
+    curl -fsSL --max-time 120 -o /opt/plow/yunet.onnx \
+      "https://media.githubusercontent.com/media/opencv/opencv_zoo/${sha}/${path}"; \
+    got="$(sha256sum /opt/plow/yunet.onnx | cut -d' ' -f1)"; \
+    [ "$got" = "$want" ] || { echo "yunet model is $got, pin says $want" >&2; exit 1; }; \
+    chmod 0644 /opt/plow/yunet.onnx
 
 # The transcription models are NOT baked. They used to be, and it cost about
 # 600 MB of download on every install of this agent.

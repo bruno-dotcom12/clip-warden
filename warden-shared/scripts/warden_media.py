@@ -583,6 +583,7 @@ def _stamp(seconds):
 # ---------------------------------------------------------------- rendering
 
 CROP_PRESETS = {"left": 0.25, "center": 0.5, "right": 0.75}
+FACE_MODEL = os.environ.get("WARDEN_FACE_MODEL", "/opt/plow/yunet.onnx")
 
 
 def _crop_fraction(crop):
@@ -594,7 +595,7 @@ def _crop_fraction(crop):
     `left`/`center`/`right`, or a percentage, let the caller say where the
     subject actually is instead of hoping it is in the middle.
     """
-    if crop is None or crop == "":
+    if crop is None or crop == "" or crop == "auto":
         return 0.5
     if crop in CROP_PRESETS:
         return CROP_PRESETS[crop]
@@ -602,10 +603,99 @@ def _crop_fraction(crop):
         pct = float(crop)
     except (TypeError, ValueError):
         raise RuntimeError(
-            f"crop {crop!r} is not left, center, right or a number from 0 to 100")
+            f"crop {crop!r} is not left, center, right, auto or a number from 0 to 100")
     if not 0 <= pct <= 100:
         raise RuntimeError("crop as a percentage is 0 (far left) to 100 (far right)")
     return pct / 100.0
+
+
+def _face_detector():
+    """YuNet, or None if this build has neither OpenCV nor the model.
+
+    A DNN face detector rather than a Haar cascade because the footage is
+    stylised -- animation, game capture -- and the cascades, trained on
+    photographs, miss it; YuNet was measured finding the faces in this footage
+    where they did not. Both the library and the model are optional: a build
+    without them falls back to the coarse crop preset, never to a crash.
+    """
+    try:
+        import cv2
+    except Exception:
+        return None
+    if not os.path.exists(FACE_MODEL):
+        return None
+    try:
+        return cv2, cv2.FaceDetectorYN_create(FACE_MODEL, "", (320, 320),
+                                              0.6, 0.3, 5000)
+    except Exception:
+        return None
+
+
+def _face_centers(source, start, length, samples=7):
+    """(x-fraction, area-fraction) of every face found across the clip window.
+
+    Sampled over several frames rather than one, because a face turns away, a
+    shot changes, a detector blinks. The centres of the frames it did find are
+    what a crop can be built on.
+    """
+    found = _face_detector()
+    if found is None:
+        return []
+    cv2, det = found
+    import subprocess, tempfile
+    out = []
+    for i in range(samples):
+        t = float(start) + (i + 0.5) * float(length) / samples
+        fd, png = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        try:
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss",
+                            f"{t:.3f}", "-i", source, "-frames:v", "1", png],
+                           capture_output=True, timeout=30)
+            img = cv2.imread(png)
+            if img is None:
+                continue
+            h, w = img.shape[:2]
+            det.setInputSize((w, h))
+            _n, faces = det.detect(img)
+            if faces is not None:
+                for f in faces:
+                    cx = (float(f[0]) + float(f[2]) / 2) / w
+                    area = (float(f[2]) * float(f[3])) / (w * h)
+                    out.append((cx, area))
+        except Exception:
+            continue                                   # a bad frame is not a failed cut
+        finally:
+            try:
+                os.remove(png)
+            except OSError:
+                pass
+    return out
+
+
+def _face_crop_fraction(faces, hint, kept):
+    """A crop fraction that centres the kept band on the subject's face.
+
+    `hint` is the side the caller pointed at: left keeps faces on the left half,
+    right the right, and center/auto/none takes them all. The prominent (larger,
+    nearer) faces decide, so a face in the foreground wins over one in the back,
+    which is the exact miss that put the crop on the monster behind the man.
+    Returns None when there is no face to trust, and the caller falls back.
+    """
+    if not faces or not kept or kept >= 1:
+        return None
+    if hint == "left":
+        faces = [f for f in faces if f[0] < 0.5]
+    elif hint == "right":
+        faces = [f for f in faces if f[0] > 0.5]
+    if not faces:
+        return None
+    faces = sorted(faces, key=lambda f: -f[1])         # largest first
+    top = faces[:max(1, len(faces) // 2)]
+    xs = sorted(f[0] for f in top)
+    target = xs[len(xs) // 2]                           # median x of the prominent faces
+    fx = (target - kept / 2) / (1 - kept)
+    return min(1.0, max(0.0, fx))
 
 
 def cut(source, out, rules, start, end, caption_srt=None, hook=None,
@@ -655,39 +745,47 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     x0 = int(safe.get("x0", 86)); x1 = int(safe.get("x1", width - 140))
     y1 = int(safe.get("y1", int(height * 0.83)))
 
-    # The horizontal window is chosen, not assumed centre. crop x is an ffmpeg
-    # expression over the scaled frame -- (in_w-out_w) is the slack a landscape
-    # source leaves after scaling -- so the fraction shifts the kept band
-    # without this code needing the scaled dimensions.
+    # Where the vertical band sits across a wider source. A bare percentage is
+    # the owner's exact call and is honoured as given. A side name, or nothing,
+    # is a hint the tool refines: it finds the faces and centres the band on the
+    # one that matters, which is what keeps the crop off the creature behind the
+    # man. Detection needs the source's real dimensions, so they are measured
+    # first; the kept-band fraction they give also names, in the note, exactly
+    # which pixels survived.
+    manual_pct = crop is not None and crop != "auto" and crop not in CROP_PRESETS
+    sw = sh = kept = None
+    try:
+        sw, sh = _dimensions(source)
+        if sw / sh > (width / height) * 1.05:      # wider than the target frame
+            kept = width / (sw * height / sh)      # fraction of source width kept
+    except Exception:
+        pass
+
     fx = _crop_fraction(crop)
+    framed_by = "crop %s" % (crop if crop is not None else "centre (default)")
+    if not manual_pct and kept:
+        faces = _face_centers(source, start, length)
+        face_fx = _face_crop_fraction(faces, crop, kept)
+        if face_fx is not None:
+            fx = face_fx
+            framed_by = "face" + ("" if crop in (None, "auto") else f" on the {crop}")
+
     chain = (f"scale={width}:{height}:force_original_aspect_ratio=increase,"
              f"crop={width}:{height}:(in_w-out_w)*{fx:.4f}:(in_h-out_h)*0.5,"
              f"setsar=1,fps=30")
 
-    # If a real horizontal crop is happening, say so and say what was kept, so a
-    # blind centre crop through a side-by-side is caught here rather than by the
-    # owner watching half a face. Measured off the source, not guessed.
-    try:
-        sw, sh = _dimensions(source)
-        target_ar = width / height
-        source_ar = sw / sh
-        if source_ar > target_ar * 1.05:          # wider than the target frame
-            # Height binds the scale (increase to cover the taller target), so
-            # the frame widens to sw*height/sh and the kept band is width of that.
-            scaled_w = sw * height / sh
-            kept = width / scaled_w                # fraction of source width kept
-            left_edge = fx * (1 - kept)
-            note_band = (f"{int(left_edge * sw)}–{int((left_edge + kept) * sw)} of "
-                         f"{sw}px")
-            if crop is None:
-                notes.append(
-                    f"framed on the centre by default: keeping x {note_band}. "
-                    "If the subject is not there -- a side-by-side, a two-shot, a "
-                    "corner cam -- re-cut with --crop left|right or a percentage.")
-            else:
-                notes.append(f"crop {crop}: keeping x {note_band}")
-    except Exception:
-        pass                                       # a note is not worth a failed render
+    if kept:
+        left_edge = fx * (1 - kept)
+        note_band = f"{int(left_edge * sw)}–{int((left_edge + kept) * sw)} of {sw}px"
+        if framed_by.startswith("face"):
+            notes.append(f"framed by {framed_by}: keeping x {note_band}")
+        elif crop is None or crop == "auto":
+            notes.append(
+                f"framed on the centre (no face found to follow): keeping x "
+                f"{note_band}. If the subject is a side-by-side, a two-shot or a "
+                "corner cam, re-cut with --crop left|right or a percentage.")
+        else:
+            notes.append(f"{framed_by}: keeping x {note_band}")
     if caption_srt and os.path.exists(caption_srt) and \
             R.get(rules, "sources.archive_has_captions") is True:
         # The campaign says this archive already burns its own captions. Burning

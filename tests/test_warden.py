@@ -736,6 +736,39 @@ class Framing(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.M._crop_fraction(bad)
 
+    def test_auto_is_a_valid_crop_hint(self):
+        self.assertEqual(self.M._crop_fraction("auto"), 0.5)
+
+    def test_face_crop_centres_the_band_on_the_face(self):
+        # A face at x=0.16 of the source, kept band ~0.32 wide: the band should
+        # start near 0 so the face sits in its middle.
+        faces = [(0.16, 0.05), (0.67, 0.04)]      # left panel + right panel
+        fx = self.M._face_crop_fraction(faces, "left", 0.32)
+        self.assertIsNotNone(fx)
+        left_edge = fx * (1 - 0.32)
+        self.assertLessEqual(left_edge, 0.16)      # face is inside the kept band
+        self.assertGreaterEqual(left_edge + 0.32, 0.16)
+
+    def test_face_crop_honours_the_side_hint(self):
+        faces = [(0.16, 0.05), (0.84, 0.05)]
+        fx_left = self.M._face_crop_fraction(faces, "left", 0.32)
+        fx_right = self.M._face_crop_fraction(faces, "right", 0.32)
+        self.assertLess(fx_left, fx_right)
+
+    def test_no_face_falls_back_to_none(self):
+        self.assertIsNone(self.M._face_crop_fraction([], "left", 0.32))
+        self.assertIsNone(self.M._face_crop_fraction([(0.8, 0.05)], "left", 0.32))
+
+    def test_detection_absent_returns_no_faces(self):
+        """A build without OpenCV or the model must degrade to the coarse preset,
+        never crash. With no detector, _face_centers returns nothing."""
+        saved = self.M.FACE_MODEL
+        self.M.FACE_MODEL = "/nonexistent/model.onnx"
+        try:
+            self.assertEqual(self.M._face_centers("/nonexistent.mp4", 0, 5), [])
+        finally:
+            self.M.FACE_MODEL = saved
+
 
 class Hostile(unittest.TestCase):
     """Everything here arrives from a stranger: the brief is pasted, the archive
