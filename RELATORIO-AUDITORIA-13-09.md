@@ -188,3 +188,72 @@ docker compose exec agent warden status   # ffmpeg, ffprobe e modelos
 
 Pela linha, o teste de entrega ponta a ponta: peça um clipe de uma campanha e
 confira se o arquivo chega. Na sessão desta auditoria, chegou.
+
+---
+
+# Parte 2 — features construídas na mesma sessão (além da auditoria)
+
+Depois de fechar a auditoria de segurança, a sessão virou desenvolvimento: testar
+o agente com footage real revelou defeitos e o dono pediu capacidades novas. Tudo
+com teste, cada um em seu commit, digest da base intocado. **97 testes, todos
+passando.**
+
+## Entrega e enquadramento
+
+| Área | O que ficou | Commits |
+| --- | --- | --- |
+| Entrega do clipe | `warden cut` imprime a linha `MEDIA:` no diretório que o runtime aceita | `b01183a` |
+| Legenda queima de verdade | `to_ass` gera ASS estilizado (o `force_style` com vírgulas não renderizava nada); tempo deslocado para a janela do clipe; `WrapStyle` corrigido | `759b1c0`, `63da0ff` |
+| Legenda por campanha | `sources.archive_has_captions` (true/false/null); `cut` não queima sobre acervo já legendado; o agente **pergunta** ao guardar a campanha | `e1ffa39`, `49b0dd5` |
+| Enquadramento por rosto | `--crop left/right/auto` segue o rosto detectado (YuNet/OpenCV), não o centro cego; `--crop <n>` é manual | `5648e54`, `1a6d0ca` |
+| Som nunca por acidente | `sound` sem default; `cut` recusa renderizar sem a escolha; sempre perguntado | `3b83ddd` |
+| Momento mudo | skill: momento que sai mudo precisa funcionar mudo | `7e28b59` |
+
+## Achar momentos virais
+
+`warden signals <transcript> --source <file>` (`c1d2b0d`) — surfaces, em ordem de
+tempo, só os momentos com sinal: pergunta, superlativo, conflito, risada, e
+**pico de volume** (reação da plateia, via ebur128). **Não dá nota de viral** — dá
+evidência; o modelo, que lê o conteúdo, decide os cortes. É a filosofia do agente:
+o tool mede, o modelo julga.
+
+## Fonte confiável e autorização
+
+O dono quer mandar qualquer link de fonte confiável, mas o agente afirmava "não
+está na playlist" sem ter como saber. Dois comandos tornaram isso honesto:
+
+- **`warden authorize <link> --campaign <id>`** (`6379f3b`, `3a5bfc7`) — expande as
+  playlists com o yt-dlp e casa o id; devolve o **título** do vídeo. Fora do
+  acervo, o agente **pergunta** "corto '<título>' assim mesmo?" e espera o sim —
+  não recusa. Playlist ilegível é "não", nunca "sim".
+- **`warden trusted add|check|list`** (`6379f3b`) — a lista de canais/domínios do
+  dono, para clipar **sem campanha**. Canal (`@handle`/`UC…`) resolvido pelo canal
+  real do vídeo; domínio pelo host.
+- Persona reforçada (`b23d1cd`): fora do acervo é **sempre** perguntar, nunca
+  recusar; link repetido é o dono pedindo.
+
+## Uma armadilha de operação que custou tempo (registrar para amanhã)
+
+O Hermes **cacheia o prompt do sistema (SOUL.md) por toda a vida da sessão de
+DM** (`system_prompt.py:448`). Editar a persona + rebuild + restart **não** troca
+a persona de uma conversa já aberta. Para carregar a persona nova numa conversa
+existente, o dono digita **`/reset`** (ou `/new`) na linha — gatilho do gateway
+(`config.py:941`), interceptado antes do modelo. Foi isso que finalmente fez o
+agente adotar o comportamento de perguntar. **Regra para o futuro: toda mudança
+de persona só vale para uma sessão nova ou após `/reset`.**
+
+## Onde parar e continuar amanhã
+
+- Aberto: o registro no Agent Index (tag `agent-index-register`, `git cherry-pick`).
+- Aberto: os cinco itens da auditoria (disco sem cota, `/tmp` na denylist, etc.).
+- A base **não** foi subida; segue no digest `4747960e`.
+- Testar o fluxo completo por um chat novo: link de fonte confiável → `warden
+  signals` → cortes com rosto e som → entrega.
+
+## Verificar
+
+```sh
+python3 -m unittest discover -s tests     # 97 casos (2 pulam sem libass/cv2, presentes na imagem)
+docker compose up --build -d
+docker compose exec agent warden status
+```
