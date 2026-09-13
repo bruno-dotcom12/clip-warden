@@ -45,6 +45,14 @@ For each candidate window, be able to say three things before it becomes a clip:
 what the hook is, what sustains the middle, and what closes it. If you cannot,
 it is not a moment yet. Go back to the text.
 
+When the campaign ships silent -- the sound is added on the platform, or embedded
+audio is forbidden -- the clip has to work with no sound, because that is how it
+first plays in the feed. A moment that is only a voice line, a joke that lands on
+the delivery, a reveal carried by a change in tone, is nothing muted. Choose a
+window that reads on the picture: an expression, an action, a piece of on-screen
+text. `warden prefs show --campaign <id>` tells you whether this campaign is one
+of those before you pick, not after you render.
+
 ## 4. Render inside the rules
 
 `warden cut <source> --campaign <id> --start <s> --end <s> --out <file>`,
