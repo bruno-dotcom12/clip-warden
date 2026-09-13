@@ -15,12 +15,15 @@ produces a file that looks finished and gets the submission thrown out.
 """
 import hashlib
 import html
+import ipaddress
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
+import urllib.request
 from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -40,6 +43,34 @@ MAX_DIRECT_BYTES = 4 * 1024 * 1024 * 1024      # a source file nobody asked for
 ALLOWED_SCHEMES = ("http", "https")
 
 
+def _host_is_public(host):
+    """False for a name that resolves to this machine or its private network.
+
+    A brief is a stranger's text. `http://169.254.169.254/` is the cloud
+    metadata service, `http://127.0.0.1/` and `http://10.x` are whatever else
+    runs on the host, and a name under the attacker's own DNS can point at any
+    of them. So the host is resolved and every address it resolves to is
+    checked; one private answer is enough to refuse. A determined DNS-rebind
+    could still differ between this check and urllib's own resolve on connect --
+    that is out of a brief's reach and noted rather than closed here.
+    """
+    if not host:
+        return False
+    host = host.strip("[]")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        # A name that does not resolve is not this machine's secret to leak;
+        # let the request proceed and fail as an ordinary unreachable link.
+        return True
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return False
+    return True
+
+
 def safe_url(url):
     parsed = urlparse(str(url or ""))
     if parsed.scheme.lower() not in ALLOWED_SCHEMES:
@@ -48,7 +79,30 @@ def safe_url(url):
             "Anything else in a brief is not a link, it is an instruction.")
     if not parsed.netloc:
         raise RuntimeError(f"refusing {url!r}: no host in that link")
+    if not _host_is_public(parsed.hostname):
+        raise RuntimeError(
+            f"refusing {url!r}: that points inside this machine or its private "
+            "network, not at published footage. A brief cannot send this agent "
+            "to read its own host.")
     return str(url)
+
+
+class _GuardedRedirect(urllib.request.HTTPRedirectHandler):
+    """Re-check every redirect the way the first URL was checked.
+
+    urllib already refuses a redirect that changes scheme to file://, but it
+    follows one to http://169.254.169.254 without a word. safe_url is the same
+    gate the first hop passed, so a redirect that lands on a private host or a
+    non-http scheme is refused with the same message rather than followed.
+    """
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        safe_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+# One opener for both readers, so the redirect guard cannot be forgotten at a
+# call site. Built once; urllib openers are thread-safe for our use.
+_OPENER = urllib.request.build_opener(_GuardedRedirect())
 
 
 def have(binary):
@@ -78,10 +132,10 @@ def fetch_text(url, limit=200_000):
     is what a person would have read. Truncated, because a rule set is extracted
     from the top of a brief and an unbounded page is an unbounded prompt.
     """
-    import urllib.request
+    url = safe_url(url)
     request = urllib.request.Request(url, headers={
         "User-Agent": "clip-warden/1.0 (+https://github.com/plow-pbc/plow-agents)"})
-    with urllib.request.urlopen(request, timeout=60) as response:
+    with _OPENER.open(request, timeout=60) as response:
         raw = response.read(limit * 4)
     charset = "utf-8"
     body = raw.decode(charset, errors="replace")
@@ -171,7 +225,6 @@ def _download_one(url, out_dir):
     direct = os.path.splitext(parsed.path)[1].lower() in (
         ".mp4", ".mov", ".m4v", ".webm", ".mkv")
     if direct:
-        import urllib.request
         # The name is ours, never theirs: a remote basename lands in an ffmpeg
         # filter argument further down the pipeline, and a quote in it is enough
         # to leave the filter and name another file.
@@ -179,7 +232,7 @@ def _download_one(url, out_dir):
                                  os.path.splitext(parsed.path)[1].lower() or ".mp4")
         target = os.path.join(out_dir, name)
         written = 0
-        with urllib.request.urlopen(url, timeout=TIMEOUT_FETCH) as response, \
+        with _OPENER.open(url, timeout=TIMEOUT_FETCH) as response, \
                 open(target, "wb") as fh:
             while True:
                 chunk = response.read(1 << 20)

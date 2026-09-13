@@ -359,6 +359,34 @@ class Hostile(unittest.TestCase):
                 self.M.safe_url(bad)
         self.assertTrue(self.M.safe_url("https://drive.google.com/file/d/a/view"))
 
+    def test_a_brief_cannot_send_the_agent_to_read_its_own_host(self):
+        """The credential leak that was live: `warden fetch file:///proc/<gw>/environ`
+        read the host's Plow token, because fetch never went through safe_url.
+        And a link-local http URL is the cloud metadata service. Both are the
+        host's own surface, and a brief cannot be allowed to name them."""
+        for internal in ("file:///etc/passwd", "file:///proc/1/environ",
+                         "http://169.254.169.254/latest/meta-data/",
+                         "http://127.0.0.1/", "http://localhost/",
+                         "http://10.0.0.1/", "http://[::1]/"):
+            with self.assertRaises(RuntimeError, msg=internal):
+                self.M.safe_url(internal)
+
+    def test_fetch_text_refuses_the_same_way_archive_does(self):
+        """The hole was that safe_url guarded archive but not fetch. fetch_text
+        must refuse file:// before it opens anything -- the read is the leak."""
+        with self.assertRaises(RuntimeError):
+            self.M.fetch_text("file:///etc/passwd")
+
+    def test_a_redirect_is_checked_like_the_first_hop(self):
+        """urllib refuses a redirect to file:// on its own, but follows one to a
+        link-local http address without a word. The guard runs safe_url on the
+        redirect target, so an internal redirect is refused with the same
+        message rather than followed."""
+        handler = self.M._GuardedRedirect()
+        with self.assertRaises(RuntimeError):
+            handler.redirect_request(None, None, 302, "Found", {},
+                                     "http://169.254.169.254/x")
+
     def test_a_campaign_id_cannot_walk_out_of_its_directory(self):
         for bad in ("../../etc/passwd", "a/b", "..", "x\x00y"):
             with self.assertRaises(SystemExit):
