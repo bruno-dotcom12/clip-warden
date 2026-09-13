@@ -846,35 +846,38 @@ class TrustedAndAuthorize(unittest.TestCase):
         self.assertIn("no trusted sources", reason)
 
     def test_authorize_matches_a_direct_link_by_id(self):
+        self.M.video_title = lambda url: None      # no network in a unit test
         r = rules(sources={"archive_urls": [
             "https://www.youtube.com/watch?v=OXi81V7swFo"]})
-        ok, _ = self.M.authorize(r, "https://youtu.be/OXi81V7swFo")
+        ok, _, _ = self.M.authorize(r, "https://youtu.be/OXi81V7swFo")
         self.assertTrue(ok)
-        ok, _ = self.M.authorize(r, "https://youtu.be/DIFFERENT123")
+        ok, _, _ = self.M.authorize(r, "https://youtu.be/DIFFERENT123")
         self.assertFalse(ok)
 
     def test_authorize_expands_a_playlist_to_find_membership(self):
+        self.M.video_title = lambda url: None
         r = rules(sources={"archive_urls": [
             "https://youtube.com/playlist?list=PLauthorised"]})
         real = self.M.playlist_video_ids
         self.M.playlist_video_ids = lambda url: {"OXi81V7swFo", "aaaaaaaaaaa"}
         try:
-            ok, reason = self.M.authorize(r, "https://youtu.be/OXi81V7swFo")
+            ok, reason, _ = self.M.authorize(r, "https://youtu.be/OXi81V7swFo")
             self.assertTrue(ok)
             self.assertIn("playlist", reason)
-            ok, _ = self.M.authorize(r, "https://youtu.be/notinlist12")
+            ok, _, _ = self.M.authorize(r, "https://youtu.be/notinlist12")
             self.assertFalse(ok)
         finally:
             self.M.playlist_video_ids = real
 
     def test_a_playlist_that_cannot_be_listed_is_a_no_not_a_yes(self):
+        self.M.video_title = lambda url: None
         r = rules(sources={"archive_urls": [
             "https://youtube.com/playlist?list=PLunreadable"]})
         real = self.M.playlist_video_ids
         def boom(url): raise RuntimeError("blocked")
         self.M.playlist_video_ids = boom
         try:
-            ok, reason = self.M.authorize(r, "https://youtu.be/OXi81V7swFo")
+            ok, reason, _ = self.M.authorize(r, "https://youtu.be/OXi81V7swFo")
             self.assertFalse(ok)
             self.assertIn("could not be read", reason)
         finally:

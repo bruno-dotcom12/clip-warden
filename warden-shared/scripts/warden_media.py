@@ -263,19 +263,38 @@ def playlist_video_ids(url):
     return {line.strip() for line in out.splitlines() if _YT_ID.match(line.strip())}
 
 
+def video_title(url):
+    """The title of a video, read off the link, or None if it will not give one.
+
+    So the agent can name what it is asking about: 'the video "..." is outside
+    the archive -- cut it anyway?' is a question the owner can answer; 'that link'
+    is not.
+    """
+    try:
+        out = run(_ytdlp() + ["--no-warnings", "--no-playlist", "--playlist-items",
+                              "1", "--print", "%(title)s", "--", safe_url(url)],
+                  TIMEOUT_DOWNLOAD, "yt-dlp title lookup")
+    except Exception:
+        return None
+    line = (out.strip().splitlines() or [""])[0].strip()
+    return line or None
+
+
 def authorize(rules, url):
-    """Is this link in the campaign's archive? A yes or no with the reason.
+    """Is this link in the campaign's archive? A yes or no, the reason, the title.
 
     A clipper's whole risk is footage the brief did not publish, so whether a
     link is authorised must be decided, not reasoned: a playlist is expanded and
-    the id looked for, a direct link is matched by id. Returns (ok, reason). A
+    the id looked for, a direct link is matched by id. Returns (ok, reason,
+    title) -- the title so a caller can name the video it is asking about. A
     playlist that cannot be listed is reported as unknown, never as authorised --
     a maybe is a no when someone's unpaid work is on the line.
     """
     url = safe_url(url)
+    title = video_title(url)
     urls = R.get(rules, "sources.archive_urls", [])
     if not urls:
-        return False, "this campaign publishes no archive, so nothing is authorised"
+        return False, "this campaign publishes no archive, so nothing is authorised", title
     vid = video_id(url)
     unlisted = []
     for allowed in urls:
@@ -286,17 +305,17 @@ def authorize(rules, url):
                 unlisted.append(f"{allowed} ({type(exc).__name__})")
                 continue
             if vid and vid in ids:
-                return True, f"in the authorised playlist {allowed}"
+                return True, f"in the authorised playlist {allowed}", title
         else:
             other = video_id(allowed)
             if vid and other and vid == other:
-                return True, f"the authorised link {allowed}"
+                return True, f"the authorised link {allowed}", title
             if str(allowed).strip() == url:
-                return True, f"the authorised link {allowed}"
+                return True, f"the authorised link {allowed}", title
     if unlisted:
         return False, ("not found in the archive, and these playlists could not "
-                       "be read to be sure: " + "; ".join(unlisted))
-    return False, "not in any authorised playlist or direct link of this campaign"
+                       "be read to be sure: " + "; ".join(unlisted)), title
+    return False, "not in any authorised playlist or direct link of this campaign", title
 
 
 # ---------------------------------------------------------------- trusted sources

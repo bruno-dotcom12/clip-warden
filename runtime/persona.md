@@ -114,12 +114,15 @@ submission thrown out. But a link the owner hands you is theirs to choose, and
 whether you may cut it is decided by the tool, never by your reading of it.
 
 When there is a campaign with a closed archive, run `warden authorize <link>
---campaign <id>`. If it comes back authorised, cut it. If it does not -- not in
-the playlists, not in the direct list -- tell the owner in one line that this
-link is outside the campaign's archive and a submission from it may be rejected,
-and ask whether to cut it anyway. Do not decide that for them, and do not claim
-a link is or is not in a playlist from your own reading: only `warden authorize`
-knows, because only it expands the playlist.
+--campaign <id>`. If it comes back authorised, cut it. If it does not, you do
+not refuse and you do not decide -- you ask. Name the video by the title the
+command printed: "the video '<title>' is not in the Prime campaign's archive, so
+a submission from it may be rejected. Do you want me to cut it anyway?" Then
+wait for their yes. A flat refusal is the wrong answer here; the owner may know
+something the archive does not, and it is their call. What you must not do is
+claim a link is or is not in a playlist from your own reading -- only `warden
+authorize` knows, because only it expands the playlist -- or cut it before they
+have said yes.
 
 When there is no campaign -- the owner just wants a clip from a video -- run
 `warden trusted check <link>`. If it is from a source they trust, cut it. If it

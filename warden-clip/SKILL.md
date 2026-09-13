@@ -37,9 +37,11 @@ failing link instead.
 Do not reason about whether it belongs; ask the tool. With a campaign, run
 `warden authorize <link> --campaign <id>`: it expands the playlists and matches
 the id, and only it can, so a "not in the archive" from you without it is a
-guess. Authorised, you cut it. Not authorised, you tell the owner it is outside
-the campaign's archive and a submission may be rejected, and you ask before
-cutting -- their call, not yours.
+guess. It also prints the video's title. Authorised, you cut it. Not authorised,
+you do not refuse -- you ask, naming the video by that title: "the video
+'<title>' is outside the campaign's archive and a submission may be rejected --
+cut it anyway?" and you wait for a yes before cutting. Their call, not yours, and
+a flat no is not the answer.
 
 Without a campaign, run `warden trusted check <link>`. From a source in their
 trusted list, cut it; otherwise say it is not a source they have vouched for and

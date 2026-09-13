@@ -604,13 +604,17 @@ def cmd_authorize(args):
     """
     rules = load_campaign(args.campaign)
     try:
-        ok, reason = _media().authorize(rules, args.url)
+        ok, reason, title = _media().authorize(rules, args.url)
     except Exception as exc:
         die(f"{type(exc).__name__}: {exc}", code=1)
+    named = f'"{title}"' if title else "this link"
     if ok:
-        print(f"authorised: {reason}")
+        print(f"authorised: {named} is {reason}")
         return 0
-    print(f"NOT authorised: {reason}", file=sys.stderr)
+    # The title is on stdout even on a no, so the agent can name the video when
+    # it asks the owner whether to cut outside the archive.
+    print(f"title: {title}" if title else "title: (unavailable)")
+    print(f"NOT authorised: {named} is {reason}", file=sys.stderr)
     return 1
 
 
