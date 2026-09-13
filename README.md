@@ -38,11 +38,24 @@ hides its blind spots is how somebody learns a rule from a rejection notice.
 
 ## Install
 
+`plow-agents` is a checkout you put on your PATH, not something Docker brings:
+
 ```sh
-plow-agents login
-plow-agents mint            # writes ./plow-credentials
+git clone https://github.com/plow-pbc/plow-agents.git
+export PATH="$PWD/plow-agents/bin:$PATH"
+```
+
+Then, from this repository:
+
+```sh
+plow-agents login           # text the printed phrase from the phone that owns the account
+plow-agents lines           # the line UIDs you own
+plow-agents mint ln_xxx     # that line's credential -> ./plow-credentials
 docker compose up --build -d
 ```
+
+`mint` takes the line as an argument; there is no default. `docs/INSTALL.md` is
+the same path with the places you would otherwise have to guess written down.
 
 Then text the agent a campaign link. Nothing else to configure: no API keys, no
 OAuth, no accounts.
