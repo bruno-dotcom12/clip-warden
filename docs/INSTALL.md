@@ -60,10 +60,14 @@ is a live token: never commit it, never paste it anywhere.
 docker compose up --build -d
 ```
 
-The first build takes ten to fifteen minutes on an Apple Silicon Mac and less
-on an Intel one. Almost all of it is pulling the base image, and the emulation
-warning about `linux/amd64` is expected — that base publishes one architecture,
-and the Dockerfile says so on purpose.
+Almost all of the first build is one download: the base image, 0.95 GB across
+53 layers. Everything this repository adds on top of it builds in about twenty
+seconds, the heaviest being one `pip install` of six. So the wall-clock is your
+connection pulling that base — a few minutes on a fast line, longer on a slow
+one — and a second agent from this hackathon on the same machine skips it
+entirely, because they share the base. The emulation warning about `linux/amd64`
+is expected: that base publishes one architecture, and the Dockerfile says so on
+purpose. It does not slow the build; it only matters when the agent runs.
 
 If the pull fails with a `403`, it is a stale registry credential rather than a
 permission you are missing:
