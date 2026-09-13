@@ -22,24 +22,25 @@ about them is not this skill; it is the failure this skill exists to prevent.
    including case, and put the links to the authorised footage in
    `sources.archive_urls`.
 4. Everything the brief does not settle goes in `unknown`, by name.
-   One thing the brief will not say and you must ask the owner once: does the
-   archive's footage already carry captions burned into the picture? A Prime
-   archive burns Portuguese subtitles; a raw gameplay does not. Their answer
-   goes in `sources.archive_has_captions` as `true` or `false`. When it is
-   `true`, the renderer will not burn a second caption over the first; when it
-   is `false`, it burns the transcript's words if the owner wants them. Leave it
-   `null` only if they truly do not know.
-5. `warden campaign save --json '<the json>'`. Inline, not on stdin: a heredoc
+5. **Ask the owner, in plain words: does the archive's footage already come with
+   captions burned into the picture, or not?** The brief never says, and the tool
+   cannot see it -- a Prime archive burns Portuguese subtitles, a raw gameplay or
+   a live does not. Ask it every time you store a campaign, before you save, and
+   put their answer in `sources.archive_has_captions` as `true` or `false`. When
+   it is `true`, the renderer refuses to burn a second caption over the source's
+   own; when it is `false`, it burns the transcript's words if the owner wants
+   them. Only leave it `null` if they genuinely do not know yet.
+6. `warden campaign save --json '<the json>'`. Inline, not on stdin: a heredoc
    that silently arrives empty is how an agent ends up believing it saved
    something. The command refuses a rule set whose shape is wrong, and the
    complaint names the key.
-6. Read it back with `warden campaign show <id>` before you say a word about it.
+7. Read it back with `warden campaign show <id>` before you say a word about it.
    The save prints `stored and verified` with the path when it is really there.
    If you did not see that line, it is not stored: say so, do not tell the
    person their campaign is saved, and do not carry on from memory. Everything
    downstream, every check on every clip, reads this file and not this
    conversation.
-7. Show the person what you stored, in their language, and say what the brief
+8. Show the person what you stored, in their language, and say what the brief
    left open.
 
 ## The rule you do not bend
