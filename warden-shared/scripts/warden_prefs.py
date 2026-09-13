@@ -63,9 +63,11 @@ QUESTIONS = [
      "decides the overlay and the language it is written in",
      "edit"),
     ("sound",
-     "Sound added on the platform, or carried inside the file?",
-     ["platform", "embedded"],
-     "a platform sound means the file ships silent, which the campaign may also require",
+     "The original sound carried in the file, or silent for the platform to add its own?",
+     ["embedded", "platform"],
+     "embedded keeps the original audio; platform means the file ships silent. "
+     "There is no default: a clip that ships silent by accident is a clip nobody "
+     "asked to be silent, so this is always asked unless the campaign settles it",
      "edit"),
     ("target_s",
      "How long should a clip be, when the campaign leaves room?",
@@ -84,9 +86,15 @@ QUESTIONS = [
      "edit"),
 ]
 
+# No default for `sound`. Every other preference has a safe fallback, but a
+# silent clip is the one output the owner cannot fix after the fact and would
+# never have chosen without being asked -- the campaign silenced a clip that had
+# every right to its audio. So `sound` is deliberately absent here: unset, and
+# with a campaign that does not settle it, it stays undecided and `warden cut`
+# refuses to guess.
 DEFAULTS = {"region": "both", "niches": "", "platforms": "tiktok", "payout": "any",
             "delivery": "cuts", "captions": "yes", "hook": "pt",
-            "sound": "platform", "target_s": 30, "batch": 3, "approval": "yes"}
+            "target_s": 30, "batch": 3, "approval": "yes"}
 
 KEYS = [q[0] for q in QUESTIONS]
 GROUPS = {q[0]: q[4] for q in QUESTIONS}
@@ -134,13 +142,18 @@ def effective(prefs, rules=None):
     overruled = []
     if rules:
         policy = R.get(rules, "video.audio")
-        if policy == "forbidden" and out.get("sound") == "embedded":
+        # A campaign that settles the audio decides `sound` whether or not the
+        # owner set it -- there is nothing to ask when the rule set is explicit.
+        if policy == "forbidden":
+            if out.get("sound") == "embedded":
+                overruled.append("this campaign adds the sound on the platform, "
+                                 "so the file ships silent")
             out["sound"] = "platform"
-            overruled.append("this campaign adds the sound on the platform, "
-                             "so the file ships silent")
-        if policy == "required" and out.get("sound") == "platform":
+        elif policy == "required":
+            if out.get("sound") == "platform":
+                overruled.append("this campaign requires an audio track in the file")
             out["sound"] = "embedded"
-            overruled.append("this campaign requires an audio track in the file")
+        # policy is null: `sound` stays whatever the owner set, or undecided.
         lo = R.get(rules, "video.duration_min_s")
         hi = R.get(rules, "video.duration_max_s")
         try:

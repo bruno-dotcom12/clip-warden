@@ -178,6 +178,24 @@ class Preferences(unittest.TestCase):
         self.assertEqual(settings["sound"], "platform")
         self.assertTrue(overruled)
 
+    def test_sound_has_no_silent_default(self):
+        """A clip must never ship silent by accident: with nobody having chosen
+        and a campaign that does not settle audio, sound stays undecided."""
+        self.assertNotIn("sound", self.P.DEFAULTS)
+        quiet = rules(video={"audio": None})
+        settings, _ = self.P.effective({}, quiet)
+        self.assertIsNone(settings.get("sound"))
+        # And it is asked, since it is not stored.
+        self.assertIn("sound", self.P.missing({}, "edit"))
+
+    def test_a_campaign_that_settles_audio_decides_sound_unasked(self):
+        forbid = rules(video={"audio": "forbidden"})
+        settings, _ = self.P.effective({}, forbid)
+        self.assertEqual(settings["sound"], "platform")
+        require = rules(video={"audio": "required"})
+        settings, _ = self.P.effective({}, require)
+        self.assertEqual(settings["sound"], "embedded")
+
     def test_the_campaign_caps_a_length_the_owner_asked_for(self):
         settings, overruled = self.P.effective({"target_s": 90}, rules())
         self.assertEqual(settings["target_s"], 30)
@@ -192,8 +210,13 @@ class Preferences(unittest.TestCase):
         self.P.save(self.dir, {"delivery": "cuts", "batch": 5})
         self.assertEqual(self.P.load(self.dir)["batch"], 5)
 
-    def test_every_question_has_a_default_and_every_default_a_question(self):
-        self.assertEqual(sorted(self.P.DEFAULTS), sorted(self.P.KEYS))
+    def test_every_default_is_a_question_and_only_sound_has_none(self):
+        # Every default must belong to a real question.
+        self.assertTrue(set(self.P.DEFAULTS).issubset(set(self.P.KEYS)))
+        # And every question has a default except `sound`, which is deliberately
+        # left without one so a clip cannot ship silent unasked.
+        without_default = set(self.P.KEYS) - set(self.P.DEFAULTS)
+        self.assertEqual(without_default, {"sound"})
 
 
 class Beat(unittest.TestCase):
@@ -473,6 +496,28 @@ class RealRender(unittest.TestCase):
         findings = warden.check(r, media, "", [])
         self.assertFalse(any("audio track" in m for lv, m in findings
                              if lv == warden.REPROVA))
+
+    def test_cut_refuses_to_render_without_a_sound_decision(self):
+        """warden cut, through main, must stop rather than silence a clip when
+        neither the campaign nor the owner has chosen the sound."""
+        import io
+        from contextlib import redirect_stdout
+        cid = "sound-undecided"
+        r = rules(id=cid, video={"audio": None, "duration_max_s": 30,
+                                 "width": 1080, "height": 1920})
+        os.makedirs(os.path.dirname(warden.campaign_path(cid)), exist_ok=True)
+        with open(warden.campaign_path(cid), "w") as fh:
+            json.dump(r, fh)
+        # No stored sound preference in this test's WARDEN_DIR.
+        import warden_prefs as P
+        if os.path.exists(P.path(WARDEN_DIR)):
+            os.remove(P.path(WARDEN_DIR))
+        out = io.StringIO()
+        with self.assertRaises(SystemExit):
+            with redirect_stdout(out):
+                warden.main(["cut", self.src, "--campaign", cid,
+                             "--start", "0", "--end", "3", "--out", "s.mp4"])
+        self.assertNotIn("MEDIA:", out.getvalue())
 
     def test_cut_clamps_a_long_window_to_the_campaign_maximum(self):
         r = rules(video={"duration_min_s": 1, "duration_max_s": 3,

@@ -46,6 +46,13 @@ each answer as it arrives with `warden prefs set --key <k> --value <v>`.
 Ask before rendering, not after. Someone who wanted an edit on a beat and got
 clean cuts throws away the whole batch.
 
+Sound is not optional to ask, and it has no default. Unless the campaign settles
+the audio, `warden cut` refuses to render until the owner has chosen: the
+original sound carried in the file, or silent for the platform to add its own. A
+clip that shipped silent because nobody was asked is a clip nobody wanted silent.
+Ask it in their words -- "keep the original audio, or does the platform add the
+sound?" -- and store the answer.
+
 Never ask twice. `warden prefs show --campaign <id>` also tells you what the
 campaign overruled, and you repeat that to them in one line: "you asked for the
 track inside the file, this campaign adds the sound on the platform, so these

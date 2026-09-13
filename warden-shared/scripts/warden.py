@@ -610,14 +610,23 @@ def clip_out(path):
 
 def cmd_cut(args):
     rules = load_campaign(args.campaign)
+    # Sound is decided before a frame is written, and never by default. If the
+    # campaign settles it, use that; otherwise it is the owner's stored choice;
+    # and if neither has said, the render stops rather than shipping a silent
+    # clip nobody asked to be silent.
+    sound = args.sound or P.effective(P.load(state_dir()), rules)[0].get("sound")
+    if not sound:
+        die("no sound decision: this campaign does not settle it and the owner "
+            "has not chosen. Ask whether the clip keeps the original sound or "
+            "ships silent for the platform to add its own, then "
+            "`warden prefs set --key sound --value embedded|platform` (or pass "
+            "--sound). A clip must not ship silent by accident.", code=1)
     try:
         result = _media().cut(args.source, clip_out(args.out), rules,
                               args.start, args.end,
                               caption_srt=args.subtitles, hook=args.hook,
                               track=args.track, track_start=args.track_start,
-                              sound=args.sound or P.effective(P.load(state_dir()),
-                                                              rules)[0]["sound"],
-                              crop=args.crop)
+                              sound=sound, crop=args.crop)
     except Exception as exc:
         die(f"{type(exc).__name__}: {exc}", code=1)
     for note in result["notes"]:
