@@ -32,6 +32,21 @@ and why on its own line; pulling footage by hand from outside the archive
 rebuilds the exact failure this skill exists to prevent. Send the owner the
 failing link instead.
 
+### A specific link the owner sends
+
+Do not reason about whether it belongs; ask the tool. With a campaign, run
+`warden authorize <link> --campaign <id>`: it expands the playlists and matches
+the id, and only it can, so a "not in the archive" from you without it is a
+guess. Authorised, you cut it. Not authorised, you tell the owner it is outside
+the campaign's archive and a submission may be rejected, and you ask before
+cutting -- their call, not yours.
+
+Without a campaign, run `warden trusted check <link>`. From a source in their
+trusted list, cut it; otherwise say it is not a source they have vouched for and
+offer `warden trusted add <channel|domain>`. A channel is an `@handle` or a
+`UC…` id; a domain is `youtube.com`. This is the only footage you cut that no
+campaign authorised, and the trusted list is what stands in for the brief.
+
 ## 3. Choose on the text, never on the video
 
 `warden transcribe <file>` writes words with timing, preferring subtitles the

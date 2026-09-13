@@ -94,6 +94,8 @@ it rather than from the model's reading.
 | `warden campaign save --json '<json>'` | store one, verified by reading it back |
 | `warden fetch <url>` | a brief as readable text |
 | `warden archive --campaign <id>` | pull the authorised footage, and only that |
+| `warden authorize <url> --campaign <id>` | is this link in the campaign's archive? exit 1 = no |
+| `warden trusted add\|check\|list <x>` | the owner's trusted channels and domains, for clipping without a campaign |
 | `warden transcribe <file>` | published subtitles when they exist, whisper when they do not |
 | `warden digest <transcript>` | the transcript a model can afford to read |
 | `warden signals <transcript>` | the moments the words and sound point at, for viral cuts |

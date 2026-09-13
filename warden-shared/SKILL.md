@@ -49,6 +49,8 @@ you did not get.
 | `warden discover` | the public campaign directories, as text |
 | `warden prefs ask --group search\|edit` / `set` / `show` | what this owner wants |
 | `warden archive --campaign <id>` | pull the authorised footage, and only that |
+| `warden authorize <url> --campaign <id>` | is this link in the campaign's archive? exit 1 = no |
+| `warden trusted add\|check\|list <x>` | the owner's trusted channels and domains, for clipping without a campaign |
 | `warden transcribe <file>` / `digest <transcript>` | words, then words you can afford |
 | `warden signals <transcript> --source <file>` | where the words and the sound spike: hooks, conflict, reactions |
 | `warden beat <track>` | tempo, grid and drop |

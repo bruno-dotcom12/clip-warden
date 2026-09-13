@@ -533,6 +533,87 @@ def cmd_fetch(args):
     return 0
 
 
+def trusted_path():
+    return os.path.join(state_dir(), "trusted.json")
+
+
+def load_trusted():
+    if not os.path.exists(trusted_path()):
+        return []
+    try:
+        with open(trusted_path()) as fh:
+            data = json.load(fh)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def save_trusted(entries):
+    tmp = trusted_path() + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(entries, fh, indent=2, ensure_ascii=False)
+    os.replace(tmp, trusted_path())
+
+
+def cmd_trusted(args):
+    """The owner's list of sources worth clipping without a campaign to vouch.
+
+    A campaign publishes its own archive; outside one, this is what says a link
+    is safe to cut -- a channel or a domain the owner named, not a stranger's.
+    """
+    entries = load_trusted()
+    if args.action == "list":
+        print("\n".join(entries) if entries else "no trusted sources yet")
+        return 0
+    if args.action == "check":
+        if not args.value:
+            die("check needs a url: `warden trusted check <url>`")
+        try:
+            ok, reason = _media().trusted_check(args.value, entries)
+        except Exception as exc:
+            die(f"{type(exc).__name__}: {exc}", code=1)
+        if ok:
+            print(f"trusted: {reason}")
+            return 0
+        print(f"NOT trusted: {reason}", file=sys.stderr)
+        return 1
+    if args.action == "add":
+        if not args.value:
+            die("add needs a channel or domain: `warden trusted add @Channel` "
+                "or `warden trusted add youtube.com`")
+        entry = args.value.strip()
+        if entry not in entries:
+            entries.append(entry)
+            save_trusted(entries)
+        print(f"trusted sources: {', '.join(entries)}")
+        return 0
+    if args.action == "remove":
+        entries = [e for e in entries if e != (args.value or "").strip()]
+        save_trusted(entries)
+        print(f"trusted sources: {', '.join(entries) if entries else '(none)'}")
+        return 0
+    die(f"unknown trusted action {args.action!r}")
+
+
+def cmd_authorize(args):
+    """Decide whether a link is in the campaign's archive, and say why.
+
+    The one honest answer to 'can I clip this video?' when the archive is a set
+    of playlists: expand them and look, rather than claim membership you cannot
+    see. Exit 0 authorised, exit 1 not -- so a skill can gate on it.
+    """
+    rules = load_campaign(args.campaign)
+    try:
+        ok, reason = _media().authorize(rules, args.url)
+    except Exception as exc:
+        die(f"{type(exc).__name__}: {exc}", code=1)
+    if ok:
+        print(f"authorised: {reason}")
+        return 0
+    print(f"NOT authorised: {reason}", file=sys.stderr)
+    return 1
+
+
 def cmd_archive(args):
     rules = load_campaign(args.campaign)
     out = safe_out(args.out or os.path.join(state_dir(), "footage", safe_id(args.campaign)),
@@ -798,6 +879,17 @@ def main(argv=None):
     p = sub.add_parser("fetch")
     p.add_argument("url")
     p.set_defaults(func=cmd_fetch)
+
+    p = sub.add_parser("trusted")
+    p.add_argument("action", choices=["add", "remove", "list", "check"])
+    p.add_argument("value", nargs="?", help="a channel (@handle or UC… id), a "
+                   "domain, or a url to check")
+    p.set_defaults(func=cmd_trusted)
+
+    p = sub.add_parser("authorize")
+    p.add_argument("url")
+    p.add_argument("--campaign", required=True)
+    p.set_defaults(func=cmd_authorize)
 
     p = sub.add_parser("archive")
     p.add_argument("--campaign", required=True)

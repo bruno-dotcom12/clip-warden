@@ -109,6 +109,21 @@ def have(binary):
     return shutil.which(binary) is not None
 
 
+def _ytdlp():
+    """How to invoke yt-dlp so it works whether or not the venv bin is on PATH.
+
+    A skill command runs under this interpreter, but a subprocess inherits the
+    supervision tree's PATH, which need not hold the venv's bin. Calling it as a
+    module of this interpreter sidesteps that, and falls back to the binary for a
+    dev machine that installed yt-dlp on its own.
+    """
+    try:
+        import yt_dlp  # noqa: F401
+        return [sys.executable, "-m", "yt_dlp"]
+    except Exception:
+        return ["yt-dlp"]
+
+
 def run(args, timeout, label):
     try:
         done = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
@@ -192,6 +207,161 @@ def discover(limit_chars=12_000):
         except Exception as exc:
             failed.append((name, url, f"{type(exc).__name__}"))
     return pages, failed
+
+
+# ---------------------------------------------------------------- authorising
+
+_YT_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def video_id(url):
+    """The YouTube video id in a link, or None. Handles the forms a brief uses.
+
+    watch?v=, youtu.be/, /shorts/, /embed/, and a bare 11-character id. The id
+    is what a playlist lists and what a watch link carries, so it is the thing
+    two links are the same video by.
+    """
+    raw = str(url or "").strip()
+    if _YT_ID.match(raw):
+        return raw
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return None
+    host = (parsed.netloc or "").lower()
+    if "youtu.be" in host:
+        cand = parsed.path.lstrip("/").split("/")[0]
+        return cand if _YT_ID.match(cand) else None
+    if "youtube" in host:
+        from urllib.parse import parse_qs
+        v = parse_qs(parsed.query or "").get("v", [None])[0]
+        if v and _YT_ID.match(v):
+            return v
+        for seg in ("shorts/", "embed/", "live/"):
+            if seg in parsed.path:
+                cand = parsed.path.split(seg, 1)[1].split("/")[0]
+                return cand if _YT_ID.match(cand) else None
+    return None
+
+
+def _is_playlist(url):
+    parsed = urlparse(str(url or ""))
+    q = parsed.query or ""
+    return (parsed.path.rstrip("/").endswith("/playlist")
+            or ("list=" in q and "v=" not in q))
+
+
+def playlist_video_ids(url):
+    """Every video id in a playlist, as a set, read without downloading a byte.
+
+    yt-dlp's flat listing is what makes 'is this video in the authorised
+    playlist?' a question the tool answers instead of the model guessing.
+    """
+    out = run(_ytdlp() + ["--flat-playlist", "--no-warnings",
+               "--print", "%(id)s", "--", safe_url(url)],
+              TIMEOUT_DOWNLOAD, "yt-dlp playlist listing")
+    return {line.strip() for line in out.splitlines() if _YT_ID.match(line.strip())}
+
+
+def authorize(rules, url):
+    """Is this link in the campaign's archive? A yes or no with the reason.
+
+    A clipper's whole risk is footage the brief did not publish, so whether a
+    link is authorised must be decided, not reasoned: a playlist is expanded and
+    the id looked for, a direct link is matched by id. Returns (ok, reason). A
+    playlist that cannot be listed is reported as unknown, never as authorised --
+    a maybe is a no when someone's unpaid work is on the line.
+    """
+    url = safe_url(url)
+    urls = R.get(rules, "sources.archive_urls", [])
+    if not urls:
+        return False, "this campaign publishes no archive, so nothing is authorised"
+    vid = video_id(url)
+    unlisted = []
+    for allowed in urls:
+        if _is_playlist(allowed):
+            try:
+                ids = playlist_video_ids(allowed)
+            except Exception as exc:
+                unlisted.append(f"{allowed} ({type(exc).__name__})")
+                continue
+            if vid and vid in ids:
+                return True, f"in the authorised playlist {allowed}"
+        else:
+            other = video_id(allowed)
+            if vid and other and vid == other:
+                return True, f"the authorised link {allowed}"
+            if str(allowed).strip() == url:
+                return True, f"the authorised link {allowed}"
+    if unlisted:
+        return False, ("not found in the archive, and these playlists could not "
+                       "be read to be sure: " + "; ".join(unlisted))
+    return False, "not in any authorised playlist or direct link of this campaign"
+
+
+# ---------------------------------------------------------------- trusted sources
+
+def _norm_host(host):
+    host = (host or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if host in ("youtu.be", "m.youtube.com", "music.youtube.com"):
+        host = "youtube.com"
+    return host
+
+
+def _is_channel_entry(entry):
+    e = str(entry or "").strip()
+    return (e.startswith("@") or e.startswith("UC")
+            or "/@" in e or "/channel/" in e or "/c/" in e or "/user/" in e)
+
+
+def _channel_facts(url):
+    """The channel a video belongs to, read without downloading it.
+
+    yt-dlp prints the uploader handle and the channel id, which is what a
+    trusted-channel entry is matched against -- so 'is this from a channel I
+    trust?' is answered, not assumed.
+    """
+    out = run(_ytdlp() + ["--no-warnings", "--no-playlist", "--playlist-items", "1",
+               "--print", "%(channel_id)s\t%(uploader_id)s\t%(channel_url)s\t%(uploader_url)s",
+               "--", safe_url(url)],
+              TIMEOUT_DOWNLOAD, "yt-dlp channel lookup")
+    line = (out.strip().splitlines() or [""])[0]
+    return [p.strip().lower() for p in line.split("\t") if p.strip() and p.strip() != "NA"]
+
+
+def trusted_check(url, entries):
+    """Is this link from a source the owner trusts? A yes or no with the reason.
+
+    A domain entry matches the link's host with no network. A channel entry --
+    an @handle or a UC… id -- is matched against the video's real channel, read
+    off the link. Empty list means nothing is trusted yet, which is a no.
+    """
+    url = safe_url(url)
+    entries = [str(e).strip() for e in (entries or []) if str(e).strip()]
+    if not entries:
+        return False, "no trusted sources are set; add one with `warden trusted add`"
+    host = _norm_host(urlparse(url).netloc)
+    for entry in entries:
+        if _is_channel_entry(entry):
+            continue
+        dom = _norm_host(entry)
+        if host == dom or host.endswith("." + dom):
+            return True, f"from the trusted domain {entry}"
+    channels = [e for e in entries if _is_channel_entry(e)]
+    if channels and "youtube" in host:
+        try:
+            facts = _channel_facts(url)
+        except Exception as exc:
+            return False, ("could not read the video's channel to check it against "
+                           f"your trusted list: {type(exc).__name__}")
+        for entry in channels:
+            token = entry.lower().rstrip("/").split("/")[-1]  # @handle or UC… id
+            if token and any(token == f or token == "@" + f or "@" + token == f
+                             or token in f.split("/") for f in facts):
+                return True, f"from the trusted channel {entry}"
+    return False, "not from any source in your trusted list"
 
 
 # ---------------------------------------------------------------- footage

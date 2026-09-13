@@ -815,6 +815,72 @@ class Framing(unittest.TestCase):
             self.M.FACE_MODEL = saved
 
 
+class TrustedAndAuthorize(unittest.TestCase):
+    """Whether a link may be clipped is decided, not reasoned. Domain and id
+    matching are pure; the playlist and channel lookups that need the network are
+    driven with a fake `run` so the logic is pinned without a download."""
+
+    def setUp(self):
+        import warden_media
+        self.M = warden_media
+
+    def test_video_id_reads_every_form(self):
+        for u in ("https://www.youtube.com/watch?v=OXi81V7swFo",
+                  "https://youtu.be/OXi81V7swFo",
+                  "https://www.youtube.com/shorts/OXi81V7swFo",
+                  "OXi81V7swFo"):
+            self.assertEqual(self.M.video_id(u), "OXi81V7swFo", u)
+        self.assertIsNone(self.M.video_id("https://youtube.com/playlist?list=PLabc"))
+        self.assertIsNone(self.M.video_id("https://example.com/x"))
+
+    def test_a_trusted_domain_needs_no_network(self):
+        ok, _ = self.M.trusted_check("https://www.youtube.com/watch?v=abcdefghijk",
+                                     ["youtube.com"])
+        self.assertTrue(ok)
+        ok, _ = self.M.trusted_check("https://vimeo.com/1", ["youtube.com"])
+        self.assertFalse(ok)
+
+    def test_an_empty_trusted_list_trusts_nothing(self):
+        ok, reason = self.M.trusted_check("https://youtube.com/watch?v=abcdefghijk", [])
+        self.assertFalse(ok)
+        self.assertIn("no trusted sources", reason)
+
+    def test_authorize_matches_a_direct_link_by_id(self):
+        r = rules(sources={"archive_urls": [
+            "https://www.youtube.com/watch?v=OXi81V7swFo"]})
+        ok, _ = self.M.authorize(r, "https://youtu.be/OXi81V7swFo")
+        self.assertTrue(ok)
+        ok, _ = self.M.authorize(r, "https://youtu.be/DIFFERENT123")
+        self.assertFalse(ok)
+
+    def test_authorize_expands_a_playlist_to_find_membership(self):
+        r = rules(sources={"archive_urls": [
+            "https://youtube.com/playlist?list=PLauthorised"]})
+        real = self.M.playlist_video_ids
+        self.M.playlist_video_ids = lambda url: {"OXi81V7swFo", "aaaaaaaaaaa"}
+        try:
+            ok, reason = self.M.authorize(r, "https://youtu.be/OXi81V7swFo")
+            self.assertTrue(ok)
+            self.assertIn("playlist", reason)
+            ok, _ = self.M.authorize(r, "https://youtu.be/notinlist12")
+            self.assertFalse(ok)
+        finally:
+            self.M.playlist_video_ids = real
+
+    def test_a_playlist_that_cannot_be_listed_is_a_no_not_a_yes(self):
+        r = rules(sources={"archive_urls": [
+            "https://youtube.com/playlist?list=PLunreadable"]})
+        real = self.M.playlist_video_ids
+        def boom(url): raise RuntimeError("blocked")
+        self.M.playlist_video_ids = boom
+        try:
+            ok, reason = self.M.authorize(r, "https://youtu.be/OXi81V7swFo")
+            self.assertFalse(ok)
+            self.assertIn("could not be read", reason)
+        finally:
+            self.M.playlist_video_ids = real
+
+
 class Signals(unittest.TestCase):
     """Evidence for viral moments, never a verdict. The tool marks where the
     language spikes; the model, which can read the clip, decides what to cut."""
