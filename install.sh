@@ -146,7 +146,7 @@ printf '%s\n' "$ESTADO"
 # O que não pode faltar. Cada uma destas linhas já degradou um clipe em silêncio
 # -- a de detecção de rosto entregou um corte com o rosto na borda do quadro.
 FALTA=0
-for CHAVE in "ffprobe" "ffmpeg" "face detection" "pillow" "style font" "measured style spec"; do
+for CHAVE in "ffprobe" "ffmpeg" "face detection" "pillow" "style font" "measured style spec" "libass"; do
     if printf '%s\n' "$ESTADO" | grep -i "^$CHAVE" | grep -q "MISSING"; then
         printf '\n\033[31mfalta:\033[0m %s\n' "$CHAVE"
         FALTA=1

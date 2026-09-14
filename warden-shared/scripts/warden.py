@@ -75,6 +75,69 @@ def clips_dir():
     return path
 
 
+def tracks_dir():
+    """Onde as trilhas que o dono mandou ficam, entre uma sessão e outra.
+
+    Existe porque perguntar de novo a cada clipe é o agente esquecendo o que já
+    lhe deram. Nenhuma faixa é embarcada no repositório: a biblioteca de áudio
+    do YouTube é gratuita para usar, e ainda assim ela não é NOSSA para
+    redistribuir -- quem baixa concorda com os termos na própria conta. Então o
+    agente aponta onde pegar e guarda o que a pessoa trouxer.
+    """
+    path = os.path.join(state_dir(), "tracks")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def resolve_track(nome):
+    """Um nome curto vira o caminho da trilha guardada; um caminho fica como está."""
+    if not nome:
+        return nome
+    aberto = os.path.expanduser(str(nome))
+    if os.path.isfile(aberto):
+        return aberto
+    guardada = os.path.join(tracks_dir(), os.path.basename(aberto))
+    if os.path.isfile(guardada):
+        return guardada
+    # Nem caminho nem trilha guardada. Dizer as duas coisas que faltam, em vez
+    # de deixar o ffmpeg falhar falando de um arquivo que a pessoa não nomeou.
+    tem = sorted(os.listdir(tracks_dir()))
+    die(f"there is no track called {nome!r}: not a path on disk, and not in "
+        f"{tracks_dir()}" + (f" (which holds: {', '.join(tem)})" if tem else
+                             " (which is empty)") + ". Send the audio file and "
+        f"`warden tracks add <file>` keeps it.", code=1)
+
+
+def cmd_tracks(args):
+    alvo = tracks_dir()
+    if args.action == "add":
+        origem = os.path.expanduser(args.file or "")
+        if not os.path.isfile(origem):
+            die(f"there is no file at {origem}", code=1)
+        if os.path.splitext(origem)[1].lower() not in (
+                ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus"):
+            die(f"{os.path.basename(origem)} is not an audio file", code=1)
+        destino = os.path.join(alvo, os.path.basename(origem))
+        shutil.copy2(origem, destino)
+        print(destino)
+        print(f"kept. `warden cut --track {os.path.basename(destino)}` finds it "
+              f"by name from now on -- do not ask for this file again.",
+              file=sys.stderr)
+        return 0
+    nomes = sorted(f for f in os.listdir(alvo)
+                   if os.path.splitext(f)[1].lower() in
+                   (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus"))
+    for nome in nomes:
+        print(os.path.join(alvo, nome))
+    if not nomes:
+        print("no track has been kept yet. This agent ships none and downloads "
+              "none: ask the owner for a file, or point them at "
+              "studio.youtube.com > Áudio, whose library is free to use in "
+              "videos and is downloaded under their own account.",
+              file=sys.stderr)
+    return 0
+
+
 def safe_id(cid):
     """A campaign id is one flat name, and this is checked on the way in AND on
     the way out. Validating it only at save time was worth nothing: every read
@@ -186,6 +249,34 @@ def fold(text):
     return stripped.lower()
 
 
+def whole(term, folded):
+    """O termo aparece no texto como token inteiro? Recebe e compara já dobrado.
+
+    Dois defeitos medidos, os dois silenciosos, os dois nesta fronteira:
+
+    `\b` antes do termo assume que ele começa com caractere de palavra. Com
+    `#ad` proibido, `re.search(r"\b\#ad", "post #ad de novo")` dá False -- o
+    `\b` exige palavra à esquerda do `#`, e à esquerda tem espaço. Num campo
+    vizinho de required_hashtags, hashtag é a forma mais provável do termo
+    banido, e a saída dizia "Nothing blocks this clip".
+
+    E não havia fronteira nenhuma à direita: `ad` proibido casava dentro de
+    "advogado", e `#prime` obrigatório era conferido por substring, então uma
+    legenda que só trazia `#primevideobr` passava como se cumprisse a campanha
+    -- a plataforma lê uma tag só, e não é a pedida.
+
+    Cada ponta olha o caractere do PRÓPRIO termo: só se cobra fronteira do lado
+    em que o termo tem caractere de palavra. Assim `#prime` casa em `#prime,` no
+    fim da frase mas não em `#primevideobr`, e `ad` casa em `#ad` mas não em
+    "advogado". Custo aceito e conhecido: `aposta` proibido não pega mais
+    "apostas" -- a campanha lista as duas, e errar aqui erra alto e visível, em
+    vez de liberar o post em silêncio.
+    """
+    head = r"(?<!\w)" if re.match(r"\w", term) else ""
+    tail = r"(?!\w)" if re.search(r"\w$", term) else ""
+    return re.search(head + re.escape(term) + tail, folded) is not None
+
+
 # ---------------------------------------------------------------- checking
 
 def check(rules, media, caption, ledger):
@@ -271,12 +362,12 @@ def check(rules, media, caption, ledger):
             warn("no caption was given to check, and this campaign has caption rules")
     else:
         folded = fold(caption)
-        missing = [t for t in required_tags if fold(t) not in folded]
+        missing = [t for t in required_tags if not whole(fold(t), folded)]
         if missing:
             reject("the caption is missing " + ", ".join(missing))
         elif required_tags:
             ok(f"all {len(required_tags)} required hashtags present")
-        missing_ats = [a for a in required_ats if fold(a) not in folded]
+        missing_ats = [a for a in required_ats if not whole(fold(a), folded)]
         if missing_ats:
             reject("the caption is missing " + ", ".join(missing_ats))
         elif required_ats:
@@ -284,7 +375,7 @@ def check(rules, media, caption, ledger):
         for phrase in required_text:
             if fold(phrase) not in folded:
                 reject(f"the caption must carry the exact words: {phrase!r}")
-        hits = [term for term in banned if re.search(rf"\b{re.escape(fold(term))}", folded)]
+        hits = [term for term in banned if whole(fold(term), folded)]
         if hits:
             reject("the caption uses terms this campaign bans: " + ", ".join(hits))
         if max_len and len(caption) > max_len:
@@ -520,6 +611,18 @@ def cmd_status(args):
     print("style font: " + (S.FONT_PATH if S.font_available()
                             else f"MISSING at {S.FONT_PATH} -- text would fall "
                                  "back to a system face"))
+    # A legenda é ASS queimado pelo libass, e libass é opção de compilação do
+    # ffmpeg. Sem ele o `cut` recusa queimar legenda -- em voz alta, mas recusa.
+    # Esta linha é para o defeito aparecer no `install.sh` e não no primeiro
+    # corte de alguém.
+    try:
+        tem = _media().ffmpeg_tem_filtro("ass")
+    except Exception as exc:
+        tem, _ = False, exc
+    print("libass (burned captions): " + ("yes, the `ass` filter is here" if tem
+                                          else "MISSING -- this ffmpeg was built "
+                                               "without libass, so no clip can "
+                                               "carry burned captions"))
     spec = specs_path()
     print("measured style spec: " + (spec if os.path.isfile(spec)
                                      else f"MISSING at {spec}"))
@@ -676,8 +779,9 @@ def cmd_archive(args):
     rules = load_campaign(args.campaign)
     out = safe_out(args.out or os.path.join(state_dir(), "footage", safe_id(args.campaign)),
                    "footage directory")
+    modo = "text" if getattr(args, "text_first", False) else "video"
     try:
-        got, failed = _media().archive(rules, out, limit=args.limit)
+        got, failed = _media().archive(rules, out, limit=args.limit, mode=modo)
     except Exception as exc:
         die(f"{type(exc).__name__}: {exc}", code=1)
     for path in got:
@@ -686,6 +790,17 @@ def cmd_archive(args):
         print(f"could not pull {url}: {why}", file=sys.stderr)
     if not got:
         die("nothing came down from this campaign's archive", code=1)
+    if modo == "text":
+        # O que fazer em seguida, dito aqui, porque é aqui que o agente está
+        # olhando. Sem esta linha ele baixa o vídeo inteiro de novo por reflexo.
+        print("this is the cheap pass: subtitles if the source publishes them, "
+              "otherwise the audio. Choose the windows on this text FIRST, then "
+              "run `warden archive` without --text-first to pull the video.",
+              file=sys.stderr)
+        print("measured on the 18-minute source of 14/09: subtitles 4s / 73 KB, "
+              "audio 4s / 15 MB, whole video 16s / 361 MB, and transcribing "
+              "195s. The subtitle pass is what saves the three minutes.",
+              file=sys.stderr)
     return 0
 
 
@@ -841,6 +956,35 @@ def deliver(result, rules, campaign, ledger):
         print("  re-cut it: a shorter hook, a different window, or no "
               "--subtitles.", file=sys.stderr)
         return 1
+    # Os avisos que `check` repete em todo veredito DE PROPÓSITO morriam aqui: o
+    # caminho da entrega lia `findings` e só imprimia o nível REJECT. Medido: um
+    # clipe com "not checked, the brief does not settle it", com as regras de
+    # `sources` que só o dono pode confirmar, e com o prazo a vencer saía na tela
+    # idêntico a um clipe que passou por tudo -- SHEET:, checklist, MEDIA: -- e o
+    # aviso não aparecia em lugar nenhum. Vale para `cut` e para `cut --plan`,
+    # que passam pelos dois pela mesma função.
+    warnings = [m for level, m in findings if level == ATENCAO]
+    if warnings:
+        print(f"{len(warnings)} thing(s) this render does not settle. Nothing "
+              "below blocks the file; every one of them is yours to confirm "
+              "before you send it:", file=sys.stderr)
+        # Agrupado pelo prefixo que o próprio `check` escreve, porque em campanha
+        # com muitos itens de `unknown` a mesma frase se repetia linha após linha
+        # e o que variava -- o item -- ficava escondido no fim dela.
+        groups = [("not checked, the brief does not settle it: ",
+                   "nobody checked these, the brief does not settle them:"),
+                  ("only you can confirm this: ",
+                   "only you can confirm these, from the footage itself:")]
+        for prefix, header in groups:
+            items = [m[len(prefix):] for m in warnings if m.startswith(prefix)]
+            if items:
+                print(f"  {header}", file=sys.stderr)
+                for item in items:
+                    print(f"    CHECK  {item}", file=sys.stderr)
+        loose = [m for m in warnings
+                 if not any(m.startswith(prefix) for prefix, _ in groups)]
+        for message in loose:
+            print(f"  CHECK  {message}", file=sys.stderr)
     sheet = result.get("sheet")
     if not sheet or not os.path.isfile(sheet):
         print("no contact sheet was written for this render, so nothing has "
@@ -849,11 +993,14 @@ def deliver(result, rules, campaign, ledger):
               "passing.", file=sys.stderr)
         return 1
     # Impresso antes do MEDIA: de propósito. A ordem na tela é a ordem do
-    # trabalho -- abrir a imagem, conferir os cinco itens, e só então entregar.
-    print(f"SHEET:{sheet}")
-    print("open that image and check all five before you send the clip:",
-          file=sys.stderr)
+    # trabalho -- abrir a imagem, conferir a lista, e só então entregar. O
+    # número de itens sai da própria lista: escrito à mão, ele descolou dela
+    # assim que a lista cresceu, e "confira os cinco" sobre oito itens é um
+    # convite a parar no quinto.
     import warden_style as S
+    print(f"SHEET:{sheet}")
+    print(f"open that image and check all {len(S.CHECKLIST)} before you send "
+          f"the clip:", file=sys.stderr)
     for item in S.CHECKLIST:
         print(f"  [ ] {item}", file=sys.stderr)
     print("  any one of them failing rejects the clip, even with every check "
@@ -862,6 +1009,19 @@ def deliver(result, rules, campaign, ledger):
     # composta pelo modelo, pelo mesmo motivo que todo número aqui vem da
     # ferramenta: um caminho digitado de memória é um caminho que não existe, e a
     # falha é silenciosa.
+    #
+    # E a instrução do que fazer com ela vem JUNTO, porque o SKILL sozinho não
+    # bastou. Medido em 14/09: o agente escreveu esta linha no meio de um turno,
+    # onde nada é enviado, e seguiu para o clipe seguinte. O arquivo existia, a
+    # linha existia, e ninguém recebeu nada -- nem o agente soube.
+    print("deliver this file NOW, with a tool call, before you cut the next one:",
+          file=sys.stderr)
+    print(f'  send_message(target="plow_chat", message="<caption>\\n\\n'
+          f'MEDIA:{result["out"]}")', file=sys.stderr)
+    print("  then READ the result. Writing the MEDIA: line into your narration "
+          "between tool calls attaches nothing: only the last message of a turn "
+          "is ever sent. Do not say the batch is ready until every send came "
+          "back successful.", file=sys.stderr)
     print(f"MEDIA:{result['out']}")
     return 0
 
@@ -891,12 +1051,19 @@ def cmd_cut(args):
         result = _media().cut(args.source, clip_out(args.out), rules,
                               args.start, args.end,
                               caption_srt=args.subtitles, hook=args.hook,
-                              track=args.track, track_start=args.track_start,
+                              track=resolve_track(args.track),
+                              track_start=args.track_start,
                               sound=sound, crop=args.crop,
-                              motion=args.motion, cover_footer=args.cover_footer)
+                              motion=args.motion, cover_footer=args.cover_footer,
+                              asked_s=args.seconds)
     except Exception as exc:
         die(f"{type(exc).__name__}: {exc}", code=1)
     return deliver(result, rules, args.campaign, ledger_for(args.campaign))
+
+
+def specs_dir():
+    return os.path.join(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))), "SPECS")
 
 
 def specs_path():
@@ -904,10 +1071,19 @@ def specs_path():
 
     No repo e não no estado do agente de propósito: é uma spec do projeto, ela
     entra num commit e um golden test quebra quando alguém a muda sem querer.
+
+    O nome diz de que formato ela é a medida, e isso não é cosmético. Chamada
+    `estilo-aprovado.json`, ela lia como "o estilo aprovado", ponto -- e o que
+    ela mede são vinte scenepacks de animação, nenhum deles um corte de fala.
+    Um nome genérico sobre um corpus específico é como uma faixa medida num
+    formato acaba reprovando outro.
     """
-    return os.path.join(os.path.dirname(os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__)))), "SPECS",
-        "estilo-aprovado.json")
+    return os.path.join(specs_dir(), "estilo-aprovado-scenepack.json")
+
+
+def specs_path_antigo():
+    """O nome que a spec tinha até o Bloco B. Só para dizer onde ela foi parar."""
+    return os.path.join(specs_dir(), "estilo-aprovado.json")
 
 
 def cmd_style(args):
@@ -945,6 +1121,12 @@ def cmd_style(args):
                     "measured_from": [m["file"] for m in medidas],
                     "ranges": S.consolidate(medidas)}
             target = args.out or specs_path()
+            if not args.out and target.endswith("estilo-aprovado-scenepack.json"):
+                print("  (gravando na spec de SCENEPACK. Se o que você acabou de "
+                      "medir são cortes de fala, passe --out "
+                      "SPECS/estilo-aprovado-fala.json: as duas faixas não são a "
+                      "mesma e sobrescrever uma com a outra apaga a medição.)",
+                      file=sys.stderr)
             os.makedirs(os.path.dirname(target), exist_ok=True)
             with open(target, "w", encoding="utf-8") as fh:
                 json.dump(spec, fh, ensure_ascii=False, indent=1)
@@ -957,6 +1139,12 @@ def cmd_style(args):
     if args.action == "check":
         spec_file = args.spec or specs_path()
         if not os.path.isfile(spec_file):
+            if os.path.isfile(specs_path_antigo()):
+                die(f"a spec ainda está com o nome antigo "
+                    f"({os.path.basename(specs_path_antigo())}). Ela mede vinte "
+                    f"scenepacks e nenhum corte de fala, então passou a se "
+                    f"chamar {os.path.basename(spec_file)}. Renomeie o arquivo, "
+                    f"ou aponte --spec para ele.", code=2)
             die(f"no measured spec at {spec_file}. Build one first with "
                 f"`warden style extract <approved clips> --consolidate`.", code=2)
         with open(spec_file, encoding="utf-8") as fh:
@@ -967,10 +1155,12 @@ def cmd_style(args):
         # mais que qualquer coisa recuperada dos pixels: a largura do hook ali é
         # a que o PIL mediu com a fonte real antes de desenhar.
         lado = os.path.splitext(args.files[0])[0] + "-estilo.json"
+        sidecar = None
         if os.path.isfile(lado):
             try:
                 with open(lado, encoding="utf-8") as fh:
-                    achados = S.check_sidecar(json.load(fh)) + achados
+                    sidecar = json.load(fh)
+                achados = S.check_sidecar(sidecar) + achados
             except Exception as exc:
                 print(f"  (could not read {lado}: {type(exc).__name__})",
                       file=sys.stderr)
@@ -978,6 +1168,21 @@ def cmd_style(args):
             print("  (no -estilo.json beside this file, so the text checks are "
                   "the approximate pixel ones. A clip this tool rendered has "
                   "one.)", file=sys.stderr)
+        # O item 5 do Bloco B. A métrica de pixel não é apagada e não vota
+        # sozinha: ela cruza com o que o PIL mediu, e o sinal é a dois.
+        achados = S.cross_check(sidecar, medida) + achados
+        # E o aviso de formato. Esta spec mede vinte scenepacks; um clipe com
+        # legenda queimada é um corte de fala, que é um formato que este corpus
+        # não contém. Dizer isso na tela é a diferença entre uma faixa que
+        # informa e uma faixa que finge autoridade que não tem.
+        e_fala = bool((sidecar or {}).get("caption"))
+        if e_fala and (spec.get("formato") or "scenepack") == "scenepack":
+            print(f"  AVISO  este clipe tem legenda de fala queimada, e "
+                  f"{os.path.basename(spec_file)} foi medida sobre "
+                  f"{len(spec.get('measured_from') or [])} scenepacks, nenhum "
+                  f"deles um corte de fala. As faixas abaixo descrevem outro "
+                  f"formato: leia como contexto, não como aprovação. O corpus "
+                  f"de fala é o Bloco E e ainda não existe.", file=sys.stderr)
         print(json.dumps(medida, ensure_ascii=False, indent=1))
         piores = [m for lv, m in achados if lv == "REJECT"]
         rotulo = {"REJECT": "REJECT", "ok": "ok    ", "note": "      "}
@@ -1014,7 +1219,10 @@ def cmd_captions(args):
         window = [r for r in rows if r["end"] > lo and r["start"] < hi]
         if not window:
             die(f"no caption line falls between {lo} and {hi}s", code=1)
-        approved, why = S.approval_state(args.srt)
+        approved, why = S.approval_state(
+            args.srt,
+            start=args.start if args.start is not None else None,
+            end=args.end if args.end is not None else None)
         print(f"# {len(window)} lines will burn between {lo:.1f}s and "
               f"{'end' if hi == float('inf') else f'{hi:.1f}s'} "
               f"({'approved' if approved else 'NOT approved'})")
@@ -1030,10 +1238,21 @@ def cmd_captions(args):
         print(f"\n# on screen that becomes {len(cues)} cues, at most {most} "
               f"lines and {longest:.1f}s each.")
         if args.approve:
-            path = S.write_approval(args.srt)
-            print(f"\napproved: {path}")
-            print("that approval is of the file's CONTENT -- edit the srt and it "
-                  "stops counting, which is the point.")
+            # Assina SÓ o que foi impresso. Assinar o arquivo depois de mostrar
+            # uma janela é o defeito que queimou `aromasas`: cinco linhas lidas,
+            # cento e cinquenta e duas assinadas.
+            path = S.write_approval(args.srt, start=args.start, end=args.end)
+            if args.start is None or args.end is None:
+                print(f"\napproved the WHOLE file: {path}")
+                print("every line above was printed, so every line is signed. "
+                      "Edit the srt and the approval stops counting.")
+            else:
+                print(f"\napproved {args.start:.0f}-{args.end:.0f}s only: {path}")
+                print(f"that is the window whose {len(window)} line(s) you just "
+                      f"read, and nothing else. A cut outside it will render "
+                      f"WITHOUT captions until you read and approve that window "
+                      f"too. Approving one window never approved the file -- "
+                      f"that is how a misheard word reached the screen.")
             return 0
         if not approved:
             print("\nnothing is approved yet, so `warden cut --subtitles` will "
@@ -1093,9 +1312,15 @@ def cmd_cut_plan(args):
             code=1)
 
     asked = len(clips)
-    print(f"# {asked} clips asked for. Each one is delivered as it exists, not "
-          f"the batch at the end.", file=sys.stderr)
-    delivered, failed = [], []
+    # "delivered" era a palavra errada e ela contradizia o conserto do P0: este
+    # laço RENDERIZA e libera; quem entrega é a chamada de `send_message`, que
+    # este processo não faz. Dizer "2 of 2 delivered" aqui é a ferramenta
+    # afirmando uma entrega que não aconteceu -- exatamente o defeito de 14/09,
+    # dito pela outra ponta.
+    print(f"# {asked} clips asked for. This command RENDERS and clears them; it "
+          f"does not deliver. Send each one with send_message as it clears, and "
+          f"read the result.", file=sys.stderr)
+    liberados, failed = [], []
     ledger = ledger_for(cid)
     for i, spec in enumerate(clips, 1):
         if not isinstance(spec, dict):
@@ -1118,6 +1343,7 @@ def cmd_cut_plan(args):
                 sound=spec.get("sound", sound),
                 crop=spec.get("crop", plan.get("crop")),
                 shots=spec.get("shots"),
+                asked_s=spec.get("seconds", plan.get("seconds")),
                 language=spec.get("language", plan.get("language")),
                 motion=spec.get("motion", plan.get("motion", True)),
                 cover_footer=spec.get("cover_footer", plan.get("cover_footer")))
@@ -1130,18 +1356,22 @@ def cmd_cut_plan(args):
                   file=sys.stderr)
             continue
         if code == 0:
-            delivered.append(name)
+            liberados.append(name)
         else:
             failed.append((name, "rendered but did not clear delivery"))
 
-    print(f"\n# {len(delivered)} of {asked} delivered.", file=sys.stderr)
+    print(f"\n# {len(liberados)} of {asked} cleared for delivery. NONE of them "
+          f"has been sent by this command.", file=sys.stderr)
     for name, why in failed:
         print(f"#   missing: {name} -- {why}", file=sys.stderr)
-    if len(delivered) < asked:
-        print(f"# this batch is NOT done: {asked - len(delivered)} of the {asked} "
-              "clips asked for are missing. Say which failed and why; do not "
-              "report the batch as finished.", file=sys.stderr)
+    if len(liberados) < asked:
+        print(f"# this batch is NOT done: {asked - len(liberados)} of the {asked} "
+              "clips asked for did not even clear. Say which failed and why; do "
+              "not report the batch as finished.", file=sys.stderr)
         return 1
+    print(f"# now send the {len(liberados)} of them, one send_message each, and "
+          f"read every result. The batch is done when the sends came back, not "
+          f"when this line printed.", file=sys.stderr)
     return 0
 
 
@@ -1274,10 +1504,19 @@ def main(argv=None):
     p.add_argument("--campaign", required=True)
     p.set_defaults(func=cmd_authorize)
 
+    p = sub.add_parser("tracks")
+    p.add_argument("action", choices=["list", "add"])
+    p.add_argument("file", nargs="?")
+    p.set_defaults(func=cmd_tracks)
+
     p = sub.add_parser("archive")
     p.add_argument("--campaign", required=True)
     p.add_argument("--out")
     p.add_argument("--limit", type=int)
+    p.add_argument("--text-first", action="store_true",
+                   help="pull only what gives the words -- the published "
+                        "subtitle, or the audio when there is none -- and no "
+                        "video. Choose the windows on that, then pull the video.")
     p.set_defaults(func=cmd_archive)
 
     p = sub.add_parser("transcribe")
@@ -1314,6 +1553,11 @@ def main(argv=None):
     p.add_argument("--campaign")
     p.add_argument("--start", type=float)
     p.add_argument("--end", type=float)
+    p.add_argument("--seconds", type=float,
+                   help="the duration the PERSON asked for, in seconds. The cut "
+                        "is moved to it from the same start, and the delivery "
+                        "gate rejects a file that misses it without a campaign "
+                        "rule to blame. Pass it whenever someone said a number.")
     p.add_argument("--out")
     p.add_argument("--subtitles")
     p.add_argument("--hook")
@@ -1343,7 +1587,7 @@ def main(argv=None):
     p.add_argument("action", choices=["extract", "check"])
     p.add_argument("files", nargs="+", help="clips, or a folder of them")
     p.add_argument("--consolidate", action="store_true",
-                   help="write the ranges to SPECS/estilo-aprovado.json")
+                   help="write the ranges to SPECS/estilo-aprovado-scenepack.json")
     p.add_argument("--out", help="where to write the consolidated spec")
     p.add_argument("--spec", help="the spec to check against")
     p.set_defaults(func=cmd_style)
