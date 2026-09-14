@@ -65,7 +65,7 @@ ffmpeg:              /usr/bin/ffmpeg
 face detection:      YuNet on OpenCV 5.0.0
 pillow (all burned text): 12.3.0
 style font:          /opt/hermes/skills/warden-shared/assets/Anton-Regular.ttf
-measured style spec: /opt/hermes/skills/SPECS/estilo-aprovado.json
+measured style spec: /opt/hermes/skills/SPECS/estilo-aprovado-scenepack.json
 ```
 
 The script fails if any of them says `MISSING`, and that is deliberate: every

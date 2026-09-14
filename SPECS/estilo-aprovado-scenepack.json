@@ -1,5 +1,7 @@
 {
  "schema": 1,
+ "formato": "scenepack",
+ "o_que_este_corpus_nao_cobre": "Estes vinte clipes são scenepacks de animação: uma frase-âncora sustentada, sem legenda corrida. Não há um único corte de fala neste corpus. Um corte de podcast tem hook E legenda, então ele tem mais faixas de texto que qualquer aprovado daqui -- medido, 2,75 contra 0,9-2,1 -- e reprová-lo por essa faixa seria a régua medindo a si mesma. Enquanto SPECS/estilo-aprovado-fala.json não existir (Bloco E), as faixas abaixo informam e não reprovam um clipe de fala.",
  "measured_from": [
   "01-trabalho-a-fazer-LONGA-youtube-reels.mp4",
   "01-trabalho-a-fazer-TIKTOK-som-no-app.mp4",

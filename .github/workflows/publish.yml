@@ -105,7 +105,7 @@ jobs:
           ok, why = M.face_detection_status()
           assert ok, 'sem detector de rosto: ' + why
           assert S.font_available(), 'sem a fonte Anton'
-          assert os.path.isfile('/opt/hermes/skills/SPECS/estilo-aprovado.json')
+          assert os.path.isfile('/opt/hermes/skills/SPECS/estilo-aprovado-scenepack.json')
           import PIL, numpy, faster_whisper, yt_dlp
           print('ok:', why)
           "
