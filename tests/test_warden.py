@@ -2444,3 +2444,82 @@ class NothingDegradesQuietly(unittest.TestCase):
             self.assertIn("a fonte não está", str(erro.exception))
         finally:
             self.S.FONT_PATH = real
+
+
+# ══════════════════════════════════════════════ modelo que ainda está baixando
+#
+# Numa instalação nova o baixador de fundo ainda corre quando o `warden status`
+# já ficou verde, e o primeiro `warden cut` do host cai nessa janela.
+
+class ModelStillDownloading(unittest.TestCase):
+
+    def setUp(self):
+        import warden_media
+        self.M = warden_media
+        self.home = tempfile.mkdtemp(prefix="warden-modelos-")
+        self._antigo = os.environ.get("HF_HOME")
+        os.environ["HF_HOME"] = self.home
+        self.addCleanup(self._restaura)
+
+    def _restaura(self):
+        if self._antigo is None:
+            os.environ.pop("HF_HOME", None)
+        else:
+            os.environ["HF_HOME"] = self._antigo
+
+    def _bytes(self, size, mb):
+        d = os.path.join(self.home, f"models--Systran--faster-whisper-{size}", "blobs")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "peso"), "wb") as fh:
+            fh.write(b"\0" * int(mb * 1_000_000))
+
+    def test_absent_and_downloading_are_not_the_same_answer(self):
+        """Eram a mesma linha no status, e são coisas diferentes: numa é só
+        esperar, na outra o primeiro corte puxa 484 MB no meio do pedido."""
+        self.assertEqual(self.M.model_status("small")["small"]["state"], "absent")
+        self._bytes("small", 200)
+        self.assertEqual(self.M.model_status("small")["small"]["state"], "fetching")
+
+    def test_progress_is_reported_in_megabytes_and_percent(self):
+        self._bytes("small", 242)                       # metade de 484
+        info = self.M.model_status("small")["small"]
+        self.assertEqual(info["mb"], 242)
+        self.assertGreater(info["pct"], 40)
+        self.assertLess(info["pct"], 60)
+
+    def test_a_complete_model_reads_as_ready(self):
+        self._bytes("base", 145)
+        self.assertEqual(self.M.model_status("base")["base"]["state"], "ready")
+
+    def test_the_cut_says_how_much_is_left_instead_of_failing(self):
+        self._bytes("small", 200)
+        aviso = self.M.model_wait_note("small")
+        self.assertIn("284 MB to go", aviso)
+        self.assertIn("--model tiny", aviso, "tem de dizer a saída, não só o problema")
+
+    def test_a_ready_model_produces_no_warning_at_all(self):
+        self._bytes("base", 145)
+        self.assertIsNone(self.M.model_wait_note("base"))
+
+    def test_transcribe_refuses_with_the_progress_rather_than_blocking(self):
+        """O WhisperModel() simplesmente começava um download de cinco minutos
+        sem uma linha na tela. Cinco minutos de silêncio num chat lê como agente
+        morto."""
+        _ffmpeg_or_skip()
+        try:
+            import faster_whisper  # noqa: F401
+        except ImportError:
+            raise unittest.SkipTest("faster-whisper não está instalado")
+        d = tempfile.mkdtemp(prefix="warden-src-")
+        src = _make_source(os.path.join(d, "s.mp4"), seconds=3)
+        self._bytes("small", 100)
+        with self.assertRaises(RuntimeError) as erro:
+            self.M.transcribe(src, model_size="small", progress=lambda _l: None)
+        self.assertIn("still downloading", str(erro.exception))
+
+    def test_the_fetch_state_file_is_believed_when_it_says_failed(self):
+        with open(os.path.join(self.home, "fetch-state"), "w") as fh:
+            fh.write("started=1\nsmall=fetching\nsmall=failed\n")
+        info = self.M.model_status("small")["small"]
+        self.assertEqual(info["state"], "failed")
+        self.assertIn("failed to download at boot", self.M.model_wait_note("small"))

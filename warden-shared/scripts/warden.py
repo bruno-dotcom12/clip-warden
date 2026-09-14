@@ -525,14 +525,26 @@ def cmd_status(args):
                                      else f"MISSING at {spec}"))
     # The models arrive after boot rather than inside the image, so whether they
     # are here yet is a real question with a real answer, not a constant.
-    home = os.environ.get("HF_HOME", "/var/lib/hermes/models")
-    found = []
-    for root, dirs, files in os.walk(home):
-        for name in dirs:
-            if "faster-whisper" in name:
-                found.append(name.split("faster-whisper-")[-1])
-    print("whisper models: " + (", ".join(sorted(set(found))) if found
-                                else "still downloading, or not fetched yet"))
+    # "ainda baixando" e "nunca baixou" eram a mesma linha, e são coisas
+    # diferentes: numa é só esperar, na outra o primeiro corte vai puxar 484 MB
+    # no meio do pedido de alguém.
+    try:
+        estados = _media().model_status()
+    except Exception as exc:
+        print(f"whisper models: could not be read ({type(exc).__name__})")
+        return 0
+    for nome, info in sorted(estados.items()):
+        if info["state"] == "ready":
+            print(f"whisper model {nome}: ready ({info['mb']} MB)")
+        elif info["state"] == "fetching":
+            print(f"whisper model {nome}: downloading, {info['mb']} of "
+                  f"{info['want_mb']} MB ({info['pct']}%)")
+        elif info["state"] == "failed":
+            print(f"whisper model {nome}: FAILED at boot -- the first cut would "
+                  f"fetch {info['want_mb']} MB itself")
+        else:
+            print(f"whisper model {nome}: not here yet ({info['want_mb']} MB to "
+                  f"download; it runs in the background after install)")
     return 0
 
 
@@ -1321,7 +1333,10 @@ def main(argv=None):
                         "do not pass --subtitles either")
     p.add_argument("--crop", help="which side of a wider source to keep: "
                    "left, center, right, auto, or a percentage. A side or auto "
-                   "follows the detected face; a percentage is exact. Center by default")
+                   "follows the detected face; a percentage is exact. Centre by "
+                   "default WHEN this image has a face detector -- without one "
+                   "this flag is required, because the centre is a guess and a "
+                   "guess ships the subject's face sliced at the edge")
     p.set_defaults(func=cmd_cut)
 
     p = sub.add_parser("style")

@@ -1,0 +1,108 @@
+# Publica a imagem no GHCR, para que a máquina de quem instala baixe em vez de
+# construir.
+#
+# O build local custa ao host duas coisas que ele não pediu: 4,68 GB de imagem
+# desempacotada MAIS 4,68 GB de cache de build, e a chance de um erro de build
+# virar uma instalação falha por um motivo que não é dele -- um apt-get que caiu,
+# um wheel que saiu do PyPI, um host de CDN fora do ar. Baixar uma imagem já
+# construída troca tudo isso por 1,06 GB comprimidos e um `docker pull`.
+#
+# amd64 apenas, e isso não é escolha: a base `plow-cloud-agents` publica um
+# manifesto único de uma arquitetura. Verificado com `imagetools inspect --raw`:
+# é `manifest.v2+json`, não um índice. Enquanto ela for assim, arm64 é
+# impossível, e num Apple Silicon a imagem roda emulada -- que é exatamente o
+# que acontece hoje com o build local.
+name: publish image
+
+on:
+  push:
+    branches: [main]
+    # Mudança em documentação não merece uma imagem nova.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  # Uma tag `v1.2.3` publica `:v1.2.3` além de `:latest`, para quem quiser
+  # prender a versão.
+  workflow_dispatch:
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # Para a atestação de proveniência: diz de qual commit e de qual workflow
+      # a imagem saiu, que é o que um estranho não consegue verificar sozinho.
+      id-token: write
+      attestations: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=long
+            type=semver,pattern=v{{version}}
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # O cache vive no registro, não na máquina de ninguém.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+
+      - uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      # O digest é o que o caminho cloud da Plow exige -- `provider=exe:<image>@sha256:<digest>`,
+      # porque uma tag pode ser reapontada e uma tag nunca é uma referência.
+      - name: digest
+        run: |
+          echo "## imagem publicada" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      # A imagem publicada tem de ter o detector de rosto funcionando. Sem esta
+      # checagem, uma imagem quebrada chega à máquina de um host e o defeito
+      # aparece como um clipe com o rosto na borda do quadro, não como um build
+      # vermelho aqui.
+      - name: o que a imagem precisa ter
+        run: |
+          IMG="ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
+          docker run --rm --entrypoint /opt/hermes/.venv/bin/python3 "$IMG" -c "
+          import sys, os
+          sys.path.insert(0, '/opt/hermes/skills/warden-shared/scripts')
+          import warden_media as M, warden_style as S
+          ok, why = M.face_detection_status()
+          assert ok, 'sem detector de rosto: ' + why
+          assert S.font_available(), 'sem a fonte Anton'
+          assert os.path.isfile('/opt/hermes/skills/SPECS/estilo-aprovado.json')
+          import PIL, numpy, faster_whisper, yt_dlp
+          print('ok:', why)
+          "

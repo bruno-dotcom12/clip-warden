@@ -59,12 +59,16 @@ que sustenta o meio e o que fecha, e recusa a janela quando não consegue.
 
 ## Bloco E. Corpus de fala
 
-Os 20 aprovados são scenepack de animação. O agente corta podcast. Falta a
-faixa medida do formato que ele realmente produz.
+O corpus medido é scenepack de animação. O agente corta podcast. Falta a faixa
+medida do formato que ele realmente produz.
 
-Fecha quando: `SPECS/estilo-aprovado-fala.json` existe, medido sobre 8 a 10
-cortes de fala de clipadores que pontuam, e o `style check` reprova fora da
-faixa em vez de só relatar.
+A pasta PRIME saiu de cena por decisão do dono. O corpus de referência interno
+passa a ser `~/clipagem/clipes cowork prime/` (lotes 11-09 e 12-09), e o corpus
+de fala vem de fora: 8 a 10 cortes de podcast de clipadores que pontuam nas
+campanhas.
+
+Fecha quando: `SPECS/estilo-aprovado-fala.json` existe, medido sobre esses
+cortes, e o `style check` reprova fora da faixa em vez de só relatar.
 
 ## Bloco F. Pacote de publicação
 

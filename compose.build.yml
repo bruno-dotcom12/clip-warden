@@ -1,0 +1,13 @@
+# Build local, para quem desenvolve o agente em vez de usá-lo.
+#
+#   docker compose -f compose.yml -f compose.build.yml up --build -d
+#
+# Existe como arquivo separado, e não como `build:` ao lado de `image:` no
+# compose principal, porque as duas chaves juntas fazem o compose construir
+# sozinho quando a imagem não está local -- que é exatamente a máquina de quem
+# acabou de instalar. O host puxa; quem desenvolve pede o build.
+services:
+  agent:
+    build: .
+    image: clip-warden-agent:local
+    pull_policy: never

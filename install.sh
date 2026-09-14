@@ -108,8 +108,17 @@ fi
 
 # ---------------------------------------------------------------- 4. subir
 
-diga "4/5  build e start (a primeira vez baixa ~1 GB de imagem base)"
-rode docker compose up --build -d
+# Puxa a imagem publicada. `--build` só a pedido, para quem desenvolve: um
+# build na máquina de quem instala custa 4,68 GB de imagem mais 4,68 GB de cache,
+# e faz de qualquer tropeço de build uma instalação falha por um motivo que não é
+# dele.
+if [ "${WARDEN_BUILD:-}" = "1" ]; then
+    diga "4/5  build local (WARDEN_BUILD=1) e start"
+    rode docker compose -f compose.yml -f compose.build.yml up --build -d
+else
+    diga "4/5  baixando a imagem (~1 GB) e subindo"
+    rode docker compose up -d
+fi
 
 # ---------------------------------------------------------------- 5. conferir
 
@@ -137,7 +146,7 @@ printf '%s\n' "$ESTADO"
 # O que não pode faltar. Cada uma destas linhas já degradou um clipe em silêncio
 # -- a de detecção de rosto entregou um corte com o rosto na borda do quadro.
 FALTA=0
-for CHAVE in "ffprobe" "ffmpeg" "face detection" "pillow" "style font"; do
+for CHAVE in "ffprobe" "ffmpeg" "face detection" "pillow" "style font" "measured style spec"; do
     if printf '%s\n' "$ESTADO" | grep -i "^$CHAVE" | grep -q "MISSING"; then
         printf '\n\033[31mfalta:\033[0m %s\n' "$CHAVE"
         FALTA=1

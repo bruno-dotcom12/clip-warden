@@ -557,6 +557,91 @@ def _dimensions(path):
     return int(w), int(h)
 
 
+# Tamanho aproximado de cada modelo já convertido para int8, em MB. Serve só
+# para dizer "falta X" em vez de "aguarde"; não é usado em decisão nenhuma.
+MODEL_MB = {"tiny": 75, "base": 145, "small": 484, "medium": 1530, "large-v3": 3100}
+
+
+def model_home():
+    return os.environ.get("HF_HOME", "/var/lib/hermes/models")
+
+
+def _model_bytes(size):
+    """Quantos bytes do modelo `size` já estão em disco."""
+    home = model_home()
+    if not os.path.isdir(home):
+        return 0
+    alvo = f"faster-whisper-{size}"
+    total = 0
+    for raiz, dirs, arqs in os.walk(home):
+        if alvo not in raiz:
+            continue
+        for a in arqs:
+            try:
+                total += os.path.getsize(os.path.join(raiz, a))
+            except OSError:
+                pass
+    return total
+
+
+def model_status(size=None):
+    """O que o baixador de modelos está fazendo, em números.
+
+    Devolve {size: {"state": ..., "mb": n, "want_mb": n, "pct": n}}. `state` é
+    `ready`, `fetching`, `failed` ou `absent`.
+
+    Existe porque "ainda baixando" e "nunca baixou" eram a mesma linha no
+    `warden status`, e porque o primeiro `warden cut` de uma instalação nova cai
+    justo nessa janela: o status fica verde, o dono pede um corte, e o whisper
+    começa um download de cinco minutos sem dizer nada. Um silêncio de cinco
+    minutos num chat lê como agente morto.
+    """
+    marcado = {}
+    caminho = os.path.join(model_home(), "fetch-state")
+    try:
+        with open(caminho, encoding="utf-8") as fh:
+            for linha in fh:
+                if "=" in linha:
+                    k, v = linha.strip().split("=", 1)
+                    marcado[k] = v          # a última linha de cada chave vence
+    except OSError:
+        pass
+    out = {}
+    for nome in ([size] if size else ["small", "base"]):
+        mb = _model_bytes(nome) / 1_000_000
+        quer = MODEL_MB.get(nome, 500)
+        estado = marcado.get(nome)
+        if mb >= quer * 0.95:
+            estado = "ready"
+        elif estado not in ("fetching", "failed"):
+            estado = "fetching" if mb > 0 else "absent"
+        out[nome] = {"state": estado, "mb": round(mb), "want_mb": quer,
+                     "pct": min(99, int(mb * 100 / quer)) if estado != "ready" else 100}
+    return out
+
+
+def model_wait_note(size):
+    """A frase que o `cut` diz em vez de travar em silêncio, ou None se pronto."""
+    info = model_status(size).get(size, {})
+    if info.get("state") == "ready":
+        return None
+    falta = max(0, info.get("want_mb", 0) - info.get("mb", 0))
+    if info.get("state") == "fetching":
+        return (f"the {size} transcription model is still downloading: "
+                f"{info['mb']} of {info['want_mb']} MB ({info['pct']}%), "
+                f"{falta} MB to go. It runs in the background at boot. Wait and "
+                f"try again, or transcribe with a model that is already here "
+                f"(`warden transcribe <file> --model tiny`), or take the wait "
+                f"on purpose with WARDEN_WAIT_FOR_MODEL=1.")
+    if info.get("state") == "failed":
+        return (f"the {size} model failed to download at boot. This request "
+                f"would fetch {info['want_mb']} MB now, which is a long silence "
+                f"in a chat -- say so before you wait.")
+    return (f"the {size} transcription model is not on this machine yet "
+            f"({info.get('want_mb', 0)} MB). It downloads in the background "
+            f"after install; this request would fetch it now.")
+
+
 def transcribe(path, model_size=None, window=None, prefer_lang=None,
                progress=None):
     """Words with timing. A published subtitle beats a transcription.
@@ -611,6 +696,16 @@ def transcribe(path, model_size=None, window=None, prefer_lang=None,
         size, why = pick_model(seconds)
 
     try:
+        # O modelo pode não estar aqui ainda: numa instalação nova o baixador de
+        # fundo ainda está correndo quando o `warden status` já ficou verde.
+        # Antes disto, o WhisperModel() simplesmente começava um download de
+        # cinco minutos sem uma linha na tela.
+        espera = model_wait_note(size)
+        if espera:
+            if os.environ.get("WARDEN_WAIT_FOR_MODEL") == "1":
+                say(f"warden: {espera}")
+            else:
+                raise RuntimeError(espera)
         say(f"transcribing {span / 60:.1f} minutes with faster-whisper {size} "
             f"({why})...")
         model = WhisperModel(size, device="cpu", compute_type="int8")

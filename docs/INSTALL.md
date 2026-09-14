@@ -9,8 +9,8 @@ git clone https://github.com/bruno-dotcom12/clip-warden.git && cd clip-warden
 ```
 
 That is the whole install. The script clones the `plow-agents` command, logs
-you in, mints the agent's credential, builds, starts, and then checks that the
-container came up with everything a clip needs — refusing to call itself done
+you in, mints the agent's credential, pulls the published image, starts it, and
+then checks that the container came up with everything a clip needs — refusing to call itself done
 if anything is missing. It prints every command it runs, so nothing here is
 hidden; if you would rather type them yourself, they are all in **By hand**
 below.
@@ -27,11 +27,17 @@ continue past a problem.
   Settings → Resources → Memory. `install.sh` measures this and warns you.
 - **Git.**
 - **A Plow account**, for the agent's chat line, and the phone that owns it.
-- **About 5 GB of free disk for the build.** The image is roughly 4.7 GB on
-  disk, of which the Plow base — 0.95 GB compressed, shared by every agent in
-  this hackathon — is the part you only download once. Footage the agent pulls
-  lands in a Docker volume, not in your folders, and a 20-minute source is
-  another ~600 MB there.
+- **About 5 GB of free disk.** You download 1.06 GB (the published image,
+  compressed) and it unpacks to 4.68 GB. Footage the agent pulls lands in a
+  Docker volume, not in your folders, and a 20-minute source is another ~600 MB
+  there.
+
+  You do **not** build the image. It is published at
+  `ghcr.io/bruno-dotcom12/clip-warden` and `install.sh` pulls it. Building
+  locally used to cost a second 4.68 GB of build cache on top of the image, and
+  turned any hiccup during the build — an `apt-get` that dropped, a wheel pulled
+  from PyPI — into a failed install for a reason that was never yours. To build
+  anyway, for development: `WARDEN_BUILD=1 ./install.sh`.
 
 You do **not** need Python on the host. Everything runs in the container. Python
 3 is only for running the test suite (`python3 -m unittest discover -s tests`),
@@ -57,7 +63,7 @@ read it. These lines must all name something, never `MISSING`:
 ffprobe:             /usr/bin/ffprobe
 ffmpeg:              /usr/bin/ffmpeg
 face detection:      YuNet on OpenCV 5.0.0
-pillow:              12.3.0
+pillow (all burned text): 12.3.0
 style font:          /opt/hermes/skills/warden-shared/assets/Anton-Regular.ttf
 measured style spec: /opt/hermes/skills/SPECS/estilo-aprovado.json
 ```
@@ -67,15 +73,43 @@ one of those lines is a dependency whose absence used to degrade a clip in
 silence rather than stop it. The face detector is the sharpest example — without
 it the vertical crop falls back to the middle of the frame, and a video where
 the speaker sits to one side ships with their face sliced off at the edge. That
-happened. Now `warden cut` refuses to frame at all rather than guess, and tells
-you to pass `--crop`.
+happened. Now `warden cut` refuses to frame rather than guess: with no detector it stops
+unless you say where the subject is with `--crop left|right|center|<0-100>`, and
+then it honours that literally.
 
 `warden status` prints more than those six lines — where state lives, whether it
-is writable, which campaigns are stored, and whether the transcription models
-have arrived. The models are the one thing that is allowed to be missing at this
-point: they are not in the image, and a background service pulls them on first
-boot while you are reading the agent's first reply. A request that arrives first
-falls back to fetching a model then, which is slower but correct.
+is writable, which campaigns are stored, and how far along the transcription
+models are:
+
+```
+whisper model base:  ready (145 MB)
+whisper model small: downloading, 210 of 484 MB (43%)
+whisper model small: not here yet (484 MB to download; it runs in the background after install)
+whisper model small: FAILED at boot -- the first cut would fetch 484 MB itself
+```
+
+`not here yet` is normal in the first minute. `FAILED at boot` means the
+background fetch died and every request will refuse until it is retried.
+
+The models are the one thing allowed to be missing at this point. They are not
+in the image — baking them cost every installer 600 MB before the agent had said
+a word — so a background service pulls them at first boot while you read the
+agent's first reply.
+
+**This is the window the first clip falls into.** Ask for a cut while `small` is
+still at 43% and the agent tells you so, with the megabytes left and what to do
+about it, instead of starting a silent five-minute download that reads like a
+hung agent:
+
+> the small transcription model is still downloading: 210 of 484 MB (43%),
+> 274 MB to go. It runs in the background at boot. Wait and try again, or
+> transcribe with a model that is already here
+> (`warden transcribe <file> --model tiny`), or take the wait on purpose with
+> `WARDEN_WAIT_FOR_MODEL=1`.
+
+That is a **refusal**, not a warning: the command exits non-zero. `--model` is a
+`warden transcribe` flag — `warden cut` has none — so for a cut you either wait,
+or transcribe the window separately first and pass the srt.
 
 ## First run
 
@@ -105,7 +139,7 @@ plow-agents login            # prints a phrase; text it to Plow from your phone
 plow-agents lines            # prints your line UIDs, as ln_...
 plow-agents mint ln_xxx      # writes ./plow-credentials
 
-docker compose up --build -d
+docker compose up -d           # pulls the published image
 docker compose exec -u 10000:10000 agent warden status
 ```
 
@@ -126,20 +160,38 @@ Three things that bite, in the order they bite:
   agent out of them — and `warden status` would still print `writable: yes`,
   because root can write, so the diagnostic hides the damage.
 
-The build is 24 steps. Almost all of the wall clock is one download: the base
-image. What this repository adds on top is six packages (installed with `uv` —
-the base's virtualenv has no `pip` — plus the YuNet face-detection model, 
-verified against the hash in `vendor/yunet.pin`), and under a minute of work
-once the base is local. The `linux/amd64` emulation warning is expected: that
-base publishes one architecture and the Dockerfile says so on purpose. It does
-not slow the build; it only matters when the agent runs.
+To build it yourself instead of pulling:
 
-If the base pull fails with a `403`, it is a stale registry credential rather
-than a permission you are missing:
+```sh
+docker compose -f compose.yml -f compose.build.yml up --build -d
+```
+
+The build is 24 steps and 110 layers. Three numbers get quoted for the size of
+one image and they measure different things: **1.06 GB** is what you download
+(compressed layers), **3.53 GB** is the sum of the uncompressed layers, and
+**4.68 GB** is what `docker images` reports once unpacked, which includes the
+snapshot overhead. Of the 3.53 GB, **84% is the Plow base** — one `apt-get` layer
+alone is 1.1 GB. What this repository adds is 579 MB, essentially all of it one
+`pip install` of six packages (with `uv`, because the base's virtualenv has no
+`pip`): OpenCV for face detection, ctranslate2 and onnxruntime and PyAV for
+transcription, numpy, pillow. Everything else of ours — the skills, the measured
+spec, the Anton font, the YuNet model — is about 1 MB.
+
+The `linux/amd64` emulation warning is expected, and it is not a choice: the
+Plow base publishes a single-architecture manifest, so there is no arm64 to
+build against. On Apple Silicon the agent runs emulated. It does not slow the
+build; it only matters when the agent runs.
+
+If the **image** pull fails with `denied` or `403` from `ghcr.io`, that is a
+stale credential there: `docker logout ghcr.io`, then `docker compose up -d`.
+
+The rest of this block is for the local-build path only. If the **base** pull
+fails with a `403`, it is a stale registry credential rather than a permission
+you are missing:
 
 ```sh
 docker logout public.ecr.aws
-docker compose up --build -d
+docker compose -f compose.yml -f compose.build.yml up --build -d
 ```
 
 To watch it come up: `docker compose logs -f agent`, and wait for
@@ -150,8 +202,11 @@ line and is listening.
 
 Worth knowing before you run a stranger's agent on your machine.
 
-**While building**, it downloads from three hosts, all pinned by digest or
-sha256 in the repository:
+**While installing**, it downloads the published image from **`ghcr.io`**, and
+nothing else.
+
+**Only if you build locally** (`WARDEN_BUILD=1`, or `-f compose.build.yml`) it
+reaches three more hosts, all pinned by digest or sha256 in the repository:
 
 - `public.ecr.aws` — the Plow base image, pinned by digest.
 - `media.githubusercontent.com` — the YuNet face-detection model, pinned by

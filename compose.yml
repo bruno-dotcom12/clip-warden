@@ -1,6 +1,16 @@
 services:
   agent:
-    build: .
+    # A imagem publicada, não um build na máquina de quem instala.
+    #
+    # `docker compose up --build` custava ao host 4,68 GB de imagem MAIS 4,68 GB
+    # de cache de build, e transformava qualquer tropeço de build -- um apt-get
+    # que caiu, um wheel que saiu do PyPI -- numa instalação falha por um motivo
+    # que não era dele. Puxar troca isso por 1,06 GB comprimidos.
+    #
+    # Para desenvolver, o build local continua a um arquivo de distância:
+    #   docker compose -f compose.yml -f compose.build.yml up --build -d
+    image: ${WARDEN_IMAGE:-ghcr.io/bruno-dotcom12/clip-warden:latest}
+    pull_policy: ${WARDEN_PULL:-missing}
     environment:
       # The Agent Index project id this install reports to. Registered once by
       # the publisher; every installer reports to the same id. The reporter

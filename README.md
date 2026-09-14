@@ -45,10 +45,15 @@ reaches out, and why:
 - **The campaign links you send it**, and only those, to read a brief.
 - **The archive links published inside a brief**, to pull footage, `http` and
   `https` only.
+- **GitHub Container Registry (`ghcr.io`)**, once per install, to pull the
+  published image. Building locally instead reaches `public.ecr.aws`,
+  `media.githubusercontent.com` and `raw.githubusercontent.com` — see
+  `docs/INSTALL.md`.
 - **Hugging Face**, once per install, for the two transcription models.
 - **The AI Worth Using Agent Index**, hourly, with day and model token counts
   and nothing else — no prompts, no file paths, no costs. It has no switch;
-  an owner who does not want it builds the image without that service.
+  an owner who does not want it edits the Dockerfile and builds their own with
+  `docker compose -f compose.yml -f compose.build.yml up --build -d`.
 - **Four public campaign directories** — `clipmap.gg`, `whop.com`,
   `clipradar.co`, `realoficial.com.br` — only when you ask it to go find a
   campaign, and only through `warden discover`.
@@ -63,8 +68,9 @@ git clone https://github.com/bruno-dotcom12/clip-warden.git && cd clip-warden
 ```
 
 The script clones the `plow-agents` command, logs you in, asks which line the
-agent should answer on, mints its credential, builds, starts, and then checks
-the container came up with everything a clip needs. It prints every command it
+agent should answer on, mints its credential, pulls the published image (~1 GB),
+starts it, and then checks the container came up with everything a clip needs.
+To build locally instead, for development: `WARDEN_BUILD=1 ./install.sh`. It prints every command it
 runs and stops at the first thing it cannot do. `docs/INSTALL.md` has the same
 path typed out by hand, and the three ordering traps that bite when you do.
 
@@ -79,7 +85,9 @@ stores the answer.
 
 The transcription models are not in the image. A supervised service pulls them
 in the background on first boot, while you are reading the agent's first reply,
-and they stay in the agent's volume. `warden status` says whether they arrived.
+and they stay in the agent's volume. `warden status` reports how far along each
+one is, in megabytes -- and a cut asked for before they land says the same thing
+rather than starting a silent five-minute download.
 
 ## The commands under it
 
@@ -98,7 +106,7 @@ it rather than from the model's reading.
 | `warden digest <transcript>` | the transcript a model can afford to read |
 | `warden signals <transcript>` | the moments the words and sound point at, for viral cuts |
 | `warden beat <track>` | tempo, grid and drop, so a cut can land on a bar |
-| `warden cut <src> --campaign <id> --start --end --out` | render inside the rules, then check the render |
+| `warden cut <src> --campaign <id> --start --end --out` | render inside the rules, then check the render (needs `--crop` when the image has no face detector) |
 | `warden check <clip> --campaign <id> --caption -` | the gate: exit 1 means do not post |
 | `warden package --campaign <id> --hook "..."` | the caption the campaign requires |
 | `warden log --campaign <id> ...` | this install's own count, which the cap reads |
