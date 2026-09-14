@@ -7,6 +7,8 @@ in a payout.
 """
 import json
 import os
+import re
+import shutil
 import sys
 import tempfile
 import unittest
@@ -15,6 +17,24 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "warden-shared", "scripts"))
 
 WARDEN_DIR = tempfile.mkdtemp(prefix="warden-tests-")
+
+
+def _temp(caso, prefix):
+    """Um diretório temporário que se APAGA quando o teste acaba.
+
+    Existe porque não existia. Dezenove classes desta suíte chamavam
+    `tempfile.mkdtemp` e nenhuma limpava, e a pior delas -- a que simula o
+    modelo do Whisper baixando -- escreve até 484 MB de zeros por execução.
+    Medido em 14/09, depois de um dia rodando a suíte: 4.939 diretórios
+    `warden-*` largados em $TMPDIR, somando cerca de 60 GB, e o disco da
+    máquina do dono em 152 MB livres de 228 GB. A suíte derrubou o Docker
+    Desktop junto.
+
+    É a regra do projeto aplicada à própria suíte: nada consome em silêncio.
+    """
+    caminho = tempfile.mkdtemp(prefix=prefix)
+    caso.addCleanup(shutil.rmtree, caminho, ignore_errors=True)
+    return caminho
 os.environ["WARDEN_DIR"] = WARDEN_DIR
 
 import warden
@@ -165,7 +185,7 @@ class Preferences(unittest.TestCase):
     def setUp(self):
         import warden_prefs
         self.P = warden_prefs
-        self.dir = tempfile.mkdtemp(prefix="warden-prefs-")
+        self.dir = _temp(self, prefix="warden-prefs-")
 
     def test_nothing_stored_means_everything_is_asked(self):
         self.assertEqual(self.P.missing({}), self.P.KEYS)
@@ -331,7 +351,7 @@ class RootOwnedState(unittest.TestCase):
 
     def setUp(self):
         import stat as _stat
-        self.locked = tempfile.mkdtemp(prefix="warden-rootstate-")
+        self.locked = _temp(self, prefix="warden-rootstate-")
         self.campaigns = os.path.join(self.locked, "campaigns")
         os.makedirs(self.campaigns, exist_ok=True)
         # Read+execute, no write, on both the state root and its campaigns dir:
@@ -458,9 +478,9 @@ class RealRender(unittest.TestCase):
 
     def setUp(self):
         _ffmpeg_or_skip()
-        import warden_media
-        self.M = warden_media
-        self.dir = tempfile.mkdtemp(prefix="warden-render-")
+        import warden_media, warden_style
+        self.M, self.S = warden_media, warden_style
+        self.dir = _temp(self, prefix="warden-render-")
         self.src = _make_source(os.path.join(self.dir, "src.mp4"))
 
     def test_cut_produces_a_file_the_check_then_clears(self):
@@ -552,6 +572,12 @@ class RealRender(unittest.TestCase):
         with open(srt, "w") as fh:
             fh.write(self.M.to_srt([{"start": 0.0, "end": 4.0,
                                      "text": "LEGENDA DE TESTE"}]))
+        # Sem esta linha nada queima, e o teste media zero pixel branco achando
+        # que era defeito do renderizador. Este teste estava quebrado desde
+        # a5dff08 -- o commit que criou o portão de aprovação -- e ninguém viu,
+        # porque ele só roda onde existe libass e a suite era rodada no Mac, que
+        # não tem. Um teste que nunca roda é um teste que não existe.
+        self.S.write_approval(srt)
         r = rules(video={"duration_max_s": 5, "width": 1080, "height": 1920,
                          "audio": "forbidden"})
         plain = os.path.join(self.dir, "plain.mp4")
@@ -564,8 +590,10 @@ class RealRender(unittest.TestCase):
         self.assertLess(white_plain, 500, "the plain clip should be near-black")
         self.assertGreater(white_capped, white_plain + 3000,
                            "no white text landed on the picture -- caption did not burn")
-        # And it warned about the doubling rather than burning silently.
-        self.assertTrue(any("check the first clip" in n for n in result["notes"]))
+        # E queimou como ASS, com o destaque palavra a palavra.
+        self.assertTrue(any("as ASS" in n for n in result["notes"]),
+                        result["notes"])
+        self.assertTrue(result["style"]["caption"]["karaoke"])
 
     def test_a_campaign_that_says_the_archive_is_captioned_burns_nothing(self):
         """The owner's per-campaign answer, enforced: when the archive already
@@ -659,7 +687,13 @@ class Subtitles(unittest.TestCase):
         must not pass it through."""
         ass = self.M.to_ass([{"start": 0.0, "end": 1.0,
                              "text": "antes {\\an8}depois"}], 1080, 1920)
-        self.assertNotIn("{", ass.split("[Events]")[1])
+        eventos = ass.split("[Events]")[1]
+        # As únicas chaves permitidas são as do nosso próprio `\k`. A do
+        # transcript virou parêntese.
+        self.assertNotIn("{\\an8}", eventos)
+        self.assertIn("(an8)", eventos)
+        for tag in re.findall(r"\{([^}]*)\}", eventos):
+            self.assertRegex(tag, r"^\\k\d+$", "chave que não é do nosso \\k")
         self.assertEqual(ass.count("Dialogue:"), 1)
 
     def test_an_all_empty_transcript_writes_no_ass(self):
@@ -676,10 +710,11 @@ class Subtitles(unittest.TestCase):
                 {"start": 39.0, "end": 40.5, "text": "no fim"},
                 {"start": 5.0, "end": 8.0, "text": "antes do corte"}]
         ass = self.M.to_ass(segs, 1080, 1920, offset=20.0, length=20.0)
-        self.assertIn("no comeco", ass)                       # 19-21 -> clip 0-1
+        fala = re.sub(r"\{[^}]*\}", "", ass)   # sem as tags de destaque
+        self.assertIn("no comeco", fala)                      # 19-21 -> clip 0-1
         self.assertIn("Dialogue: 0,0:00:00.00,0:00:01.00", ass)
-        self.assertIn("no fim", ass)                          # 39-40,5 -> clip 19-20 (clamped)
-        self.assertNotIn("antes do corte", ass)               # source 5-8s is before the window
+        self.assertIn("no fim", fala)                         # 39-40,5 -> clip 19-20 (clamped)
+        self.assertNotIn("antes do corte", fala)              # source 5-8s is before the window
 
     def test_a_cue_fully_before_the_window_is_dropped(self):
         ass = self.M.to_ass([{"start": 2.0, "end": 4.0, "text": "fora"}],
@@ -711,7 +746,7 @@ class DeliveryLine(unittest.TestCase):
         _ffmpeg_or_skip()
         import io, warden_media
         self.io = io
-        self.dir = tempfile.mkdtemp(prefix="warden-line-")
+        self.dir = _temp(self, prefix="warden-line-")
         self.src = _make_source(os.path.join(self.dir, "src.mp4"))
 
     def _store(self, cid, **video):
@@ -988,7 +1023,7 @@ class Hostile(unittest.TestCase):
         capped per file, and the merged stem.mp4 is chosen over any residue."""
         import tempfile
         calls = {}
-        out_dir = tempfile.mkdtemp(prefix="warden-dl-")
+        out_dir = _temp(self, prefix="warden-dl-")
 
         def fake_run(args, timeout, label):
             calls["args"] = args
@@ -1018,7 +1053,7 @@ class Hostile(unittest.TestCase):
     def test_a_single_video_link_stays_no_playlist(self):
         import tempfile
         calls = {}
-        out_dir = tempfile.mkdtemp(prefix="warden-dl-")
+        out_dir = _temp(self, prefix="warden-dl-")
 
         def fake_run(args, timeout, label):
             calls["args"] = args
@@ -1077,7 +1112,7 @@ class ContactSheet(unittest.TestCase):
         _pillow_or_skip()
         import warden_media, warden_style
         self.M, self.S = warden_media, warden_style
-        self.dir = tempfile.mkdtemp(prefix="warden-sheet-")
+        self.dir = _temp(self, prefix="warden-sheet-")
         self.src = _make_source(os.path.join(self.dir, "src.mp4"))
 
     def test_a_sheet_is_written_beside_every_render(self):
@@ -1153,12 +1188,37 @@ class ContactSheet(unittest.TestCase):
 
 
 class BatchContract(unittest.TestCase):
-    """Dois cortes pedidos são dois cortes entregues, e a conta é da ferramenta."""
+    """Dois cortes pedidos são dois cortes RENDERIZADOS E LIBERADOS, e a conta é
+    da ferramenta.
+
+    O contrato mudou de propósito, e a palavra mudou junto. `cmd_cut_plan` não
+    entrega nada: quem entrega é uma chamada de `send_message`, que este
+    processo não faz. Enquanto o lote dizia "2 of 2 delivered", a ferramenta
+    afirmava uma entrega que não tinha acontecido -- que é o defeito de 14/09
+    dito pela outra ponta. Os testes abaixo continuam provando a quantidade
+    (dois pedidos, dois arquivos; um curto sai com 1 e nomeia o que faltou) e
+    acrescentam o que faltava: a saída nunca afirma que o arquivo chegou.
+    """
+
+    ENTREGUE = re.compile(r"\bdelivered\b", re.I)
+
+    def _nunca_afirma_entrega(self, texto):
+        """Nenhum "delivered" afirmativo em lugar nenhum da saída.
+
+        Negar a entrega é legítimo ("...so it is not delivered:"), afirmá-la
+        não é: este comando não chamou `send_message` nenhuma vez.
+        """
+        for m in self.ENTREGUE.finditer(texto):
+            comeco = texto.rfind("\n", 0, m.start()) + 1
+            antes = texto[comeco:m.start()].lower()
+            self.assertTrue(antes.rstrip().endswith("not"),
+                            "a saída afirma entrega que este comando não fez: "
+                            + texto[comeco:m.end() + 20])
 
     def setUp(self):
         _ffmpeg_or_skip()
         _pillow_or_skip()
-        self.dir = tempfile.mkdtemp(prefix="warden-lote-")
+        self.dir = _temp(self, prefix="warden-lote-")
         self.src = _make_source(os.path.join(self.dir, "src.mp4"), seconds=12)
         self.cid = "lote-teste"
         r = rules(id=self.cid,
@@ -1191,8 +1251,18 @@ class BatchContract(unittest.TestCase):
         with redirect_stdout(saida), redirect_stderr(erro):
             code = warden.main(["cut", "--plan", plan])
         self.assertEqual(code, 0, erro.getvalue())
+        # Dois pedidos, dois arquivos: a quantidade continua sendo provada.
         self.assertEqual(saida.getvalue().count("MEDIA:"), 2)
-        self.assertIn("2 of 2 delivered", erro.getvalue())
+        for nome in ("lote-a.mp4", "lote-b.mp4"):
+            self.assertTrue(os.path.exists(warden.clip_out(nome)),
+                            f"{nome} não existe no disco")
+        self.assertIn("2 of 2 cleared for delivery", erro.getvalue())
+        self.assertIn("NONE of them has been sent by this command",
+                      erro.getvalue())
+        # E o que fazer a seguir, dito como tarefa e não como fato consumado.
+        self.assertIn("now send the 2 of them, one send_message each",
+                      erro.getvalue())
+        self._nunca_afirma_entrega(erro.getvalue() + saida.getvalue())
 
     def test_a_batch_that_comes_up_short_exits_non_zero_and_names_the_clip(self):
         """Pediram dois, chegou um, e nada acusou a falta. Aqui acusa: o segundo
@@ -1207,9 +1277,16 @@ class BatchContract(unittest.TestCase):
             code = warden.main(["cut", "--plan", plan])
         self.assertEqual(code, 1)
         self.assertEqual(saida.getvalue().count("MEDIA:"), 1)
-        self.assertIn("1 of 2 delivered", erro.getvalue())
-        self.assertIn("lote-ruim.mp4", erro.getvalue())
+        self.assertFalse(os.path.exists(warden.clip_out("lote-ruim.mp4")))
+        self.assertIn("1 of 2 cleared for delivery", erro.getvalue())
+        # o clipe que faltou é nomeado, com o motivo, na linha do que falta
+        self.assertIn("missing: lote-ruim.mp4", erro.getvalue())
         self.assertIn("this batch is NOT done", erro.getvalue())
+        self.assertIn("1 of the 2 clips asked for did not even clear",
+                      erro.getvalue())
+        # e um lote curto nem sequer manda mandar: não há o que entregar inteiro
+        self.assertNotIn("now send the", erro.getvalue())
+        self._nunca_afirma_entrega(erro.getvalue() + saida.getvalue())
 
     def test_each_clip_is_delivered_as_it_exists_not_the_batch_at_the_end(self):
         """O primeiro MEDIA: sai antes do segundo render começar."""
@@ -1304,7 +1381,7 @@ class Scrim(unittest.TestCase):
         self.S = warden_style
         if not self.S.font_available():
             raise unittest.SkipTest("a fonte do repo não está no lugar")
-        self.dir = tempfile.mkdtemp(prefix="warden-scrim-")
+        self.dir = _temp(self, prefix="warden-scrim-")
 
     def test_the_scrim_fades_at_its_edges_instead_of_being_a_hard_bar(self):
         from PIL import Image
@@ -1362,7 +1439,12 @@ class CueReflow(unittest.TestCase):
         self.assertGreater(len(cues), 1, "não quebrou nada")
         for c in cues:
             self.assertLessEqual(len(c["lines"]), 2, c)
-            self.assertLessEqual(c["end"] - c["start"], self.S.MAX_CUE_S + 0.01, c)
+            # MAX_CUE_S_TETO e não MAX_CUE_S: uma cue pode estourar o alvo
+            # para alcançar uma fronteira sintática, que é o item 2 do Bloco B.
+            # O que não pode estourar são as duas linhas de 26 caracteres, e
+            # é isso que impede o bloco de seis linhas de voltar.
+            self.assertLessEqual(c["end"] - c["start"],
+                                 self.S.MAX_CUE_S_TETO + 0.01, c)
             for linha in c["lines"]:
                 self.assertLessEqual(len(linha), self.S.MAX_CHARS_PER_LINE + 8, linha)
 
@@ -1401,12 +1483,27 @@ class CueReflow(unittest.TestCase):
         self.assertIn("Default,Anton,", ass)
         self.assertNotIn("Arial", ass)
 
-    def test_the_caption_body_came_down_from_height_over_22(self):
-        import warden_media
+    def test_o_corpo_da_legenda_e_o_calibrado(self):
+        """O número sai de `caption_size`, que sai de uma tabela medida.
+
+        Este teste guardava `1920 // 26` -- o número -- e foi por isso que ele
+        não viu nada quando a legenda perdeu 45% de altura ao virar ASS: o
+        número não tinha mudado, a UNIDADE tinha. Ver o teste de altura real em
+        `AlturaDaLegenda`, que é o que teria pego."""
+        import warden_media, warden_style
         ass = warden_media.to_ass(self._bloco(), 1080, 1920)
         corpo = int(ass.split("Default,Anton,")[1].split(",")[0])
-        self.assertLess(corpo, 1920 // 22, "87px cobria o rosto")
-        self.assertEqual(corpo, 1920 // 26)
+        self.assertEqual(corpo, warden_style.caption_size(1920))
+        self.assertEqual(corpo, 120)
+
+    def test_vinte_e_seis_caracteres_ainda_cabem_no_corpo_novo(self):
+        """Subir o corpo sem conferir a largura é trocar legenda pequena por
+        legenda cortada. Medido: 21 maiúsculas em 664px no corpo 120, então 26
+        dão ~822px contra 854px úteis."""
+        import warden_style as S
+        por_caractere = 664 / 21.0
+        self.assertLess(S.MAX_CHARS_PER_LINE * por_caractere,
+                        S.usable_width(1080))
 
 
 class LanguageGate(unittest.TestCase):
@@ -1451,7 +1548,7 @@ class CaptionApproval(unittest.TestCase):
     def setUp(self):
         import warden_style
         self.S = warden_style
-        self.dir = tempfile.mkdtemp(prefix="warden-aprov-")
+        self.dir = _temp(self, prefix="warden-aprov-")
         self.srt = os.path.join(self.dir, "c.srt")
         with open(self.srt, "w", encoding="utf-8") as fh:
             fh.write("1\n00:00:00,000 --> 00:00:02,000\numa fala\n")
@@ -1483,11 +1580,12 @@ class BurnedText(unittest.TestCase):
     def setUp(self):
         _ffmpeg_or_skip()
         _pillow_or_skip()
+        _subtitles_filter_or_skip()
         import warden_media, warden_style
         self.M, self.S = warden_media, warden_style
         if not self.S.font_available():
             raise unittest.SkipTest("a fonte do repo não está no lugar")
-        self.dir = tempfile.mkdtemp(prefix="warden-burn-")
+        self.dir = _temp(self, prefix="warden-burn-")
         self.black = _make_source(os.path.join(self.dir, "black.mp4"), seconds=6,
                                   w=1920, h=1080, audio=False, pattern="black")
         self.srt = os.path.join(self.dir, "cap.srt")
@@ -1678,7 +1776,7 @@ class Movement(unittest.TestCase):
         _pillow_or_skip()
         import warden_media
         self.M = warden_media
-        self.dir = tempfile.mkdtemp(prefix="warden-mov-")
+        self.dir = _temp(self, prefix="warden-mov-")
         self.src = _make_source(os.path.join(self.dir, "src.mp4"), seconds=8)
         self.r = rules(video={"duration_min_s": 1, "duration_max_s": 6,
                               "width": 1080, "height": 1920, "audio": "forbidden"})
@@ -1719,11 +1817,12 @@ class FootageTreatment(unittest.TestCase):
     def setUp(self):
         _ffmpeg_or_skip()
         _pillow_or_skip()
+        _subtitles_filter_or_skip()
         import warden_media, warden_style
         self.M, self.S = warden_media, warden_style
         if not self.S.font_available():
             raise unittest.SkipTest("a fonte do repo não está no lugar")
-        self.dir = tempfile.mkdtemp(prefix="warden-trat-")
+        self.dir = _temp(self, prefix="warden-trat-")
         # Uma fonte com disclaimer queimado embaixo e barra ciano na borda,
         # como o material que produziu o clipe reprovado.
         from PIL import Image
@@ -1799,7 +1898,7 @@ class PublishedSubtitles(unittest.TestCase):
     def setUp(self):
         import warden_media
         self.M = warden_media
-        self.dir = tempfile.mkdtemp(prefix="warden-subs-")
+        self.dir = _temp(self, prefix="warden-subs-")
         self.video = os.path.join(self.dir, "source-abc123.mp4")
         open(self.video, "wb").write(b"x")
 
@@ -1932,7 +2031,7 @@ class TwoPassTranscription(unittest.TestCase):
             import faster_whisper  # noqa: F401
         except ImportError:
             raise unittest.SkipTest("faster-whisper não está instalado")
-        d = tempfile.mkdtemp(prefix="warden-win-")
+        d = _temp(self, prefix="warden-win-")
         src = _make_source(os.path.join(d, "s.mp4"), seconds=20)
         got = self.M.transcribe(src, window=(10.0, 14.0), progress=lambda _l: None)
         self.assertEqual(got["window"], [10.0, 14.0])
@@ -1946,9 +2045,14 @@ class TwoPassTranscription(unittest.TestCase):
             import faster_whisper  # noqa: F401
         except ImportError:
             raise unittest.SkipTest("faster-whisper não está instalado")
-        d = tempfile.mkdtemp(prefix="warden-prog-")
+        d = _temp(self, prefix="warden-prog-")
         src = _make_source(os.path.join(d, "s.mp4"), seconds=5)
         linhas = []
+        pronto = self.M.model_status("tiny").get("tiny", {}).get("state")
+        if pronto != "ready":
+            raise unittest.SkipTest(
+                f"o modelo tiny ainda não está nesta máquina ({pronto}); ele "
+                f"baixa em segundo plano depois do install")
         self.M.transcribe(src, model_size="tiny", progress=linhas.append)
         self.assertTrue(any("transcribing" in l for l in linhas), linhas)
         self.assertTrue(any("done" in l for l in linhas), linhas)
@@ -2049,7 +2153,7 @@ class StyleSidecar(unittest.TestCase):
     def test_a_cue_over_two_and_a_half_seconds_is_rejected(self):
         achados = self.S.check_sidecar(
             {"caption": {"cues": 3, "max_lines": 2, "max_cue_s": 7.0}})
-        self.assertTrue(any(lv == "REJECT" and "2,5s" in m
+        self.assertTrue(any(lv == "REJECT" and "3.4s" in m
                             for lv, m in achados), achados)
 
     def test_a_three_line_cue_is_rejected(self):
@@ -2084,11 +2188,12 @@ class DefinitionOfDone(unittest.TestCase):
     def setUp(self):
         _ffmpeg_or_skip()
         _pillow_or_skip()
+        _subtitles_filter_or_skip()
         import warden_media, warden_style
         self.M, self.S = warden_media, warden_style
         if not self.S.font_available():
             raise unittest.SkipTest("a fonte do repo não está no lugar")
-        self.dir = tempfile.mkdtemp(prefix="warden-golden-")
+        self.dir = _temp(self, prefix="warden-golden-")
         # Fonte com os dois defeitos do material original: barra na borda e
         # texto queimado no rodapé.
         from PIL import Image
@@ -2181,7 +2286,7 @@ class MissingDependencySpeaks(unittest.TestCase):
         _pillow_or_skip()
         import warden_media
         self.M = warden_media
-        self.dir = tempfile.mkdtemp(prefix="warden-dep-")
+        self.dir = _temp(self, prefix="warden-dep-")
         self.src = _make_source(os.path.join(self.dir, "s.mp4"), w=1920, h=1080)
         self.r = rules(video={"duration_max_s": 5, "width": 1080, "height": 1920,
                               "audio": "forbidden"})
@@ -2250,7 +2355,7 @@ class NothingDegradesQuietly(unittest.TestCase):
         resposta que a ferramenta não tem, com a cara de uma que ela tem."""
         _ffmpeg_or_skip()
         _pillow_or_skip()
-        d = tempfile.mkdtemp(prefix="warden-cego-")
+        d = _temp(self, prefix="warden-cego-")
         src = _make_source(os.path.join(d, "s.mp4"), seconds=4, w=1080, h=1920)
         r = rules(video={"duration_max_s": 5, "width": 1080, "height": 1920,
                          "audio": "forbidden"})
@@ -2301,7 +2406,7 @@ class NothingDegradesQuietly(unittest.TestCase):
         tem carimbo de tempo que ninguém lê -- é um portão que não se atravessa."""
         _ffmpeg_or_skip()
         _pillow_or_skip()
-        d = tempfile.mkdtemp(prefix="warden-fonte-")
+        d = _temp(self, prefix="warden-fonte-")
         src = _make_source(os.path.join(d, "s.mp4"), seconds=3, w=1080, h=1920)
         real = self.S.FONT_PATH
         self.S.FONT_PATH = os.path.join(d, "nao-existe.ttf")
@@ -2327,7 +2432,7 @@ class MissingDependencySpeaks(unittest.TestCase):
         _pillow_or_skip()
         import warden_media
         self.M = warden_media
-        self.dir = tempfile.mkdtemp(prefix="warden-dep-")
+        self.dir = _temp(self, prefix="warden-dep-")
         self.src = _make_source(os.path.join(self.dir, "s.mp4"), w=1920, h=1080)
         self.r = rules(video={"duration_max_s": 5, "width": 1080, "height": 1920,
                               "audio": "forbidden"})
@@ -2396,7 +2501,7 @@ class NothingDegradesQuietly(unittest.TestCase):
         resposta que a ferramenta não tem, com a cara de uma que ela tem."""
         _ffmpeg_or_skip()
         _pillow_or_skip()
-        d = tempfile.mkdtemp(prefix="warden-cego-")
+        d = _temp(self, prefix="warden-cego-")
         src = _make_source(os.path.join(d, "s.mp4"), seconds=4, w=1080, h=1920)
         r = rules(video={"duration_max_s": 5, "width": 1080, "height": 1920,
                          "audio": "forbidden"})
@@ -2434,7 +2539,7 @@ class NothingDegradesQuietly(unittest.TestCase):
         tem carimbo de tempo que ninguém lê -- é um portão que não se atravessa."""
         _ffmpeg_or_skip()
         _pillow_or_skip()
-        d = tempfile.mkdtemp(prefix="warden-fonte-")
+        d = _temp(self, prefix="warden-fonte-")
         src = _make_source(os.path.join(d, "s.mp4"), seconds=3, w=1080, h=1920)
         real = self.S.FONT_PATH
         self.S.FONT_PATH = os.path.join(d, "nao-existe.ttf")
@@ -2456,7 +2561,7 @@ class ModelStillDownloading(unittest.TestCase):
     def setUp(self):
         import warden_media
         self.M = warden_media
-        self.home = tempfile.mkdtemp(prefix="warden-modelos-")
+        self.home = _temp(self, prefix="warden-modelos-")
         self._antigo = os.environ.get("HF_HOME")
         os.environ["HF_HOME"] = self.home
         self.addCleanup(self._restaura)
@@ -2510,7 +2615,7 @@ class ModelStillDownloading(unittest.TestCase):
             import faster_whisper  # noqa: F401
         except ImportError:
             raise unittest.SkipTest("faster-whisper não está instalado")
-        d = tempfile.mkdtemp(prefix="warden-src-")
+        d = _temp(self, prefix="warden-src-")
         src = _make_source(os.path.join(d, "s.mp4"), seconds=3)
         self._bytes("small", 100)
         with self.assertRaises(RuntimeError) as erro:
@@ -2523,3 +2628,914 @@ class ModelStillDownloading(unittest.TestCase):
         info = self.M.model_status("small")["small"]
         self.assertEqual(info["state"], "failed")
         self.assertIn("failed to download at boot", self.M.model_wait_note("small"))
+
+
+class HookSai(unittest.TestCase):
+    """Item 1 do Bloco B. O hook é uma promessa, não uma placa.
+
+    Nos dois cortes de 14/09 a frase estava nos oito quadros do mosaico, de 1,2s
+    a 18,8s. Dos três segundos em diante ela não acrescentava nada e disputava o
+    quadro com a legenda da fala."""
+
+    def setUp(self):
+        import warden_style
+        self.S = warden_style
+
+    def test_o_sidecar_reprova_um_hook_que_fica_o_clipe_inteiro(self):
+        lado = {"hook": {"width_px": 800, "usable_px": 854, "lines": 2,
+                         "size_px": 76, "chars": 40, "complete": True,
+                         "seconds_on_screen": 20.0},
+                "duration_s": 20.0, "motion": True}
+        piores = [m for lv, m in self.S.check_sidecar(lado) if lv == "REJECT"]
+        self.assertTrue(any("stays 20.0s" in m for m in piores), piores)
+
+    def test_tres_segundos_num_clipe_de_vinte_passa(self):
+        lado = {"hook": {"width_px": 800, "usable_px": 854, "lines": 2,
+                         "size_px": 76, "chars": 40, "complete": True,
+                         "seconds_on_screen": 3.0},
+                "duration_s": 20.0, "motion": True}
+        self.assertEqual([m for lv, m in self.S.check_sidecar(lado)
+                          if lv == "REJECT"], [])
+
+    def test_um_clipe_de_dois_segundos_nao_e_reprovado_por_isso(self):
+        """O hook cobre um clipe curto inteiro porque o clipe inteiro são os
+        primeiros segundos. Reprovar aqui seria a régua medindo a si mesma."""
+        lado = {"hook": {"width_px": 800, "usable_px": 854, "lines": 1,
+                         "size_px": 76, "chars": 20, "complete": True,
+                         "seconds_on_screen": 2.0},
+                "duration_s": 2.0, "motion": True}
+        self.assertEqual([m for lv, m in self.S.check_sidecar(lado)
+                          if lv == "REJECT"], [])
+
+
+class FronteiraDaCue(unittest.TestCase):
+    """Item 2 do Bloco B, com as frases que saíram erradas em 14/09."""
+
+    def setUp(self):
+        import warden_style
+        self.S = warden_style
+
+    def _cues(self, texto, dur=12.0):
+        return self.S.reflow_cues([{"start": 0.0, "end": dur, "text": texto}])
+
+    def test_nenhuma_cue_fecha_em_palavra_que_pede_complemento(self):
+        falas = [
+            "Eles não burlaram a regra eleitoral. Ponto parágrafo, isso não é "
+            "ilegal. Eles estão usando, jogando conforme o jogo. Don't hate the "
+            "player, hate the sistema brasileiro e a constituição brasileira.",
+            "Cara, eu votaria no cara para ser presidente, é o meu veredito, "
+            "que o moleque manja a coisa inteira e dá para ver a olho nu.",
+        ]
+        for fala in falas:
+            cues = self._cues(fala, dur=20.0)
+            self.assertTrue(cues)
+            self.assertEqual(self.S.finais_pendurados(cues), [],
+                             f"cue pendurada em: {[c['text'] for c in cues]}")
+
+    def test_the_e_conforme_nao_ficam_no_fim_da_tela(self):
+        cues = self._cues("don't hate the player hate the game porque o jogo é "
+                          "jogado conforme as regras que existem", dur=14.0)
+        finais = [c["text"].split()[-1].lower().strip(".,") for c in cues]
+        for proibida in ("the", "conforme", "o", "as", "que"):
+            self.assertNotIn(proibida, finais, finais)
+
+    def test_uma_expressao_fixa_nao_e_partida_ao_meio(self):
+        cues = self._cues("ele virou a crème de la crème do mercado financeiro "
+                          "e o Renan sabe disso muito bem", dur=12.0)
+        junto = [c["text"] for c in cues if "crème" in c["text"] or "creme" in c["text"]]
+        self.assertTrue(junto, [c["text"] for c in cues])
+        for texto in junto:
+            baixo = texto.lower()
+            # ou a expressão inteira está na cue, ou ela não começa no meio dela
+            if "la creme" in baixo or "la crème" in baixo:
+                self.assertIn("de la", baixo,
+                              f"'crème de la crème' foi partido: {texto!r}")
+
+    def test_nenhuma_palavra_se_perde_no_caminho(self):
+        fala = ("primeira segunda terceira quarta quinta sexta sétima oitava "
+                "nona décima décima-primeira décima-segunda")
+        cues = self._cues(fala, dur=10.0)
+        self.assertEqual(" ".join(c["text"] for c in cues), fala)
+
+    def test_as_cues_nao_se_sobrepoem(self):
+        cues = self._cues("uma frase razoavelmente longa que precisa ser "
+                          "partida em várias cues para caber na tela do "
+                          "telefone de quem assiste", dur=16.0)
+        for a, b in zip(cues, cues[1:]):
+            self.assertLessEqual(a["end"], b["start"], (a["text"], b["text"]))
+
+
+class TempoPorSilaba(unittest.TestCase):
+    """Item 3, metade do relógio. Repartir em partes iguais faz o destaque
+    andar na frente da boca em palavra longa e atrás em palavra curta."""
+
+    def setUp(self):
+        import warden_style
+        self.S = warden_style
+
+    def test_constituicao_dura_mais_que_que(self):
+        self.assertGreater(self.S.silabas("constituição"), self.S.silabas("que"))
+        self.assertEqual(self.S.silabas("que"), 1)
+        self.assertEqual(self.S.silabas("constituição"), 4)
+
+    def test_a_cue_reparte_o_tempo_pela_silaba_e_nao_igual(self):
+        cues = self.S.reflow_cues([{"start": 0.0, "end": 2.0,
+                                    "text": "que constituição"}])
+        palavras = cues[0]["words"]
+        self.assertEqual([p["w"] for p in palavras], ["que", "constituição"])
+        curta = palavras[0]["end"] - palavras[0]["start"]
+        longa = palavras[1]["end"] - palavras[1]["start"]
+        self.assertGreater(longa, curta * 3)
+
+
+class DestaqueKaraoke(unittest.TestCase):
+    """Item 3, a outra metade. O `\\k` é o que faz a palavra acender."""
+
+    def setUp(self):
+        import warden_media, warden_style
+        self.M, self.S = warden_media, warden_style
+
+    def test_cada_palavra_entra_com_seu_k(self):
+        ass = self.M.to_ass([{"start": 0.0, "end": 2.0,
+                              "text": "uma frase de quatro"}], 1080, 1920)
+        eventos = ass.split("[Events]")[1]
+        self.assertEqual(len(re.findall(r"\{\\k\d+\}", eventos)), 4, eventos)
+
+    def test_a_cor_de_quem_ja_falou_e_a_primary(self):
+        """No ASS o `\\k` vai de Secondary para Primary, que é o contrário do
+        que os nomes sugerem. Inverter isto entrega o clipe todo amarelo."""
+        ass = self.M.to_ass([{"start": 0.0, "end": 1.0, "text": "oi"}],
+                            1080, 1920)
+        estilo = [l for l in ass.splitlines() if l.startswith("Style:")][0]
+        campos = estilo.split(",")
+        self.assertEqual(campos[3], self.S.COR_FALADA)      # PrimaryColour
+        self.assertEqual(campos[4], self.S.COR_POR_FALAR)   # SecondaryColour
+
+    def test_uma_cue_sem_tempos_sai_branca_e_avisa(self):
+        """Sem `\\k` o libass pinta a linha inteira de PrimaryColour, que aqui é
+        o amarelo do 'já falado'. Uma cue assim sairia amarela do início ao fim
+        sem ninguém ter pedido, então ela é forçada a branco -- e a perda do
+        destaque é anotada em vez de passar."""
+        perdas = []
+        cue = {"start": 0.0, "end": 1.0, "text": "sem tempos",
+               "lines": ["sem tempos"], "words": []}
+        ass = self.M.ass_from_cues([cue], 1080, 1920, perdas=perdas)
+        self.assertIn(self.S.COR_POR_FALAR.rstrip("&"), ass)
+        self.assertNotIn("\\k", ass.split("[Events]")[1])
+        self.assertTrue(perdas, "a perda do destaque não foi anotada")
+
+    def test_o_tempo_do_k_soma_a_duracao_da_cue(self):
+        ass = self.M.to_ass([{"start": 0.0, "end": 2.0,
+                              "text": "uma frase de quatro"}], 1080, 1920)
+        centesimos = sum(int(n) for n in re.findall(r"\{\\k(\d+)\}", ass))
+        self.assertAlmostEqual(centesimos, 200, delta=6)
+
+
+class SpecDeScenepack(unittest.TestCase):
+    """Item 4. Um nome genérico sobre um corpus específico é como uma faixa
+    medida num formato acaba reprovando outro."""
+
+    def test_o_caminho_da_spec_diz_de_que_formato_ela_e(self):
+        self.assertTrue(warden.specs_path().endswith(
+            "estilo-aprovado-scenepack.json"), warden.specs_path())
+
+    def test_a_spec_no_repo_declara_o_que_nao_cobre(self):
+        with open(warden.specs_path(), encoding="utf-8") as fh:
+            spec = json.load(fh)
+        self.assertEqual(spec.get("formato"), "scenepack")
+        self.assertIn("fala", spec.get("o_que_este_corpus_nao_cobre", ""))
+        self.assertEqual(len(spec["measured_from"]), 20)
+
+
+class SinalADois(unittest.TestCase):
+    """Item 5. A métrica de pixel não é apagada e não vota sozinha."""
+
+    def setUp(self):
+        import warden_style
+        self.S = warden_style
+
+    def _lado(self, largura):
+        return {"hook": {"width_px": largura, "usable_px": 854}}
+
+    def test_os_dois_concordando_que_esta_largo_reprova(self):
+        achados = self.S.cross_check(self._lado(900), {"text_width_ratio": 1.22})
+        self.assertTrue([m for lv, m in achados if lv == "REJECT"], achados)
+
+    def test_o_pixel_sozinho_nao_reprova_e_diz_o_que_viu(self):
+        """1,14 de largura em pixel num clipe cujo hook o PIL mediu cabendo foi
+        medido num APROVADO do dono. Uma métrica que reprova um aprovado não
+        pode reprovar nada sozinha."""
+        achados = self.S.cross_check(self._lado(800), {"text_width_ratio": 1.14})
+        self.assertEqual([m for lv, m in achados if lv == "REJECT"], [])
+        self.assertTrue(any("discordam" in m for lv, m in achados), achados)
+
+    def test_a_metrica_continua_aparecendo_quando_nao_ha_sidecar(self):
+        achados = self.S.cross_check(None, {"text_width_ratio": 1.22})
+        self.assertTrue(achados)
+        self.assertEqual([m for lv, m in achados if lv == "REJECT"], [])
+
+
+class NadaSomeCalado(unittest.TestCase):
+    """Item 6. A varredura: o que a ferramenta joga fora, ela diz."""
+
+    def setUp(self):
+        import warden_style
+        self.S = warden_style
+
+    def test_uma_linha_de_legenda_sem_tempo_e_anotada_e_nao_some(self):
+        descartes = []
+        self.S.reflow_cues([{"start": 0.0, "end": 1.0, "text": "esta vai"},
+                            {"start": None, "end": 2.0, "text": "esta some"}],
+                           descartes=descartes)
+        self.assertEqual(len(descartes), 1, descartes)
+        self.assertIn("esta some", descartes[0])
+
+    def test_um_tempo_impossivel_tambem_e_anotado(self):
+        descartes = []
+        self.S.reflow_cues([{"start": 5.0, "end": 2.0, "text": "de tras pra frente"}],
+                           descartes=descartes)
+        self.assertEqual(len(descartes), 1, descartes)
+
+    def test_limite_nao_medido_nao_e_aprovacao(self):
+        """`scale_variation` é o único limite que reprova. Quando ele sai None o
+        comando dizia 'dentro da faixa em todas as métricas', que era verdade e
+        era vazio: nenhuma foi aplicada."""
+        medida = {"measured": True, "duration_s": 20.0, "scale_variation": None,
+                  "scale_variation_why": "só 1 quadro abriu"}
+        achados = self.S.check_against(medida, {})
+        piores = [m for lv, m in achados if lv == "REJECT"]
+        self.assertTrue(piores, achados)
+        self.assertIn("só 1 quadro abriu", piores[0])
+
+    def test_o_intervalo_de_corte_devolve_o_motivo_junto(self):
+        valor, porque = self.S._cut_interval("/nao/existe/arquivo.mp4", 10.0)
+        self.assertIsNone(valor)
+        self.assertTrue(porque)
+
+    def test_variacao_de_escala_sem_dois_quadros_diz_por_que(self):
+        valor, porque = self.S._scale_variation([])
+        self.assertIsNone(valor)
+        self.assertIn("quadro", porque)
+
+
+class AlturaDaLegenda(unittest.TestCase):
+    """O teste que teria pego a regressão de 14/09.
+
+    Quando a legenda passou de PNG do PIL para ASS, o número do corpo ficou em
+    73 e a LETRA encolheu de ~3,2% para 1,88% da altura do quadro, porque o
+    `Fontsize` do ASS não vale o mesmo que o tamanho de fonte do PIL. Nenhum
+    teste viu, porque todos olhavam o número. Este olha a tinta."""
+
+    def setUp(self):
+        _ffmpeg_or_skip()
+        _pillow_or_skip()
+        _subtitles_filter_or_skip()
+        import warden_media, warden_style
+        self.M, self.S = warden_media, warden_style
+        if not self.S.font_available():
+            raise unittest.SkipTest("a fonte do repo não está no lugar")
+        self.dir = _temp(self, prefix="warden-tinta-")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _altura_da_tinta(self, mp4, t):
+        """A altura, em pixels, da faixa mais alta de tinta clara do quadro."""
+        from PIL import Image
+        import subprocess
+        png = os.path.join(self.dir, "f.png")
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", str(t),
+                        "-i", mp4, "-frames:v", "1", png], check=True,
+                       capture_output=True)
+        im = Image.open(png).convert("L")
+        W, H = im.size
+        px = im.load()
+        ys = [y for y in range(H)
+              if sum(1 for x in range(0, W, 2) if px[x, y] > 205) >= 3]
+        if not ys:
+            return 0, H
+        faixas, atual = [], [ys[0]]
+        for y in ys[1:]:
+            if y - atual[-1] <= 4:
+                atual.append(y)
+            else:
+                faixas.append(atual)
+                atual = [y]
+        faixas.append(atual)
+        return max(f[-1] - f[0] + 1 for f in faixas), H
+
+    def test_a_letra_da_legenda_ocupa_perto_de_tres_e_meio_por_cento(self):
+        black = _make_source(os.path.join(self.dir, "b.mp4"), seconds=5,
+                             w=1920, h=1080, audio=False, pattern="black")
+        srt = os.path.join(self.dir, "c.srt")
+        with open(srt, "w", encoding="utf-8") as fh:
+            fh.write(self.M.to_srt([{"start": 0.0, "end": 4.0,
+                                     "text": "TESTE DE ALTURA"}]))
+        self.S.write_approval(srt)
+        r = rules(video={"width": 1080, "height": 1920, "audio": "forbidden"})
+        out = os.path.join(self.dir, "m.mp4")
+        # Sem hook: o que estiver claro no quadro é a legenda e nada mais.
+        self.M.cut(black, out, r, start=0, end=4, sound="platform",
+                   crop="center", caption_srt=srt)
+        alto, H = self._altura_da_tinta(out, 2.0)
+        fracao = alto / H
+        self.assertGreater(fracao, 0.030,
+                           f"a letra saiu com {fracao:.2%} do quadro; abaixo de "
+                           f"3% é a legenda minúscula de 14/09")
+        self.assertLess(fracao, 0.042,
+                        f"a letra saiu com {fracao:.2%} do quadro; acima disso "
+                        f"a legenda come a imagem")
+
+
+# ══════════════════════════════════════════════ seis defeitos achados depois
+#
+# Cada classe daqui guarda um defeito que a revisão adversarial achou DEPOIS de
+# a suíte estar verde -- quer dizer, um defeito que a suíte não pegava. O teste
+# reproduz a condição exata em que ele aparecia, e falha sem o conserto.
+
+
+def _dialogues(ass):
+    """[(início_s, fim_s, texto)] das linhas Dialogue de um ASS."""
+    def _seg(stamp):
+        h, m, resto = stamp.split(":")
+        return int(h) * 3600 + int(m) * 60 + float(resto)
+    linhas = []
+    for linha in (ass or "").splitlines():
+        if not linha.startswith("Dialogue:"):
+            continue
+        campos = linha.split(",", 9)
+        linhas.append((_seg(campos[1]), _seg(campos[2]), campos[9]))
+    return linhas
+
+
+class KAcompanhaACueRecortada(unittest.TestCase):
+    """Defeito 1. O corte recorta a cue; o `\\k` continuava o da cue inteira.
+
+    Um corte que começa no meio de um segmento corta a primeira cue na cabeça.
+    Medido: a cue ficava 1,4s na tela carregando 2,9s de `\\k`. O libass conta o
+    `\\k` a partir do início do Dialogue, então o amarelo andava um segundo e
+    meio atrás da boca e três das oito palavras nunca acendiam antes de a cue
+    sair da tela.
+
+    Nenhum teste via porque todos mediam a cue inteira, nunca uma recortada.
+    Este monta a janela como o `cut` monta e mede CADA Dialogue.
+    """
+
+    ROWS = [{"start": 30.0, "end": 33.0,
+             "text": "e ai a gente percebeu que o mercado"},
+            {"start": 33.0, "end": 36.0,
+             "text": "tinha mudado de vez para todo mundo"}]
+    START, LENGTH = 31.5, 6.0
+
+    def setUp(self):
+        import warden_media, warden_style
+        self.M, self.S = warden_media, warden_style
+
+    def _ass(self):
+        rows = [r for r in self.ROWS
+                if r["end"] > self.START and r["start"] < self.START + self.LENGTH]
+        cues = self.S.reflow_cues(rows)
+        self.assertTrue(cues, "o reflow não devolveu cue nenhuma")
+        return self.M.ass_from_cues(cues, 1080, 1920, offset=self.START,
+                                    length=self.LENGTH), cues
+
+    def test_a_soma_dos_k_e_o_tempo_na_tela_em_toda_linha(self):
+        ass, _ = self._ass()
+        linhas = _dialogues(ass)
+        self.assertTrue(linhas, "o ASS saiu sem Dialogue")
+        for inicio, fim, texto in linhas:
+            na_tela = round((fim - inicio) * 100)
+            self.assertLessEqual(
+                abs(self.M.soma_k(texto) - na_tela), 2,
+                f"a linha fica {na_tela/100:.2f}s na tela e carrega "
+                f"{self.M.soma_k(texto)/100:.2f}s de \\k: o destaque anda "
+                f"{(self.M.soma_k(texto) - na_tela)/100:+.2f}s fora da fala")
+
+    def test_a_palavra_ja_falada_entra_com_k0(self):
+        """O corte em 31,5s comeu a cabeça da primeira cue. As palavras que já
+        foram ditas têm de entrar JÁ amarelas -- `\\k0` --, que é a verdade,
+        em vez de esperar a vez delas num relógio que já passou."""
+        ass, _ = self._ass()
+        primeira = _dialogues(ass)[0][2]
+        self.assertIn("{\\k0}", primeira,
+                      "a primeira cue foi recortada na cabeça e nenhuma palavra "
+                      "entrou como já falada: " + primeira[:80])
+
+    def test_sem_recorte_o_teste_continuaria_passando(self):
+        """O guarda não é só sobre o recorte: uma cue inteira também tem de
+        bater. Sem isto, um conserto que zerasse todos os `\\k` passaria."""
+        ass, _ = self._ass()
+        self.assertTrue(any(self.M.soma_k(t) > 0 for _, _, t in _dialogues(ass)),
+                        "nenhum \\k tem tempo nenhum")
+
+
+class CueNaoFechaEmPalavraFuncional(unittest.TestCase):
+    """Defeito 2. O `elif` de `_fronteiras` fazia os conjuntos serem disjuntos.
+
+    `proibido` e `pontuada` nunca se cruzavam por construção, e com isso o
+    guarda `k not in proibido` do passo 1 de `_ajusta_fronteira` era código
+    morto: bastava haver vírgula depois da palavra funcional para a cue fechar
+    ali. Medido, a cue fechava em "ele me disse que," -- o mesmo fragmento
+    pendurado de 14/09, com um sinal de pontuação a mais.
+    """
+
+    FALA = ("ele me disse que, depois de tudo aquilo, a gente ainda tinha uma "
+            "chance")
+
+    def setUp(self):
+        import warden_style
+        self.S = warden_style
+
+    def test_nenhuma_cue_fecha_em_que_com_virgula(self):
+        cues = self.S.reflow_cues([{"start": 0.0, "end": 6.0, "text": self.FALA}])
+        textos = [c["text"] for c in cues]
+        for texto in textos:
+            self.assertFalse(
+                texto.rstrip().endswith("que,"),
+                f"a cue fecha em {texto!r}: a vírgula separa, e o que vem "
+                f"depois dela é o complemento que 'que' está pedindo")
+        # e nada se perdeu no caminho
+        self.assertEqual(" ".join(textos), self.FALA)
+
+    def test_o_relatorio_de_finais_pendurados_fica_vazio(self):
+        cues = self.S.reflow_cues([{"start": 0.0, "end": 6.0, "text": self.FALA}])
+        self.assertEqual(self.S.finais_pendurados(cues), [])
+
+    def test_proibido_e_pontuada_deixaram_de_ser_disjuntos(self):
+        """A causa, e não só o sintoma. Enquanto os dois conjuntos forem
+        disjuntos, o guarda do passo 1 é código morto e o sintoma volta na
+        próxima frase que ninguém testou."""
+        proibido, pontuada = self.S._fronteiras(self.FALA.split())
+        comuns = proibido & pontuada
+        self.assertTrue(
+            comuns,
+            "nenhum índice está nos dois conjuntos: `que,` é palavra funcional "
+            "E fronteira de pontuação ao mesmo tempo, e tem de aparecer nos "
+            "dois para o guarda ter o que guardar")
+        palavras = self.FALA.split()
+        self.assertIn("que,", [palavras[i] for i in comuns])
+
+
+class NenhumaLinhaPassaDoLimite(unittest.TestCase):
+    """Defeito 3. `len(texto) <= max_chars * max_lines` não responde "cabe".
+
+    A quebra gulosa produzia TRÊS linhas dentro do orçamento total, e
+    `_break_lines` juntava o excedente na última: saía uma linha de 36
+    caracteres com limite de 26, enquanto a nota e o `-estilo.json` afirmavam
+    duas. `cabe_na_tela` passou a perguntar à própria quebra.
+
+    A varredura é de várias falas de propósito: o defeito depende do tamanho
+    das palavras, e uma fala só não prova regra nenhuma.
+    """
+
+    FALAS = [
+        # as duas medidas, com palavras longas que estouravam a conta antiga
+        "desenvolvimento responsabilidade compartilhada agora",
+        "mas sim uma construcao coletiva que envolve empresas e governos",
+        # e mais fala corrida, para a varredura não ser de dois casos
+        "e ai a gente percebeu que o mercado tinha mudado de vez",
+        "sustentabilidade nao e uma escolha individual de ninguem",
+        "porque a transformacao digital exige investimento continuado",
+        "ele apostou contra o Djokovic e ganhou noventa mil num domingo",
+        "eu nao sei se isso funciona mas vale a pena tentar de novo",
+    ]
+
+    def setUp(self):
+        import warden_style
+        self.S = warden_style
+
+    def test_nenhuma_linha_de_nenhuma_cue_passa_do_limite(self):
+        for i, fala in enumerate(self.FALAS):
+            cues = self.S.reflow_cues([{"start": 0.0, "end": 6.0, "text": fala}])
+            self.assertTrue(cues, fala)
+            for cue in cues:
+                self.assertLessEqual(
+                    len(cue["lines"]), self.S.MAX_LINES,
+                    f"fala {i}: a cue {cue['text']!r} saiu em "
+                    f"{len(cue['lines'])} linhas")
+                for linha in cue["lines"]:
+                    self.assertLessEqual(
+                        len(linha), self.S.MAX_CHARS_PER_LINE,
+                        f"fala {i}: a linha {linha!r} tem {len(linha)} "
+                        f"caracteres contra {self.S.MAX_CHARS_PER_LINE} de "
+                        f"limite -- é a linha de 36 do defeito")
+
+    def test_cabe_na_tela_nega_o_que_a_conta_de_orcamento_aprovava(self):
+        """52 caracteres cabem em 2x26 pela conta antiga, e não cabem na quebra:
+        `desenvolvimento responsabilidade` já são 32 numa linha só."""
+        texto = self.FALAS[0]
+        self.assertLessEqual(len(texto),
+                             self.S.MAX_CHARS_PER_LINE * self.S.MAX_LINES + 1)
+        self.assertFalse(self.S.cabe_na_tela(texto))
+
+    def test_palavra_sozinha_maior_que_o_limite_e_aceita(self):
+        """Recusá-la travaria o reflow em laço: não há onde cortá-la."""
+        gigante = "x" * (self.S.MAX_CHARS_PER_LINE + 10)
+        self.assertTrue(self.S.cabe_na_tela(gigante))
+
+
+class LegendaQueJaEstaNoDisco(unittest.TestCase):
+    """Defeito 4. `_pull_subs` comparava o diretório antes e depois.
+
+    Na segunda corrida o `.srt` já estava lá: não aparecia como NOVO, e a
+    ferramenta respondia "this video publishes no subtitle" com a legenda em
+    disco -- e o `_pull_text_first` ia baixar 15 MB de áudio e gastar 195s
+    transcrevendo o que já estava escrito ao lado. Agora ele lista o que EXISTE.
+
+    Sem rede: o yt-dlp é feito falhar de propósito, que é o caso em que o
+    arquivo em disco é a única coisa que resta.
+    """
+
+    def setUp(self):
+        import warden_media
+        self.M = warden_media
+        self.dir = _temp(self, prefix="warden-subs-disco-")
+        self.srt = os.path.join(self.dir, "source-abc.pt.srt")
+        with open(self.srt, "w", encoding="utf-8") as fh:
+            fh.write("1\n00:00:00,000 --> 00:00:01,000\nja estava aqui\n")
+        self._run = self.M.run
+
+    def tearDown(self):
+        self.M.run = self._run
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _falhar(self, *a, **k):
+        raise RuntimeError("HTTP Error 429: Too Many Requests")
+
+    def test_a_legenda_da_corrida_anterior_e_devolvida(self):
+        self.M.run = self._falhar
+        caminho, porque = self.M._pull_subs(
+            "https://www.youtube.com/watch?v=abc123", self.dir, "source-abc",
+            os.path.join(self.dir, "%(id)s.%(ext)s"), [])
+        self.assertEqual(caminho, self.srt,
+                         "o .srt estava no disco e a ferramenta disse que não "
+                         f"havia legenda ({porque})")
+        self.assertIsNone(porque)
+
+    def test_sem_nada_no_disco_ele_continua_dizendo_o_motivo(self):
+        """O conserto não pode transformar "não veio" em "veio": um diretório
+        vazio ainda tem de devolver None com o porquê."""
+        vazio = _temp(self, prefix="warden-subs-vazio-")
+        try:
+            self.M.run = self._falhar
+            caminho, porque = self.M._pull_subs(
+                "https://www.youtube.com/watch?v=abc123", vazio, "source-abc",
+                os.path.join(vazio, "%(id)s.%(ext)s"), [])
+            self.assertIsNone(caminho)
+            self.assertTrue(porque)
+        finally:
+            shutil.rmtree(vazio, ignore_errors=True)
+
+    def test_uma_corrida_que_nao_baixou_nada_nao_inventa_legenda(self):
+        """yt-dlp devolvendo 0 e escrevendo nada: a resposta é a frase de
+        sempre, e não um caminho para um arquivo que não existe."""
+        vazio = _temp(self, prefix="warden-subs-mudo-")
+        try:
+            self.M.run = lambda *a, **k: ""
+            caminho, porque = self.M._pull_subs(
+                "https://www.youtube.com/watch?v=abc123", vazio, "source-abc",
+                os.path.join(vazio, "%(id)s.%(ext)s"), [])
+            self.assertIsNone(caminho)
+            self.assertIn("publishes no subtitle", porque)
+        finally:
+            shutil.rmtree(vazio, ignore_errors=True)
+
+
+class PedidoVencidoPelaCampanha(unittest.TestCase):
+    """Defeito 5. `cut(asked_s=20)` numa campanha de 15s gravava a diferença e
+    o `check_sidecar` reprovava o clipe por ela.
+
+    O portão que existe para pegar o 20,6s e o 22,2s de 14/09 -- a diferença SEM
+    motivo -- estava reprovando também a diferença COM motivo, que é a regra da
+    campanha fazendo o trabalho dela. `cut` já grava `asked_overridden_by` com o
+    nome da regra; faltava o check ler isso.
+    """
+
+    def setUp(self):
+        import warden_style
+        self.S = warden_style
+
+    def _lado(self, **extra):
+        lado = {"asked_s": 20, "duration_s": 15}
+        lado.update(extra)
+        return lado
+
+    def test_com_a_regra_nomeada_nao_reprova_e_diz_qual_regra(self):
+        achados = self.S.check_sidecar(
+            self._lado(asked_overridden_by="video.duration_max_s = 15"))
+        self.assertEqual([m for lv, m in achados if lv == "REJECT"], [], achados)
+        oks = [m for lv, m in achados if lv == "ok"]
+        self.assertTrue(oks, achados)
+        self.assertTrue(any("video.duration_max_s = 15" in m for m in oks),
+                        "reportou ok sem dizer QUAL regra venceu o pedido: "
+                        + repr(oks))
+
+    def test_sem_a_regra_a_mesma_diferenca_continua_reprovando(self):
+        achados = self.S.check_sidecar(self._lado())
+        piores = [m for lv, m in achados if lv == "REJECT"]
+        self.assertTrue(piores, achados)
+        self.assertIn("20s", piores[0])
+        self.assertIn("15.00s", piores[0])
+
+    def test_o_pedido_atendido_continua_saindo_como_ok(self):
+        achados = self.S.check_sidecar({"asked_s": 15, "duration_s": 15.02})
+        self.assertEqual([m for lv, m in achados if lv == "REJECT"], [], achados)
+
+
+class KQueSomeEKQueVem(unittest.TestCase):
+    """Defeito 6. Já havia teste de que a cue SEM tempos vira branca e a perda é
+    anotada; não havia nenhum de que a cue COM tempos sai com o `\\k` certo.
+
+    Quer dizer: um conserto que apagasse o `\\k` de todo mundo passava na suíte,
+    porque o único teste do assunto olhava o caminho da perda.
+    """
+
+    def setUp(self):
+        import warden_media, warden_style
+        self.M, self.S = warden_media, warden_style
+
+    def test_quando_os_tempos_vem_a_soma_bate_com_a_duracao(self):
+        cues = self.S.reflow_cues([
+            {"start": 0.0, "end": 3.0,
+             "text": "e ai a gente percebeu que o mercado tinha mudado"}])
+        ass = self.M.ass_from_cues(cues, 1080, 1920)
+        linhas = _dialogues(ass)
+        self.assertTrue(linhas, "o ASS saiu sem Dialogue")
+        for inicio, fim, texto in linhas:
+            na_tela = round((fim - inicio) * 100)
+            self.assertGreater(self.M.soma_k(texto), 0,
+                               "a cue tem tempos por palavra e saiu sem \\k "
+                               "nenhum: o destaque acende tudo de uma vez")
+            self.assertLessEqual(
+                abs(self.M.soma_k(texto) - na_tela), 2,
+                f"a cue não foi recortada, fica {na_tela/100:.2f}s na tela e "
+                f"carrega {self.M.soma_k(texto)/100:.2f}s de \\k")
+
+    def test_a_cue_sem_tempos_continua_branca_e_a_perda_anotada(self):
+        """O outro lado, para os dois caminhos ficarem presos um ao outro."""
+        perdas = []
+        ass = self.M.ass_from_cues(
+            [{"start": 0.0, "end": 2.0, "text": "sem tempo por palavra",
+              "lines": ["sem tempo por palavra"]}], 1080, 1920, perdas=perdas)
+        texto = _dialogues(ass)[0][2]
+        self.assertEqual(self.M.soma_k(texto), 0)
+        self.assertIn(self.S.COR_POR_FALAR.rstrip("&"), texto)
+        self.assertEqual(len(perdas), 1, perdas)
+
+
+class AprovarUmaJanelaNaoAprovaOArquivo(unittest.TestCase):
+    """Defeito 2.5, a segunda metade. `captions review --start 128 --end 148
+    --approve` imprimia CINCO linhas e assinava o ARQUIVO INTEIRO -- 152 linhas,
+    no caso medido.
+
+    Dali em diante toda outra janela respondia "(approved)" sem ninguém ter lido
+    uma palavra dela. Uma semana depois do clipe reprovado por `jokovic
+    jokovic`, e com 236 testes no lugar, `aromasas` -- "aeromoças" ouvido errado
+    pelo Whisper -- foi para a tela por essa porta. Nenhum teste pegou porque
+    todos chamavam `write_approval(srt)` sem janela, que é justamente o caminho
+    em que o defeito não aparece.
+
+    A aprovação é DE UMA JANELA: `approval_state(srt, start, end)` responde pela
+    janela pedida, e aprovar 128-148 não diz nada sobre 181-201.
+    """
+
+    # As duas janelas do caso real: a que a pessoa leu e a que foi queimada.
+    LIDA = (128.0, 148.0)
+    QUEIMADA = (181.0, 201.0)
+
+    def setUp(self):
+        import warden_style
+        self.S = warden_style
+        self.dir = _temp(self, prefix="warden-janela-")
+        self.srt = os.path.join(self.dir, "fala.srt")
+        self._escrever(self.srt, self._corpo())
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    @staticmethod
+    def _tempo(s):
+        h, resto = divmod(float(s), 3600)
+        m, seg = divmod(resto, 60)
+        return f"{int(h):02d}:{int(m):02d}:{seg:06.3f}".replace(".", ",")
+
+    def _corpo(self, marca="aromasas"):
+        """Um SRT do tamanho do caso: 152 linhas cobrindo 0-250s.
+
+        O conteúdo não muda o veredito -- a aprovação é do hash e da janela --
+        mas o arquivo que assinou por engano tinha esse tamanho, e a palavra que
+        chegou na tela estava em 181-201s, longe das cinco linhas lidas.
+        """
+        pedacos = []
+        for i in range(152):
+            inicio = i * 1.6
+            fim = inicio + 1.4
+            texto = marca if self.QUEIMADA[0] <= inicio < self.QUEIMADA[1] \
+                else f"linha {i} da transcricao"
+            pedacos.append(f"{i + 1}\n{self._tempo(inicio)} --> "
+                           f"{self._tempo(fim)}\n{texto}\n")
+        return "\n".join(pedacos)
+
+    @staticmethod
+    def _escrever(caminho, texto):
+        with open(caminho, "w", encoding="utf-8") as fh:
+            fh.write(texto)
+
+    # ------------------------------------------------------------ o teste central
+
+    def test_aprovar_128_148_nao_aprova_181_201(self):
+        """O defeito, em uma linha. Se só um teste desta classe sobrevivesse,
+        teria de ser este: foi por 181-201 que `aromasas` foi para a tela."""
+        self.S.write_approval(self.srt, start=self.LIDA[0], end=self.LIDA[1])
+        ok, porque = self.S.approval_state(self.srt, start=self.LIDA[0],
+                                           end=self.LIDA[1])
+        self.assertTrue(ok, f"a janela lida devia estar aprovada: {porque}")
+        ok, porque = self.S.approval_state(self.srt, start=self.QUEIMADA[0],
+                                           end=self.QUEIMADA[1])
+        self.assertFalse(
+            ok, "assinar 128-148 aprovou 181-201: é exatamente a porta por onde "
+                "`aromasas` foi para a tela")
+        self.assertIn("181", porque)
+        self.assertIn("128", porque, f"o motivo não diz o que FOI aprovado: {porque}")
+
+    # ------------------------------------------------------------ o arquivo inteiro
+
+    def test_aprovar_uma_janela_nao_aprova_o_arquivo_inteiro(self):
+        """Sem janela a pergunta é sobre as 152 linhas, e cinco foram lidas."""
+        self.S.write_approval(self.srt, start=self.LIDA[0], end=self.LIDA[1])
+        ok, porque = self.S.approval_state(self.srt)
+        self.assertFalse(ok, "uma janela assinada valeu pelo arquivo inteiro")
+        self.assertIn("128", porque,
+                      f"o motivo tem de dizer QUAIS janelas valem: {porque}")
+
+    # ------------------------------------------------------------ acumular
+
+    def test_as_aprovacoes_acumulam_enquanto_o_arquivo_nao_muda(self):
+        """Ler a segunda janela não pode apagar a primeira: quem revisa um
+        episódio inteiro aprova janela a janela, e voltar a zero a cada
+        assinatura empurraria a pessoa de volta para o `--approve` sem janela."""
+        self.S.write_approval(self.srt, start=self.LIDA[0], end=self.LIDA[1])
+        self.S.write_approval(self.srt, start=self.QUEIMADA[0],
+                              end=self.QUEIMADA[1])
+        for janela in (self.LIDA, self.QUEIMADA):
+            ok, porque = self.S.approval_state(self.srt, start=janela[0],
+                                               end=janela[1])
+            self.assertTrue(ok, f"a janela {janela} se perdeu: {porque}")
+        ok, porque = self.S.approval_state(self.srt, start=300.0, end=320.0)
+        self.assertFalse(ok, "acumular duas janelas abriu o arquivo todo")
+
+    # ------------------------------------------------------------ editar o SRT
+
+    def test_editar_o_srt_invalida_inclusive_as_janelas_acumuladas(self):
+        """A aprovação é do CONTEÚDO. Reescrever o SRT depois de assinar duas
+        janelas não pode herdar nenhuma das duas: as janelas antigas apontam
+        para palavras que já não estão ali."""
+        self.S.write_approval(self.srt, start=self.LIDA[0], end=self.LIDA[1])
+        self.S.write_approval(self.srt, start=self.QUEIMADA[0],
+                              end=self.QUEIMADA[1])
+        self._escrever(self.srt, self._corpo(marca="aeromocas"))
+        for janela in (self.LIDA, self.QUEIMADA):
+            ok, porque = self.S.approval_state(self.srt, start=janela[0],
+                                               end=janela[1])
+            self.assertFalse(ok, f"a janela {janela} sobreviveu à edição do SRT")
+            self.assertIn("changed after it was approved", porque)
+
+    def test_depois_da_edicao_a_lista_recomeca(self):
+        """Reaprovar UMA janela no arquivo novo não pode ressuscitar a outra,
+        que foi lida numa versão do texto que não existe mais."""
+        self.S.write_approval(self.srt, start=self.LIDA[0], end=self.LIDA[1])
+        self.S.write_approval(self.srt, start=self.QUEIMADA[0],
+                              end=self.QUEIMADA[1])
+        self._escrever(self.srt, self._corpo(marca="aeromocas"))
+        self.S.write_approval(self.srt, start=self.LIDA[0], end=self.LIDA[1])
+        ok, _ = self.S.approval_state(self.srt, start=self.LIDA[0],
+                                      end=self.LIDA[1])
+        self.assertTrue(ok, "a janela reaprovada no texto novo não vale")
+        ok, porque = self.S.approval_state(self.srt, start=self.QUEIMADA[0],
+                                           end=self.QUEIMADA[1])
+        self.assertFalse(
+            ok, "a janela da versão antiga voltou a valer depois de uma "
+                f"assinatura nova: {porque}")
+
+    # ------------------------------------------------------------ formato antigo
+
+    def test_a_aprovacao_do_formato_antigo_e_recusada_em_voz_alta(self):
+        """Uma aprovação sem a chave `windows` foi assinada quando assinar
+        significava o arquivo todo -- e era mentira nos 147 casos de 152. Ela
+        não sabe o que foi lido, então é RECUSADA em vez de tratada como vale
+        para tudo: tratá-la como boa é reintroduzir o defeito pelo disco."""
+        from datetime import datetime, timezone
+        antigo = {"sha256": self.S.srt_fingerprint(self.srt),
+                  "approved_at": datetime.now(timezone.utc).isoformat(
+                      timespec="seconds")}
+        with open(self.S.approval_path(self.srt), "w", encoding="utf-8") as fh:
+            json.dump(antigo, fh)
+        ok, porque = self.S.approval_state(self.srt, start=self.QUEIMADA[0],
+                                           end=self.QUEIMADA[1])
+        self.assertFalse(ok, "a aprovação antiga valeu para uma janela qualquer")
+        self.assertIn("before windows were recorded", porque,
+                      f"o motivo não diz que é do formato antigo: {porque}")
+        ok, porque = self.S.approval_state(self.srt)
+        self.assertFalse(ok, "a aprovação antiga valeu para o arquivo inteiro")
+        self.assertIn("before windows were recorded", porque)
+
+    # ------------------------------------------------------------ o caminho legítimo
+
+    def test_sem_janela_write_approval_aprova_tudo(self):
+        """Quem leu as 152 linhas assina o arquivo, e aí qualquer janela passa.
+
+        É o caminho legítimo, e o resto da suíte depende dele: um conserto que
+        fechasse o portão da janela quebrando este teste teria trocado um
+        defeito por outro."""
+        self.S.write_approval(self.srt)
+        ok, porque = self.S.approval_state(self.srt)
+        self.assertTrue(ok, porque)
+        for janela in (self.LIDA, self.QUEIMADA, (0.0, 20.0)):
+            ok, porque = self.S.approval_state(self.srt, start=janela[0],
+                                               end=janela[1])
+            self.assertTrue(ok, f"o arquivo inteiro está aprovado e {janela} "
+                                f"foi recusada: {porque}")
+
+    # ------------------------------------------------------------ cobertura parcial
+
+    def test_uma_janela_so_parcialmente_coberta_nao_passa(self):
+        """O corte 140-160 pega 12s lidos e 12s que ninguém viu. Meio lido é não
+        lido: a palavra errada pode estar justamente nos 12s de fora."""
+        self.S.write_approval(self.srt, start=self.LIDA[0], end=self.LIDA[1])
+        ok, porque = self.S.approval_state(self.srt, start=140.0, end=160.0)
+        self.assertFalse(ok, "um corte que passa do fim da janela aprovada foi "
+                             "tratado como aprovado")
+        self.assertIn("160", porque)
+        ok, _ = self.S.approval_state(self.srt, start=120.0, end=140.0)
+        self.assertFalse(ok, "um corte que começa antes da janela aprovada foi "
+                             "tratado como aprovado")
+        ok, porque = self.S.approval_state(self.srt, start=130.0, end=146.0)
+        self.assertTrue(ok, f"uma janela DENTRO da aprovada foi recusada: {porque}")
+
+    # ------------------------------------------------------------ ponta a ponta
+
+    def test_o_cut_pergunta_pela_janela_que_vai_queimar(self):
+        """De ponta a ponta: SRT assinado na janela A, corte na janela B.
+
+        O clipe sai SEM legenda e a recusa está nas notas -- não é erro, é o
+        portão funcionando. Era aqui que `aromasas` passava: o `cut` perguntava
+        pelo ARQUIVO, e o arquivo estava assinado.
+
+        Sem `_subtitles_filter_or_skip()` de propósito: este caminho é o que NÃO
+        queima, então não precisa de libass -- e este é o teste que menos pode
+        virar `skipped` numa máquina de quem revisa."""
+        _ffmpeg_or_skip()
+        _pillow_or_skip()
+        import warden_media, warden_style
+        if not warden_style.font_available():
+            raise unittest.SkipTest("a fonte do repo não está no lugar")
+        preto = _make_source(os.path.join(self.dir, "preto.mp4"), seconds=6,
+                             w=1920, h=1080, audio=False, pattern="black")
+        curto = os.path.join(self.dir, "curto.srt")
+        self._escrever(curto,
+                       f"1\n{self._tempo(0.0)} --> {self._tempo(2.0)}\n"
+                       f"a janela que alguem leu\n\n"
+                       f"2\n{self._tempo(3.2)} --> {self._tempo(5.0)}\n"
+                       f"a janela que ninguem leu\n")
+        warden_style.write_approval(curto, start=0.0, end=2.0)
+        r = rules(video={"duration_max_s": 5, "width": 1080, "height": 1920,
+                         "audio": "forbidden"})
+        saida = os.path.join(self.dir, "janela-b.mp4")
+        result = warden_media.cut(preto, saida, r, start=3, end=6,
+                                  sound="platform", crop="center",
+                                  caption_srt=curto)
+        self.assertIsNone(
+            result["style"]["caption"],
+            "o corte queimou legenda numa janela que ninguém aprovou")
+        self.assertTrue(
+            any("not burning captions" in n for n in result["notes"]),
+            f"o clipe saiu sem legenda e sem dizer por quê: {result['notes']}")
+        self.assertTrue(os.path.isfile(saida),
+                        "a recusa virou erro: o clipe tinha de sair, só que mudo")
+
+    def test_o_cut_queima_quando_a_janela_do_corte_e_a_aprovada(self):
+        """O outro lado, para o portão não poder ser fechado com um `return
+        False`: aprovada a janela do corte, a legenda chega ao render."""
+        _ffmpeg_or_skip()
+        _pillow_or_skip()
+        _subtitles_filter_or_skip()
+        import warden_media, warden_style
+        if not warden_style.font_available():
+            raise unittest.SkipTest("a fonte do repo não está no lugar")
+        preto = _make_source(os.path.join(self.dir, "preto2.mp4"), seconds=6,
+                             w=1920, h=1080, audio=False, pattern="black")
+        curto = os.path.join(self.dir, "curto2.srt")
+        self._escrever(curto,
+                       f"1\n{self._tempo(3.2)} --> {self._tempo(5.0)}\n"
+                       f"a janela que alguem leu mesmo\n")
+        warden_style.write_approval(curto, start=3.0, end=6.0)
+        r = rules(video={"duration_max_s": 5, "width": 1080, "height": 1920,
+                         "audio": "forbidden"})
+        saida = os.path.join(self.dir, "janela-a.mp4")
+        result = warden_media.cut(preto, saida, r, start=3, end=6,
+                                  sound="platform", crop="center",
+                                  caption_srt=curto)
+        self.assertIsNotNone(
+            result["style"]["caption"],
+            f"a janela do corte estava aprovada e nada foi queimado: "
+            f"{result['notes']}")
