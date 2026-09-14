@@ -397,7 +397,7 @@ def trusted_check(url, entries):
 
 # ---------------------------------------------------------------- footage
 
-def archive(rules, out_dir, limit=None):
+def archive(rules, out_dir, limit=None, mode="video"):
     """Download what the brief authorised, and refuse to improvise.
 
     An empty archive list is not a reason to go looking. A clip built from
@@ -414,17 +414,100 @@ def archive(rules, out_dir, limit=None):
     got, failed = [], []
     for url in urls[: limit or len(urls)]:
         try:
-            got.append(_download_one(url, out_dir))
+            got.append(_download_one(url, out_dir, mode=mode))
         except Exception as exc:                       # one bad link, not a dead run
             failed.append((url, str(exc).splitlines()[0]))
     return got, failed
 
 
-def _download_one(url, out_dir):
+# As línguas de legenda que valem a pena pedir, e por que são só estas.
+#
+# Cada língua na lista é uma requisição a mais, e cada requisição a mais é uma
+# chance a mais de 429. `en` sozinho já derrubou o `archive` duas vezes num
+# vídeo em português. Então a lista é curta e o ambiente pode trocá-la.
+SUB_LANGS = os.environ.get("WARDEN_SUB_LANGS") or "pt,pt-BR"
+
+
+def _pull_subs(url, out_dir, stem, template, playlist_args):
+    """(caminho do .srt, motivo de não ter vindo). Falhar aqui não é fatal.
+
+    Corrida própria, de propósito. Uma legenda que não existe, ou um 429 do
+    YouTube, não pode impedir o vídeo de baixar -- e era exatamente isso que
+    acontecia quando as duas coisas vinham no mesmo comando.
+    """
+    def _achadas():
+        return [f for f in sorted(os.listdir(out_dir))
+                if f.startswith(stem) and f.lower().endswith(".srt")]
+
+    ja_tinha = _achadas()
+    try:
+        run(_ytdlp() + [*playlist_args, "--restrict-filenames", "--skip-download",
+             "--write-auto-subs", "--write-subs", "--sub-langs", SUB_LANGS,
+             "--convert-subs", "srt", "-o", template, "--", url],
+            TIMEOUT_FETCH * 4, "yt-dlp (subtitles)")
+    except RuntimeError as exc:
+        # Uma corrida que falhou não apaga o que já estava no disco. Se a
+        # legenda de uma corrida anterior está aqui, ela serve.
+        if ja_tinha:
+            return os.path.join(out_dir, ja_tinha[0]), None
+        return None, f"{type(exc).__name__}: {str(exc)[:160]}"
+    # O que EXISTE, não o que é novo. A versão anterior comparava o diretório
+    # antes e depois, e na segunda corrida o `.srt` já estava lá: não aparecia
+    # como novo, e a ferramenta respondia "este vídeo não publica legenda"
+    # com a legenda em disco. Um arquivo que já está aqui é um arquivo que
+    # temos.
+    achadas = _achadas()
+    if not achadas:
+        return None, "this video publishes no subtitle in " + SUB_LANGS
+    return os.path.join(out_dir, achadas[0]), None
+
+
+def _pull_text_first(url, out_dir, stem, template, playlist_args):
+    """O caminho barato: legenda publicada, ou o áudio -- nunca o vídeo.
+
+    Medido em 14/09 no vídeo do teste: a legenda desce em 4s e 73 KB; o áudio
+    inteiro em 4s e 15 MB; o vídeo inteiro em 16s e 361 MB. E transcrever custa
+    195s, que é o que a legenda publicada economiza.
+
+    Escolher a janela é trabalho de TEXTO. Baixar 361 MB para descobrir onde
+    cortar é pagar o vídeo antes de saber se vai usá-lo.
+    """
+    legenda, porque = _pull_subs(url, out_dir, stem, template, playlist_args)
+    if legenda:
+        return legenda
+    # Sem legenda publicada, o texto ainda sai barato: transcrever 15 MB de áudio
+    # dá o mesmo resultado que transcrever 361 MB de vídeo, e o whisper só ouve.
+    print(f"  ({porque}, so pulling the audio to transcribe instead of the "
+          f"video: measured 15 MB against 361 MB for the same words.)",
+          file=sys.stderr)
+    run(_ytdlp() + [*playlist_args, "--restrict-filenames",
+         "--max-filesize", str(MAX_DIRECT_BYTES), "-f", "ba",
+         "-o", template, "--", url], TIMEOUT_DOWNLOAD, "yt-dlp (audio)")
+    audios = sorted(f for f in os.listdir(out_dir)
+                    if f.startswith(stem)
+                    and os.path.splitext(f)[1].lower() in
+                    (".m4a", ".webm", ".opus", ".mp3", ".ogg"))
+    if not audios:
+        raise RuntimeError(
+            "yt-dlp returned neither a subtitle nor an audio track for that "
+            "link, so there is no text to choose a window from.")
+    return os.path.join(out_dir, audios[0])
+
+
+def _download_one(url, out_dir, mode="video"):
+    """`mode="video"` baixa a fonte; `mode="text"` baixa só o que dá as palavras."""
     url = safe_url(url)
     parsed = urlparse(url)
     direct = os.path.splitext(parsed.path)[1].lower() in (
         ".mp4", ".mov", ".m4v", ".webm", ".mkv")
+    if mode == "text" and (direct or "drive.google.com" in parsed.netloc):
+        # Um arquivo solto não publica legenda e não tem faixa de áudio
+        # separada para pedir: não há caminho barato aqui. Dizer isso é melhor
+        # que baixar o arquivo inteiro fingindo que é o modo barato.
+        raise RuntimeError(
+            f"{url} is a plain file, not a hosted video: there is no published "
+            f"subtitle to fetch and no audio-only stream to ask for. Pull it "
+            f"whole with `warden archive` and transcribe that.")
     if direct:
         # The name is ours, never theirs: a remote basename lands in an ffmpeg
         # filter argument further down the pipeline, and a quote in it is enough
@@ -474,8 +557,19 @@ def _download_one(url, out_dir):
             os.path.splitext(new[0])[1].lower() or ".mp4"))
         os.replace(got, ours)
         return ours
-    if not have("yt-dlp"):
-        raise RuntimeError("yt-dlp is not installed, so this link cannot be pulled")
+    # `have("yt-dlp")` perguntava pelo BINÁRIO no PATH. O venv da imagem instala
+    # o yt-dlp como módulo, e o PATH que um subprocesso herda da árvore de
+    # supervisão não tem o bin do venv -- então em máquina limpa o `archive`
+    # morria dizendo "yt-dlp is not installed" com o yt-dlp instalado. É a
+    # mesma armadilha que `_ytdlp()` já resolvia para os caminhos de consulta e
+    # que os de download não usavam. Agora a pergunta é se dá para IMPORTAR.
+    try:
+        import yt_dlp  # noqa: F401
+    except ImportError:
+        if not have("yt-dlp"):
+            raise RuntimeError(
+                "yt-dlp is neither importable by this interpreter nor on PATH, "
+                "so this link cannot be pulled.")
     # A playlist link is a playlist, and --no-playlist on one is undefined: it is
     # what left a stray intermediate file behind and made the archive step look
     # broken. So the two cases are told apart -- a single video keeps
@@ -490,13 +584,27 @@ def _download_one(url, out_dir):
     # text and it ends up inside an ffmpeg filter string.
     stem = "source-" + hashlib.sha256(url.encode()).hexdigest()[:12]
     template = os.path.join(out_dir, stem + ".%(ext)s")
-    run(["yt-dlp", *playlist_args, "--restrict-filenames",
+    if mode == "text":
+        return _pull_text_first(url, out_dir, stem, template, playlist_args)
+    # A legenda NÃO é pedida junto com o vídeo, e essa separação é um conserto,
+    # não um estilo. Medido em 14/09: `--sub-langs pt,pt-BR,en` numa só execução
+    # faz o YouTube responder 429 no `en`, e o 429 derruba a execução inteira
+    # ANTES de baixar o vídeo. Reproduzido duas vezes. Qualquer fonte sem legenda
+    # em inglês quebrava o `archive`, e a mensagem falava de legenda, não de
+    # vídeo, então o defeito lia como problema da fonte.
+    #
+    # Agora são duas corridas: a legenda tem a sua, pode falhar, e a falha vira
+    # aviso. O vídeo tem a sua e não depende de legenda nenhuma.
+    legenda, porque = _pull_subs(url, out_dir, stem, template, playlist_args)
+    run(_ytdlp() + [*playlist_args, "--restrict-filenames",
          "--max-filesize", str(MAX_DIRECT_BYTES),
-         "--write-auto-subs", "--write-subs",
-         "--sub-langs", "pt,pt-BR,en", "--convert-subs", "srt",
          "-f", "bv*[height<=1080]+ba/b[height<=1080]/b",
          "--merge-output-format", "mp4", "-o", template, "--", url],
         TIMEOUT_DOWNLOAD, "yt-dlp")
+    if not legenda and porque:
+        print(f"  (no published subtitle came down for {stem}: {porque}. The "
+              f"cut will need `warden transcribe`, which costs minutes rather "
+              f"than seconds.)", file=sys.stderr)
     videos = sorted(f for f in os.listdir(out_dir)
                     if f.startswith(stem)
                     and os.path.splitext(f)[1].lower() in (".mp4", ".mkv", ".webm"))
@@ -818,7 +926,15 @@ def _read_srt(path):
         stamps = [l for l in block if "-->" in l]
         if stamps:
             start, end = [s.strip() for s in stamps[0].split("-->")]
-            body = " ".join(l for l in block if "-->" not in l and not l.strip().isdigit())
+            # O filtro antigo era `not l.strip().isdigit()`, para tirar o número
+            # do índice do SRT, e comia qualquer linha do corpo que fosse só
+            # dígitos. Reproduzido: as cues "custou" / "5000" / "reais por mês"
+            # voltavam como ['custou', 'reais por mes'] -- a cue do meio sumia
+            # inteira, sem uma linha em lugar nenhum. O índice é POSIÇÃO, não
+            # conteúdo: ele é o que vem antes do timestamp, e VTT nem tem
+            # índice, então ali o filtro só fazia mal.
+            head = block.index(stamps[0])
+            body = " ".join(l for l in block[head + 1:] if "-->" not in l)
             # As entidades saem ANTES das tags: uma legenda do YouTube traz
             # `[&nbsp;__&nbsp;]` onde censurou um palavrão e `&gt;&gt;` onde
             # marcou quem fala. Queimadas cruas, é isso que aparece na tela.
@@ -901,7 +1017,115 @@ def _ass_stamp(t):
     return f"{h:d}:{m:02d}:{s:02d}.{cs:02d}"
 
 
-def to_ass(segments, width, height, safe=None, offset=0.0, length=None):
+_TEM_FILTRO = {}
+
+
+def ffmpeg_tem_filtro(nome):
+    """Se este ffmpeg tem o filtro `nome`. Perguntado ao binário, não suposto.
+
+    A legenda passou a ser ASS queimado pelo libass, e libass é uma opção de
+    compilação: o ffmpeg da imagem tem (`--enable-libass`), o do Homebrew de um
+    Mac normalmente não. Descobrir isso com o clipe pronto e sem legenda é tarde
+    demais, e supor que tem é como o `force_style` nunca renderizou nada.
+    """
+    if nome in _TEM_FILTRO:
+        return _TEM_FILTRO[nome]
+    try:
+        saida = subprocess.run(["ffmpeg", "-hide_banner", "-filters"],
+                               capture_output=True, text=True, timeout=60).stdout
+    except Exception:
+        saida = ""
+    _TEM_FILTRO[nome] = bool(re.search(rf"^\s*\S+\s+{re.escape(nome)}\s+", saida,
+                                       re.M))
+    return _TEM_FILTRO[nome]
+
+
+def _ff_valor(texto):
+    """Um caminho seguro para ir dentro de uma opção de filtro do ffmpeg.
+
+    O filtergraph corta em `,` `;` `[` `]` e a opção corta em `:`. Um caminho com
+    qualquer um deles vira dois filtros inventados e uma mensagem de erro que não
+    fala de caminho nenhum.
+    """
+    saida = str(texto).replace("\\", "\\\\")
+    for c in (":", "'", ",", ";", "[", "]"):
+        saida = saida.replace(c, "\\" + c)
+    return saida
+
+
+def _k_texto(cue, visivel_de=None, visivel_ate=None):
+    """O texto da cue com um `\\k` por palavra, ou None se os tempos não vierem.
+
+    `\\k<centésimos>` é o que faz o destaque andar palavra a palavra: o libass
+    pinta a palavra de SecondaryColour para PrimaryColour quando o relógio dela
+    chega. Os centésimos vêm do reflow, repartidos por sílaba.
+
+    `visivel_de`/`visivel_ate` são a janela da cue que SOBRA depois do recorte,
+    no tempo da própria cue, e existem por um defeito medido. Um corte que
+    começa no meio de um segmento faz a primeira cue ser cortada na cabeça: ela
+    fica 1,4s na tela carregando 2,9s de `\\k`. O libass conta o `\\k` a partir
+    do início do Dialogue, então o amarelo andava um segundo e meio atrás da
+    boca e três das oito palavras nunca acendiam antes de a cue sair.
+
+    Palavra que já foi dita antes da janela sai com `\\k0`, que o libass pinta
+    no primeiro quadro: ela JÁ está amarela quando a cue aparece, que é a
+    verdade -- aquela palavra já foi falada. A soma dos `\\k` passa a ser a
+    duração visível, e `soma_k` existe para um teste conferir isso.
+
+    Devolve None -- e não um texto pela metade -- quando a contagem de palavras
+    dos tempos não bate com a das linhas. Uma legenda com palavra faltando é
+    exatamente o tipo de perda silenciosa que este arquivo inteiro combate, e
+    quem chama trata o None dizendo o que aconteceu.
+    """
+    palavras = list(cue.get("words") or [])
+    linhas = [l for l in (cue.get("lines") or []) if l.strip()]
+    if not palavras or not linhas:
+        return None
+    if sum(len(l.split()) for l in linhas) != len(palavras):
+        return None
+    de = float(cue.get("start", 0.0)) if visivel_de is None else float(visivel_de)
+    ate = float(cue.get("end", 0.0)) if visivel_ate is None else float(visivel_ate)
+    saida, i = [], 0
+    for linha in linhas:
+        pedaco = []
+        for _ in linha.split():
+            p = palavras[i]
+            i += 1
+            # A fatia desta palavra que cai DENTRO do que vai aparecer.
+            a = max(float(p["start"]), de)
+            b = min(float(p["end"]), ate)
+            centesimos = max(0, int(round((b - a) * 100)))
+            pedaco.append("{\\k%d}%s" % (centesimos, _ass_limpo(p["w"])))
+        saida.append(" ".join(pedaco))
+    return "\\N".join(saida)
+
+
+def soma_k(texto_ass):
+    """Os centésimos de `\\k` somados, para quem precisa conferir a sincronia."""
+    return sum(int(n) for n in re.findall(r"\{\\k(\d+)\}", str(texto_ass or "")))
+
+
+def _ass_limpo(texto):
+    """Um `\\` abre tag e um `{` abre bloco de override. Nenhum dos dois é fala."""
+    return " ".join(str(texto).replace("\\", "").replace("{", "(")
+                    .replace("}", ")").split())
+
+
+def to_ass(segments, width, height, safe=None, offset=0.0, length=None,
+           perdas=None):
+    """Um transcript vira ASS: reflow primeiro, depois `ass_from_cues`.
+
+    Continua sendo a porta de entrada para quem tem segmentos crus na mão. Quem
+    já reflowou -- o `cut`, que precisa das mesmas cues para contar linhas e
+    finais pendurados -- chama `ass_from_cues` direto, para não reflowar duas
+    vezes e correr o risco de as duas passadas discordarem.
+    """
+    return ass_from_cues(S.reflow_cues(segments), width, height, safe=safe,
+                         offset=offset, length=length, perdas=perdas)
+
+
+def ass_from_cues(cues, width, height, safe=None, offset=0.0, length=None,
+                  perdas=None):
     """The caption as an ASS file, with the style baked into the file itself.
 
     Not force_style on the subtitles filter: that option takes comma-separated
@@ -926,7 +1150,7 @@ def to_ass(segments, width, height, safe=None, offset=0.0, length=None):
     y1 = int(safe.get("y1", int(height * 0.83)))
     # height // 26, não // 22. O antigo dava 87px num quadro de 1920, grande
     # demais para duas linhas de fala, e foi parte do bloco que cobriu o rosto.
-    fontsize = max(18, height // S.CAPTION_SIZE_DIVISOR)
+    fontsize = S.caption_size(height)
     outline = 3
     margin_l = max(10, x0)
     margin_r = max(10, width - x1)
@@ -949,20 +1173,19 @@ def to_ass(segments, width, height, safe=None, offset=0.0, length=None):
         # Quem passar este ASS ao filtro `subtitles` tem de passar também
         # `fontsdir` apontando para essa pasta, senão a fallback volta.
         # A sombra sai de 0 para 1: peso separado do contorno, como no PRIME.
-        f"Style: Default,Anton,{fontsize},&H00FFFFFF,&H000000FF,&H00000000,"
-        f"&H80000000,-1,0,0,0,100,100,0,0,1,{outline},1,2,"
+        # PrimaryColour é a palavra JÁ falada e SecondaryColour a que ainda
+        # vem: é assim que o `\\k` pinta, e é o contrário do que os nomes
+        # sugerem. Amarelo depois, branco antes -- escolha do dono em 14/09.
+        f"Style: Default,Anton,{fontsize},{S.COR_FALADA},{S.COR_POR_FALAR},"
+        f"&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,{outline},1,2,"
         f"{margin_l},{margin_r},{margin_v},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
         "Effect, Text\n")
     offset = float(offset or 0.0)
     rows = []
-    # Reflow antes de virar cue: no máximo duas linhas, ~26 caracteres por linha
-    # e ~2,2s por cue, com o tempo repartido proporcional às palavras. Sem isso
-    # um segmento de sete segundos com trinta palavras vira um bloco de seis
-    # linhas parado na tela, que foi exatamente o que cobriu o rosto do sujeito.
-    segments = S.reflow_cues(segments)
-    for seg in segments or []:
+    sem_k = []
+    for seg in cues or []:
         text = (seg.get("text") or "").strip()
         if not text:
             continue
@@ -984,18 +1207,28 @@ def to_ass(segments, width, height, safe=None, offset=0.0, length=None):
         start = max(0.0, start)
         if end <= start:
             continue
-        # A newline in ASS is \N; a lone brace opens an override block. Neither
-        # belongs in a transcript line, so both are neutralised.
-        lines = seg.get("lines") or [text]
-        lines = [" ".join(str(l).replace("\\", "").replace("{", "(")
-                          .replace("}", ")").split()) for l in lines]
-        # As linhas já foram quebradas pelo reflow; o \N as fixa onde foram
-        # medidas em vez de deixar o libass reembrulhar dentro das margens.
-        rows.append((start, end, "\\N".join(l for l in lines if l)))
+        # O destaque palavra a palavra. Quando os tempos vieram, cada palavra
+        # entra com o seu `\\k`; quando não vieram, a cue entra inteira e é
+        # FORÇADA a branco -- sem `\\k` o libass pinta a linha toda de
+        # PrimaryColour, que aqui é o amarelo do "já falado", e a cue sairia
+        # amarela do início ao fim sem ninguém pedir.
+        # O recorte acima mudou a janela da cue; o `\k` tem de ser recalculado
+        # nela, senão o destaque anda atrás da voz pelo tanto que foi cortado.
+        corpo = _k_texto(seg, visivel_de=start + offset, visivel_ate=end + offset)
+        if corpo is None:
+            sem_k.append(text[:40])
+            linhas = [_ass_limpo(l) for l in (seg.get("lines") or [text])]
+            corpo = ("{\\c%s&}" % S.COR_POR_FALAR.rstrip("&")
+                     + "\\N".join(l for l in linhas if l))
+        rows.append((start, end, corpo))
     rows.sort(key=lambda r: r[0])
     body = "".join(
         f"Dialogue: 0,{_ass_stamp(a)},{_ass_stamp(b)},Default,,0,0,0,,{t}\n"
         for a, b, t in rows)
+    if sem_k and perdas is not None:
+        perdas.append(f"{len(sem_k)} cue(s) ficaram sem destaque palavra a "
+                      f"palavra porque os tempos por palavra não bateram com as "
+                      f"linhas: {'; '.join(sem_k[:3])}")
     return header + body if rows else ""
 
 
@@ -1365,7 +1598,8 @@ def _face_crop_fraction(faces, hint, kept):
 
 def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         track=None, track_start=None, sound="platform", crop=None,
-        shots=None, language=None, motion=True, cover_footer=None):
+        shots=None, language=None, motion=True, cover_footer=None,
+        asked_s=None):
     """One clip, with the campaign's numbers rather than a house style.
 
     Duration is clamped to the campaign's window before a frame is written: a
@@ -1382,11 +1616,44 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     hi = R.get(rules, "video.duration_max_s")
     length = max(0.1, float(end) - float(start))
     notes = []
+    # O número que a PESSOA pediu, e ele vem antes da campanha de propósito.
+    #
+    # Em 14/09 o dono pediu "20 segundos" e recebeu 20,6 e 22,2. A ferramenta
+    # não errou: ela entregou exatamente a janela que lhe passaram. O que não
+    # existia era um caminho para o pedido do usuário chegar até aqui -- o
+    # agente alinhava a janela nas fronteiras da transcrição e nunca voltava ao
+    # número. Um pedido que não vira parâmetro é um pedido que ninguém cumpre.
+    #
+    # Então: quando `asked_s` vem, a janela é ajustada para ele, mantendo o
+    # começo. A campanha ainda manda -- os dois clamps abaixo rodam depois --
+    # e quando ela obriga a sair do número, a nota diz qual regra obrigou.
+    pedido = None if asked_s is None else max(0.1, float(asked_s))
+    # Qual regra da campanha venceu o pedido da pessoa, quando alguma venceu.
+    # Sem isto o portão de entrega reprovava um clipe que a PRÓPRIA campanha
+    # mandou encurtar, dizendo que nenhuma regra justificava o desvio -- com a
+    # nota logo acima nomeando a regra. A nota e o portão discordavam.
+    venceu_o_pedido = None
+    if pedido is not None and abs(length - pedido) > 0.05:
+        notes.append(f"the person asked for {pedido:.0f}s and the window given "
+                     f"was {length:.2f}s, so the cut was moved to {pedido:.0f}s "
+                     f"from the same start. A number a person says is the "
+                     f"request, not a suggestion.")
+        length = pedido
     if hi is not None and length > hi:
-        notes.append(f"trimmed from {length:.1f}s to the {hi}s maximum")
+        notes.append(f"trimmed from {length:.1f}s to the {hi}s maximum"
+                     + (f" -- this campaign's limit overrides the {pedido:.0f}s "
+                        f"that was asked for, and that is why the file is not "
+                        f"{pedido:.0f}s" if pedido is not None else ""))
+        if pedido is not None:
+            venceu_o_pedido = f"video.duration_max_s = {hi}"
         length = float(hi)
     if lo is not None and length < lo:
-        notes.append(f"extended from {length:.1f}s to the {lo}s minimum")
+        notes.append(f"extended from {length:.1f}s to the {lo}s minimum"
+                     + (f" -- this campaign's floor overrides the {pedido:.0f}s "
+                        f"that was asked for, and that is why the file is not "
+                        f"{pedido:.0f}s" if pedido is not None else ""))
+        if pedido is not None:
+            venceu_o_pedido = f"video.duration_min_s = {lo}"
         length = float(lo)
 
     # An edit is cut to the bar, and it is cut to the bar even when the file
@@ -1525,7 +1792,22 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     # e um `efeito`. Sem ela, um zoom leve único cobre a janela inteira, que é o
     # mínimo para o clipe não ler como trecho bruto.
     if shots:
-        notes.append(f"{len(shots)} shots asked for; scale moves on each")
+        # A nota daqui dizia "scale moves on each", e era mentira: `shots` chega
+        # do plano, atravessa a assinatura inteira e não é lido por mais nenhuma
+        # linha deste arquivo. O render aplica UM zoom linear sobre a janela
+        # toda, com planos ou sem.
+        #
+        # Mentira de relatório é pior que recurso faltando: quem lê a nota
+        # acredita que a decupagem foi respeitada e não abre o mosaico para
+        # conferir. O recurso continua não existindo -- multiplano é a lista da
+        # resposta sobre EDIT, não deste bloco -- mas a nota passa a dizer o que
+        # aconteceu de verdade.
+        notes.append(
+            f"IGNOREI os {len(shots)} planos deste clipe. Este renderizador "
+            f"ainda não faz decupagem: ele aplica um único zoom linear sobre a "
+            f"janela inteira, com `shots` ou sem. O campo foi aceito e "
+            f"descartado -- se a decupagem importa para este corte, ela não "
+            f"está no arquivo.")
     if motion:
         zoom_from, zoom_to = 1.0, 1.06
         if isinstance(motion, dict):
@@ -1571,7 +1853,7 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     #
     # Cada texto vira um PNG transparente do tamanho do quadro e entra como
     # `overlay` com `enable='between(t,a,b)'`, que é a montagem do PRIME.
-    overlays = []                     # (png, y, de, ate)
+    overlays = []                     # (png, y, de, ate, fade_de_saida_s)
     art_dir = os.path.dirname(os.path.abspath(out)) or "."
     stem = os.path.splitext(os.path.basename(out))[0]
     # O que este render fez consigo mesmo, gravado ao lado dele. `style check`
@@ -1579,7 +1861,190 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     # que o PIL mediu com a fonte real, e não uma estimativa que confunde letra
     # com letreiro de neon.
     style_facts = {"hook": None, "caption": None, "footer_covered": False,
-                   "motion": bool(motion), "source_text": source_text}
+                   "motion": bool(motion), "source_text": source_text,
+                   "duration_s": round(float(length), 2),
+                   "asked_s": None if pedido is None else round(pedido, 2),
+                   "asked_overridden_by": venceu_o_pedido}
+
+    footer = None
+    # A decisão de COBRIR o rodapé do acervo mudou de lugar, e o lugar é o
+    # conserto. Ela era tomada aqui em cima, com `caption_srt` existindo no
+    # disco como única prova de que haveria legenda nossa -- e os três portões
+    # abaixo (arquivo aprovado, idioma, libass) ainda podiam derrubar a legenda
+    # DEPOIS. Quando derrubavam, o degradê já tinha apagado a legenda do acervo
+    # em troca de nada, e a nota afirmava uma disputa que não houve. Agora ela
+    # roda depois dos portões, onde `cues`/`ass_path` dizem o que de fato foi
+    # queimado. A ordem das CAMADAS não muda com isso: a montagem lá embaixo
+    # separa o degradê por identidade (`o[0] == footer`) e não por posição.
+    if source_text.get("top"):
+        notes.append("this footage carries burned text along the TOP as well "
+                     f"({source_text['evidence']}) -- the hook will land on it. "
+                     "Check the contact sheet before you send this one.")
+
+    burn_reason = None
+    cues = []
+    fala_apos_o_corte = False
+    if caption_srt and os.path.exists(caption_srt):
+        if R.get(rules, "sources.archive_has_captions") is True:
+            # The campaign says this archive already burns its own captions.
+            # Burning ours over them is the doubling the owner set this flag to
+            # prevent, so the tool refuses it here rather than leaving it to be
+            # caught by eye on the first clip.
+            burn_reason = ("not burning captions: this campaign's archive already "
+                           "carries its own (sources.archive_has_captions is true)")
+        else:
+            # A janela QUE VAI QUEIMAR, no tempo da fonte -- não o arquivo.
+            # Perguntar pelo arquivo era a porta por onde `aromasas` passou.
+            approved, why = S.approval_state(
+                caption_srt, start=float(start), end=float(start) + length)
+            if not approved:
+                # O portão do defeito 2.5. Sem aprovação o clipe sai SEM legenda,
+                # em vez de sair com a palavra errada queimada: um clipe mudo se
+                # conserta, um `jokovic jokovic` no vídeo publicado não.
+                burn_reason = f"not burning captions: {why}"
+            else:
+                rows = _read_srt(caption_srt)
+                window = [r for r in rows
+                          if r["end"] > start and r["start"] < start + length]
+                clash = S.language_clash(
+                    hook, " ".join(r["text"] for r in window),
+                    declared=language or R.get(rules, "caption.language"))
+                if clash:
+                    # Defeito 2.4. Recusa e diz por quê, em vez de queimar inglês
+                    # sobre um hook em português como saiu da última vez.
+                    burn_reason = f"not burning captions: {clash}"
+                else:
+                    # A fala continua depois do fim do corte? Só quem tem o
+                    # SRT inteiro sabe, e é isso que decide se a ÚLTIMA cue está
+                    # pendurada ou só é a última. Ver `finais_pendurados`.
+                    fim_janela = float(start) + float(length)
+                    fala_apos_o_corte = any(r["end"] > fim_janela + 0.05
+                                            for r in rows)
+                    descartes = []
+                    cues = S.reflow_cues(window, descartes=descartes)
+                    # ---- encaixar o destaque na fala de verdade ----
+                    #
+                    # A legenda automática do YouTube carimba o tempo DEPOIS da
+                    # fala: o reconhecedor só emite quando já tem contexto.
+                    # Queimar esse tempo cru nasce atrasado, e o dono viu no
+                    # clipe -- o homem fala a palavra e o amarelo chega depois.
+                    #
+                    # Medido contra a régua que ele mediu à mão no clipe
+                    # entregue, a mediana era +0,543s. O detector de começo de
+                    # fala reproduz essa régua: 8 de 8, com 0,01s de diferença
+                    # num único valor.
+                    falas, porque_fala = S.fala_comeca(source, start, length)
+                    if falas:
+                        cues, sincronia = S.encaixa_na_fala(cues, falas)
+                    else:
+                        sincronia = {"porque": porque_fala or "sem fala detectada"}
+                        notes.append(
+                            f"não consegui achar os começos de fala deste trecho "
+                            f"({porque_fala}), então o destaque ficou no tempo "
+                            f"cru da legenda de origem, que costuma chegar atrasado.")
+                    for descarte in descartes:
+                        notes.append(
+                            f"ATENÇÃO: uma linha da legenda não entrou porque "
+                            f"{descarte}. Ela existe no SRT e não vai para a "
+                            f"tela -- confira antes de entregar.")
+                    if not cues:
+                        burn_reason = ("the subtitle file had no usable lines in "
+                                       "this window, so nothing was burned")
+
+    # ------------------------------------------------------- a legenda é ASS
+    #
+    # O hook continua PNG do PIL, porque ele é medido antes de ser desenhado e
+    # é isso que garante que ele cabe. A LEGENDA sai do PIL e vira ASS queimado
+    # pelo libass, por um motivo que o PNG não resolve: destaque palavra a
+    # palavra. Um PNG por estado de palavra seriam cinquenta e cinco entradas de
+    # ffmpeg num clipe de vinte segundos; `{\k}` faz o mesmo dentro de uma linha
+    # de texto, e o libass já está no ffmpeg da imagem (`--enable-libass`).
+    ass_path = None
+    if cues:
+        if not ffmpeg_tem_filtro("ass"):
+            # Dependência ausente não degrada calado. Um clipe de podcast sem
+            # legenda não é um clipe entregue, e "renderizou sem legenda" com
+            # uma nota no meio de doze é como um defeito atravessa.
+            raise RuntimeError(
+                "este ffmpeg não foi compilado com libass, e a legenda deste "
+                "renderizador é ASS com destaque palavra a palavra. O filtro "
+                "`ass` não existe neste binário -- `ffmpeg -filters | grep ass` "
+                "confirma. A imagem do agente traz um ffmpeg com "
+                "`--enable-libass`; um ffmpeg de Homebrew normalmente não. "
+                "Rode o corte na imagem, ou corte sem --subtitles.")
+        perdas = []
+        texto_ass = ass_from_cues(cues, width, height, safe=safe,
+                                  offset=float(start), length=float(length),
+                                  perdas=perdas)
+        if not texto_ass.strip():
+            burn_reason = ("o ASS saiu vazio: nenhuma cue sobrou dentro da "
+                           "janela depois de deslocada para o tempo do clipe")
+            cues = []
+        else:
+            ass_path = os.path.join(art_dir, f"{stem}.ass")
+            with open(ass_path, "w", encoding="utf-8") as fh:
+                fh.write(texto_ass)
+            escritas = texto_ass.count("Dialogue:")
+            # Cues que caíram fora da janela do clipe. Elas são fala que
+            # acontece depois do fim do corte, então descartá-las é certo --
+            # mas descartá-las CALADO não é. Medido: num clipe de 22,2s o
+            # reflow produzia cues até 30,66s, e três delas sumiam sem uma
+            # linha em lugar nenhum.
+            fora = len(cues) - escritas
+            if fora > 0:
+                notes.append(
+                    f"{fora} cue(s) da legenda caem fora da janela deste corte "
+                    f"e não foram queimadas. É fala que acontece depois do "
+                    f"--end, então está certo descartá-las -- mas se o corte "
+                    f"deveria incluir essa fala, é o --end que está curto.")
+            longest = max(c["end"] - c["start"] for c in cues)
+            most = max(len(c["lines"]) for c in cues)
+            pendurados = S.finais_pendurados(
+                cues, continua_depois=fala_apos_o_corte)
+            style_facts["caption"] = {
+                "cues": escritas, "max_lines": most,
+                "max_cue_s": round(longest, 2),
+                "renderer": "ass",
+                "karaoke": not perdas,
+                "hanging_endings": pendurados,
+                # A ÚLTIMA cue pendurada é outro defeito, e ele não é da
+                # legenda: é o corte terminando no meio da frase. Medido no
+                # render de conferência: o clipe fechava em "trabalho manual,
+                # só que" e a fala seguia depois do fim. O reflow não tem o que
+                # fazer -- não existe palavra seguinte DENTRO do clipe. Quem
+                # conserta isso é o `--end`, e a mensagem tem de dizer isso, em
+                # vez de mandar mexer na legenda.
+                "ends_mid_sentence": bool(
+                    cues and pendurados and cues[-1]["text"] in pendurados),
+                # O corpo e a altura de letra que ele produz. A altura é o que
+                # se vê e é o que encolheu 45% sem ninguém notar quando a
+                # legenda virou ASS -- registrada aqui, ela vira aritmética.
+                # A sincronia do destaque contra a fala medida no áudio. Fica
+                # gravada para dar para acompanhar se piora, que foi o pedido.
+                "sync": sincronia,
+                "cues_fora_da_janela": fora,
+                "size_px": S.caption_size(height),
+                "ink_ratio": round(S.caption_size(height)
+                                   * S.ASS_INK_POR_CORPO / height, 4),
+            }
+            notes.append(f"burned {escritas} caption cues as ASS: at most {most} "
+                         f"lines and {longest:.1f}s each, each word lit as it is "
+                         f"said (\\k, time split by syllable)")
+            for perda in perdas:
+                notes.append("ATENÇÃO: " + perda)
+            if pendurados:
+                # A nota afirmava "porque o trecho não tinha fronteira nenhuma"
+                # para toda cue acusada, e para a ÚLTIMA da janela isso é falso:
+                # ali o que corta é o fim do clipe, não a falta de fronteira.
+                # Duas causas, duas frases.
+                porque = ("o reflow não achou fronteira utilizável no trecho"
+                          if len(pendurados) > 1 or not fala_apos_o_corte else
+                          "a fala continua depois do fim do corte")
+                notes.append(
+                    f"{len(pendurados)} cue(s) fecham numa palavra que pede "
+                    f"complemento ({porque}): " + "; ".join(pendurados[:3]))
+    if not cues and burn_reason:
+        notes.append(burn_reason)
 
     # ------------------------------------------------------- texto do acervo
     #
@@ -1590,15 +2055,15 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     #    tratamento saem DUAS legendas no mesmo quadro. O degradê do PRIME cobre
     #    a de baixo e a nossa fica sozinha.
     #  - `cover_footer=False` é a outra saída legítima: não cobre e não queima.
-    footer = None
-    wants_caption = bool(caption_srt and os.path.exists(caption_srt))
+    queimamos = bool(cues and ass_path)
     if source_text.get("bottom"):
         cover = cover_footer
         if cover is None:
             # Cobre quando a nossa legenda vai disputar a mesma faixa. Se não
-            # vamos queimar nada, o texto do acervo não está competindo com
-            # ninguém, e cobri-lo seria estragar o quadro por nada.
-            cover = wants_caption
+            # queimamos nada, o texto do acervo não está competindo com
+            # ninguém, e cobri-lo seria estragar o quadro por nada. `queimamos`
+            # é o que SAIU do render, não o que se pretendia queimar.
+            cover = queimamos
         if cover:
             # A medida entra com folga, mas presa entre 18% e 24% da altura.
             #
@@ -1617,84 +2082,42 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
             band = int(height * min(0.24, max(0.20, reach)))
             footer, fy = S.footer_png(os.path.join(art_dir, f"{stem}-rodape.png"),
                                       width, height, band=band)
-            overlays.append((footer, fy, 0.0, float(length)))
+            overlays.append((footer, fy, 0.0, float(length), 0.0))
             style_facts["footer_covered"] = True
-            notes.append(
-                "this footage already carries burned text along the bottom "
-                f"({source_text['evidence']}). Covered it with the gradient "
-                "footer so there is one caption in frame and not two. If that "
-                "bottom text is another clipper's watermark rather than the "
-                "archive's own captions, covering it breaks the rules -- re-cut "
-                "with cover_footer=False and drop --subtitles.")
+            aviso_marca_dagua = (
+                " If that bottom text is another clipper's watermark rather "
+                "than the archive's own captions, covering it breaks the rules "
+                "-- re-cut with cover_footer=False and drop --subtitles.")
+            if queimamos:
+                notes.append(
+                    "this footage already carries burned text along the bottom "
+                    f"({source_text['evidence']}). Covered it with the gradient "
+                    "footer so there is one caption in frame and not two."
+                    + aviso_marca_dagua)
+            else:
+                # A nota afirmava a disputa "uma legenda em quadro e não duas"
+                # mesmo quando legenda nenhuma nossa foi queimada. Chegar aqui
+                # agora só é possível com `cover_footer=True` explícito, e aí o
+                # degradê apagou a legenda do acervo em troca de nada -- o que a
+                # nota tem de dizer, com o motivo de a nossa não ter saído.
+                notes.append(
+                    "this footage already carries burned text along the bottom "
+                    f"({source_text['evidence']}). Covered it with the gradient "
+                    "footer because cover_footer=True was asked for -- but NO "
+                    "caption of ours was burned in the end"
+                    # Só a primeira frase do motivo: o texto inteiro do
+                    # portão já saiu numa nota própria logo acima, e repeti-lo
+                    # aqui enterra a frase que importa.
+                    + (f" ({burn_reason.split('. ')[0]})" if burn_reason else "")
+                    + ", so the gradient erased the archive's own text and put "
+                    "nothing in its place. Re-cut with cover_footer=False to "
+                    "get that text back, or fix what stopped our captions."
+                    + aviso_marca_dagua)
         else:
             notes.append(
                 "this footage already carries burned text along the bottom "
                 f"({source_text['evidence']}). Not covering it, so do not burn "
                 "captions over it -- two captions in one frame is a reject.")
-    if source_text.get("top"):
-        notes.append("this footage carries burned text along the TOP as well "
-                     f"({source_text['evidence']}) -- the hook will land on it. "
-                     "Check the contact sheet before you send this one.")
-
-    burn_reason = None
-    cues = []
-    if caption_srt and os.path.exists(caption_srt):
-        if R.get(rules, "sources.archive_has_captions") is True:
-            # The campaign says this archive already burns its own captions.
-            # Burning ours over them is the doubling the owner set this flag to
-            # prevent, so the tool refuses it here rather than leaving it to be
-            # caught by eye on the first clip.
-            burn_reason = ("not burning captions: this campaign's archive already "
-                           "carries its own (sources.archive_has_captions is true)")
-        else:
-            approved, why = S.approval_state(caption_srt)
-            if not approved:
-                # O portão do defeito 2.5. Sem aprovação o clipe sai SEM legenda,
-                # em vez de sair com a palavra errada queimada: um clipe mudo se
-                # conserta, um `jokovic jokovic` no vídeo publicado não.
-                burn_reason = f"not burning captions: {why}"
-            else:
-                rows = _read_srt(caption_srt)
-                window = [r for r in rows
-                          if r["end"] > start and r["start"] < start + length]
-                clash = S.language_clash(
-                    hook, " ".join(r["text"] for r in window),
-                    declared=language or R.get(rules, "caption.language"))
-                if clash:
-                    # Defeito 2.4. Recusa e diz por quê, em vez de queimar inglês
-                    # sobre um hook em português como saiu da última vez.
-                    burn_reason = f"not burning captions: {clash}"
-                else:
-                    cues = S.reflow_cues(window)
-                    if not cues:
-                        burn_reason = ("the subtitle file had no usable lines in "
-                                       "this window, so nothing was burned")
-
-    if cues:
-        # A legenda mora na faixa de baixo mas acima da furniture da plataforma,
-        # e o corpo vem do briefing: height // 26, não height // 22 (que dava
-        # 87px num quadro de 1920 e empurrava a fala para cima do rosto).
-        cap_size = max(20, height // S.CAPTION_SIZE_DIVISOR)
-        cap_y = int(y1 - cap_size * S.LEADING * 1.35)
-        for i, cue in enumerate(cues):
-            a = max(0.0, cue["start"] - start)
-            b = min(float(length), cue["end"] - start)
-            if b <= a:
-                continue
-            png = os.path.join(art_dir, f"{stem}-cue{i:03d}.png")
-            png, oy = S.text_png(cue["lines"], png, width, height, cap_y,
-                                 cap_size, scrim=True)
-            overlays.append((png, oy, a, b))
-        longest = max(c["end"] - c["start"] for c in cues)
-        most = max(len(c["lines"]) for c in cues)
-        style_facts["caption"] = {"cues": len(overlays) - (1 if footer else 0),
-                                  "max_lines": most,
-                                  "max_cue_s": round(longest, 2)}
-        notes.append(f"burned {len(overlays)} caption cues: at most {most} lines "
-                     f"and {longest:.1f}s each (was one cue per whisper segment, "
-                     f"which is how a six-line block sat on a face for 7s)")
-    elif burn_reason:
-        notes.append(burn_reason)
 
     if hook:
         # O hook é medido contra a largura útil e quebrado em até duas linhas
@@ -1703,11 +2126,21 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         usable = S.usable_width(width)
         size = max(20, int(width * S.HOOK_SIZE_RATIO))
         floor = max(16, int(width * S.HOOK_MIN_RATIO))
+        # `*assim*` marca as palavras de acento. As marcas saem ANTES de medir:
+        # medir o texto com os asteriscos dentro daria uma largura que não é a
+        # do que vai para a tela, e a conta de "o hook cabe" é exata de propósito.
+        hook, acento = S.split_acento(hook)
         lines, fitted, whole = S.fit_lines(hook, usable, size, floor)
         hook_y = max(int(height * 0.14), int(safe.get("y0", 200)) + fitted)
         png = os.path.join(art_dir, f"{stem}-hook.png")
-        png, oy = S.text_png(lines, png, width, height, hook_y, fitted, scrim=True)
-        overlays.append((png, oy, 0.0, float(length)))
+        png, oy = S.text_png(lines, png, width, height, hook_y, fitted,
+                             scrim=True, acento=acento)
+        # Três segundos e um fade curto, não o clipe inteiro. Ver HOOK_SECONDS
+        # em warden_style: em 14/09 a frase estava nos oito quadros do mosaico,
+        # e dos 3s em diante ela só disputava o quadro com a legenda da fala.
+        hook_s = min(float(length), S.HOOK_SECONDS)
+        hook_fade = min(S.HOOK_FADE_S, hook_s / 2)
+        overlays.append((png, oy, 0.0, hook_s, hook_fade))
         # A largura REAL do texto desenhado, medida com a fonte que o desenhou.
         # Não é estimativa: é o número contra o qual a quebra foi decidida, e é
         # o que permite a "o hook cabe inteiro" ser aritmética em vez de olhar.
@@ -1717,9 +2150,18 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         drawn = int(max(_probe.textlength(l, font=_f) for l in lines)) if lines else 0
         style_facts["hook"] = {"width_px": drawn, "usable_px": usable,
                                "lines": len(lines), "size_px": fitted,
-                               "chars": len(str(hook)), "complete": bool(whole)}
+                               "chars": len(str(hook)), "complete": bool(whole),
+                               "seconds_on_screen": round(hook_s, 2),
+                               "fade_s": round(hook_fade, 2),
+                               "accent_words": sorted(
+                                   " ".join(lines).split()[i] for i in acento
+                                   if i < len(" ".join(lines).split())),
+                               "accent_rgb": list(S.COR_ACENTO_HOOK[:3])}
         notes.append(f"hook drawn at {fitted}px in {len(lines)} line(s): "
                      f"{drawn}px against {usable}px of usable width")
+        notes.append(f"the hook leaves at {hook_s:.1f}s with a "
+                     f"{hook_fade:.1f}s fade, instead of standing on the picture "
+                     f"for the whole {float(length):.1f}s")
         if fitted <= floor:
             notes.append(f"the hook only fits at the {floor}px floor. It is "
                          f"{len(hook)} characters -- shorter reads better in a feed.")
@@ -1750,7 +2192,7 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     # fade de alfa sobre uma imagem parada apaga o único quadro que existe --
     # é a nota do PRIME e custou um render para ser descoberta.
     overlay_index = {}
-    for png, _y, _a, _b in overlays:
+    for png, _y, _a, _b, _f in overlays:
         args += ["-loop", "1", "-framerate", "30", "-i", png]
         overlay_index[png] = next_input
         next_input += 1
@@ -1759,18 +2201,47 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
 
     # Um filter_complex quando há overlay ou trilha; o -vf simples continua
     # servindo o caso sem texto, que é o mais barato e o mais comum nos testes.
-    video = f"[0:v]{chain}[v0]"
-    last = "v0"
-    for i, (png, oy, a, b) in enumerate(overlays):
-        idx = overlay_index[png]
-        # `shortest=0:repeatlast=0` impede que o último quadro do PNG fique
-        # carimbado depois do fim da janela, que é como um texto de 2s vira um
-        # texto que não sai mais da tela.
-        video += (f";[{idx}:v]format=yuva420p,setpts=PTS-STARTPTS[o{i}]"
-                  f";[{last}][o{i}]overlay=0:{int(oy)}:shortest=0:repeatlast=0"
-                  f":enable='between(t,{a:.3f},{b:.3f})'[v{i + 1}]")
-        last = f"v{i + 1}"
-    video = video.replace(f"[{last}]", "[vid]") if last != "v0" else f"[0:v]{chain}[vid]"
+    # A ORDEM das camadas, e ela não é arbitrária. O degradê do rodapé cobre o
+    # texto queimado do próprio material, então ele vai por baixo de tudo; a
+    # nossa legenda vem sobre ele, senão o degradê apagaria a nossa junto com a
+    # do acervo; e o hook vai por último, porque nada pode passar por cima dele
+    # nos três segundos em que ele existe.
+    camadas = [("overlay",) + o for o in overlays if o[0] == footer]
+    if ass_path:
+        camadas.append(("ass", ass_path))
+    camadas += [("overlay",) + o for o in overlays if o[0] != footer]
+
+    partes = [f"[0:v]{chain}[v0]"]
+    last, n = "v0", 0
+    for camada in camadas:
+        n += 1
+        alvo = f"v{n}"
+        if camada[0] == "ass":
+            # `fontsdir` apontando para os assets do repo: sem ele o libass não
+            # acha a Anton e cai numa fallback genérica de peso errado, que é o
+            # defeito 2.3 voltando pela porta da fonte.
+            partes.append(f"[{last}]ass=f={_ff_valor(camada[1])}"
+                          f":fontsdir={_ff_valor(S.ASSETS)}[{alvo}]")
+        else:
+            _, png, oy, a, b, fade = camada
+            idx = overlay_index[png]
+            # `shortest=0:repeatlast=0` impede que o último quadro do PNG fique
+            # carimbado depois do fim da janela, que é como um texto de 2s vira
+            # um texto que não sai mais da tela.
+            filtros = "format=yuva420p,setpts=PTS-STARTPTS"
+            if fade:
+                # O fade corre no relógio do próprio clipe: a entrada é uma
+                # imagem em laço a 30fps que começa em 0, igual ao vídeo. Um
+                # `st` relativo à janela do overlay sairia adiantado.
+                st = max(float(a), float(b) - float(fade))
+                filtros += (f",fade=t=out:st={st:.3f}:d={float(fade):.3f}"
+                            f":alpha=1")
+            partes.append(f"[{idx}:v]{filtros}[o{n}]")
+            partes.append(f"[{last}][o{n}]overlay=0:{int(oy)}"
+                          f":shortest=0:repeatlast=0"
+                          f":enable='between(t,{a:.3f},{b:.3f})'[{alvo}]")
+        last = alvo
+    video = ";".join(partes).replace(f"[{last}]", "[vid]")
 
     if embed:
         fade = max(0.5, min(3.0, length * 0.12))
@@ -1803,7 +2274,10 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         args += ["-filter_complex", f"{video};{music};{mix}",
                  "-map", "[vid]", "-map", "[a]"]
         notes.append(f"track mixed in from {float(at):.2f}s with a {fade:.1f}s fade out")
-    elif overlays:
+    elif overlays or ass_path:
+        # `ass_path` sem overlay nenhum é um caso real: clipe com legenda e sem
+        # hook. Com o teste velho (`elif overlays`) ele caía no `-vf chain` e
+        # saía sem legenda, sem erro e sem nota.
         args += ["-filter_complex", video, "-map", "[vid]"]
         if not silent:
             args += ["-map", "0:a?"]
