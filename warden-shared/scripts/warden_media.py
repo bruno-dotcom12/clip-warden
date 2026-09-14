@@ -153,8 +153,19 @@ def fetch_text(url, limit=200_000):
         "User-Agent": "clip-warden/1.0 (+https://github.com/plow-pbc/plow-agents)"})
     with _OPENER.open(request, timeout=60) as response:
         raw = response.read(limit * 4)
-    charset = "utf-8"
-    body = raw.decode(charset, errors="replace")
+        # O charset que a resposta declara, não um palpite. Uma página latin-1
+        # decodificada como utf-8 vira mojibake, e daqui saem hashtag
+        # obrigatória e termo banido: uma banida corrompida nunca casa, e a
+        # palavra proibida passa na verificação.
+        charset = response.headers.get_content_charset()
+    if not charset:
+        head = raw[:4096].decode("ascii", errors="ignore").lower()
+        m = re.search(r'charset=["\']?([\w-]+)', head)
+        charset = m.group(1) if m else "utf-8"
+    try:
+        body = raw.decode(charset, errors="replace")
+    except LookupError:
+        body = raw.decode("utf-8", errors="replace")
     body = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", body)
     body = re.sub(r"(?is)<br\s*/?>|</p>|</div>|</li>|</h[1-6]>", "\n", body)
     body = re.sub(r"(?s)<[^>]+>", " ", body)
@@ -678,7 +689,18 @@ def _subtitle_beside(path, prefer=None):
         for path_, lang in found:
             if lang == want.lower():
                 return path_, lang
-    return found[0][0], found[0][1]
+    if len(found) == 1:
+        return found[0]
+    # Mais de uma legenda e nenhuma nas línguas que sabemos comparar. Escolher a
+    # primeira em ordem alfabética é o mecanismo exato que queimou inglês sobre
+    # um hook em português; o gate de idioma só distingue pt/en/es, então um
+    # `.fr` passaria batido. Quem escolhe é o dono, com --lang.
+    tags = ", ".join(sorted(str(l) for _p, l in found))
+    raise RuntimeError(
+        f"{os.path.basename(path)} has subtitles in {tags} and none in "
+        f"{', '.join(SUBTITLE_LANGS)}. Pick one with --lang: choosing "
+        f"alphabetically is how an English caption ended up under a Portuguese "
+        f"hook.")
 
 
 def _read_srt(path):
@@ -986,16 +1008,22 @@ def _loudness_envelope(source):
     ebur128 prints a momentary reading every tenth of a second; a spike in it is
     a laugh, a shout, a crowd -- the sound of a reaction, which is the strongest
     signal a live or a podcast gives that a moment landed. No audio, or no
-    ffmpeg, means an empty envelope and text signals carry alone.
+    Devolve (leituras, motivo). `motivo` é None quando deu certo e uma frase
+    quando não deu: um envelope vazio por falta de ffmpeg e um envelope vazio
+    porque o vídeo é mudo são a mesma lista e não são a mesma coisa, e quem lê
+    os sinais precisa saber qual dos dois aconteceu antes de escolher a janela
+    achando que o som não tinha nada a dizer.
     """
+    if not have("ffmpeg"):
+        return [], "ffmpeg is not on PATH, so no loudness was read"
     try:
         done = subprocess.run(
             ["ffmpeg", "-nostats", "-hide_banner", "-i", source, "-map", "0:a:0",
              "-af", "ebur128=metadata=1,ametadata=print:key=lavfi.r128.M",
              "-f", "null", "-"],
             capture_output=True, text=True, timeout=TIMEOUT_RENDER)
-    except Exception:
-        return []
+    except Exception as exc:
+        return [], f"could not read the loudness: {type(exc).__name__}"
     # ametadata prints two lines per reading: `... pts_time:X` then a line
     # `lavfi.r128.M=Y`. Pair them.
     env, cur_t = [], None
@@ -1008,7 +1036,10 @@ def _loudness_envelope(source):
         if mm and cur_t is not None:
             env.append((cur_t, float(mm.group(1))))
             cur_t = None
-    return env
+    if not env:
+        return [], ("no audio track to read a reaction from, so the loud "
+                    "signal is missing and the words carry alone")
+    return env, None
 
 
 def loud_segment_indexes(segments, source, top_fraction=0.25):
@@ -1018,9 +1049,9 @@ def loud_segment_indexes(segments, source, top_fraction=0.25):
     quarter is a threshold, not a truth -- it says where the sound is, and the
     model says whether that is a moment.
     """
-    env = _loudness_envelope(source)
+    env, why = _loudness_envelope(source)
     if not env or not segments:
-        return set()
+        return set(), why
     peaks = []
     for seg in segments:
         s, e = seg.get("start"), seg.get("end")
@@ -1029,11 +1060,11 @@ def loud_segment_indexes(segments, source, top_fraction=0.25):
             continue
         vals = [lufs for t, lufs in env if s <= t <= e and lufs > -70]
         peaks.append(max(vals) if vals else None)
-    have = sorted(p for p in peaks if p is not None)
-    if not have:
-        return set()
-    thr = have[min(len(have) - 1, int(len(have) * (1 - top_fraction)))]
-    return {i for i, p in enumerate(peaks) if p is not None and p >= thr}
+    got = sorted(p for p in peaks if p is not None)
+    if not got:
+        return set(), "no segment overlapped a loudness reading"
+    thr = got[min(len(got) - 1, int(len(got) * (1 - top_fraction)))]
+    return {i for i, p in enumerate(peaks) if p is not None and p >= thr}, None
 
 
 def analyze_signals(segments, source=None):
@@ -1044,7 +1075,9 @@ def analyze_signals(segments, source=None):
     transcript again, not a shortlist. Nothing here is ranked: it is time order
     with evidence attached, for the model to cluster into clips and judge.
     """
-    loud = loud_segment_indexes(segments, source) if source else set()
+    loud, quiet_why = ((set(), "no source file was passed, so only the words "
+                        "were read") if not source
+                       else loud_segment_indexes(segments, source))
     out = []
     for i, seg in enumerate(segments or []):
         tags = text_signals(seg.get("text", ""))
@@ -1053,7 +1086,7 @@ def analyze_signals(segments, source=None):
         if tags:
             out.append({"start": seg.get("start"), "end": seg.get("end"),
                         "text": (seg.get("text") or "").strip(), "signals": tags})
-    return out
+    return out, quiet_why
 
 
 def digest(segments, window=None, seconds_per_line=12):
@@ -1112,26 +1145,49 @@ def _crop_fraction(crop):
     return pct / 100.0
 
 
+def face_detection_status():
+    """(pronto?, motivo em uma linha). A pergunta que ninguém fazia.
+
+    O enquadramento vertical inteiro depende disto, e até aqui a resposta
+    "não tenho detector" era indistinguível de "procurei e não achei rosto":
+    as duas viravam `None` e as duas caíam no centro. Numa máquina sem OpenCV
+    o corte saiu com o rosto na borda e o aviso dizia, com toda a calma, que
+    havia enquadrado no centro -- o que era verdade e não era o problema.
+    """
+    try:
+        import cv2
+    except Exception as exc:
+        return False, ("OpenCV is not installed in this image, so there is no "
+                       f"face detector ({type(exc).__name__})")
+    if not os.path.exists(FACE_MODEL):
+        return False, (f"the YuNet model is not at {FACE_MODEL}, so the face "
+                       "detector has nothing to run")
+    try:
+        cv2.FaceDetectorYN_create(FACE_MODEL, "", (320, 320), 0.6, 0.3, 5000)
+    except Exception as exc:
+        return False, (f"OpenCV {getattr(cv2, '__version__', '?')} could not "
+                       f"build the YuNet detector: {type(exc).__name__}: {exc}")
+    return True, f"YuNet on OpenCV {getattr(cv2, '__version__', '?')}"
+
+
 def _face_detector():
-    """YuNet, or None if this build has neither OpenCV nor the model.
+    """YuNet, ou None quando esta máquina não tem com que detectar rosto.
 
     A DNN face detector rather than a Haar cascade because the footage is
     stylised -- animation, game capture -- and the cascades, trained on
     photographs, miss it; YuNet was measured finding the faces in this footage
-    where they did not. Both the library and the model are optional: a build
-    without them falls back to the coarse crop preset, never to a crash.
+    where they did not.
+
+    `None` aqui significa APENAS "não há detector nesta máquina", e quem chama
+    tem de parar. Não significa "não achei rosto": isso é uma lista vazia, que é
+    outra resposta e admite outro tratamento.
     """
-    try:
-        import cv2
-    except Exception:
+    ok, _why = face_detection_status()
+    if not ok:
         return None
-    if not os.path.exists(FACE_MODEL):
-        return None
-    try:
-        return cv2, cv2.FaceDetectorYN_create(FACE_MODEL, "", (320, 320),
-                                              0.6, 0.3, 5000)
-    except Exception:
-        return None
+    import cv2
+    return cv2, cv2.FaceDetectorYN_create(FACE_MODEL, "", (320, 320),
+                                          0.6, 0.3, 5000)
 
 
 def _face_centers(source, start, length, samples=7):
@@ -1146,7 +1202,7 @@ def _face_centers(source, start, length, samples=7):
         return []
     cv2, det = found
     import subprocess, tempfile
-    out = []
+    out, lidos = [], 0
     for i in range(samples):
         t = float(start) + (i + 0.5) * float(length) / samples
         fd, png = tempfile.mkstemp(suffix=".png")
@@ -1168,11 +1224,22 @@ def _face_centers(source, start, length, samples=7):
                     out.append((cx, area))
         except Exception:
             continue                                   # a bad frame is not a failed cut
+        else:
+            lidos += 1
         finally:
             try:
                 os.remove(png)
             except OSError:
                 pass
+    if not lidos:
+        # Zero quadros lidos não é "não achei rosto": é "não olhei". As duas
+        # devolviam lista vazia e as duas caíam no centro, que foi como o rosto
+        # foi parar na borda do quadro sem uma linha de aviso.
+        raise RuntimeError(
+            f"the face detector could not read a single frame of "
+            f"{os.path.basename(source)} between {float(start):.1f}s and "
+            f"{float(start) + float(length):.1f}s, so the framing has nothing "
+            f"to follow -- pass --crop to place the band by hand.")
     return out
 
 
@@ -1260,19 +1327,51 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     sw = sh = kept = None
     try:
         sw, sh = _dimensions(source)
-        if sw / sh > (width / height) * 1.05:      # wider than the target frame
-            kept = width / (sw * height / sh)      # fraction of source width kept
-    except Exception:
-        pass
+    except Exception as exc:
+        # Sem as dimensões da fonte não se sabe sequer se ela é mais larga que o
+        # quadro -- e `kept=None` desligava, de uma vez, o portão de detecção de
+        # rosto, o recorte de moldura E a nota que diria qual faixa ficou. Era a
+        # porta lateral por onde o defeito de 14/09 voltava inteiro, e calado.
+        raise RuntimeError(
+            f"could not read the dimensions of {os.path.basename(source)} "
+            f"({type(exc).__name__}: {exc}) -- without them this cut cannot "
+            f"tell whether it needs to choose a vertical band at all.")
+    if sw / sh > (width / height) * 1.05:          # wider than the target frame
+        kept = width / (sw * height / sh)          # fraction of source width kept
 
     fx = _crop_fraction(crop)
     framed_by = "crop %s" % (crop if crop is not None else "centre (default)")
     if not manual_pct and kept:
-        faces = _face_centers(source, start, length)
-        face_fx = _face_crop_fraction(faces, crop, kept)
-        if face_fx is not None:
-            fx = face_fx
-            framed_by = "face" + ("" if crop in (None, "auto") else f" on the {crop}")
+        # A fonte é mais larga que o quadro, então alguém tem de escolher qual
+        # faixa fica -- e essa escolha é o rosto. Sem detector, essa escolha não
+        # existe: o centro é um chute, e num vídeo em que o sujeito senta à
+        # esquerda o chute entrega o rosto cortado na borda. Foi o que saiu na
+        # rodada de 14/09, e o aviso de então dizia "enquadrei no centro", que
+        # era verdadeiro e inútil.
+        #
+        # Então para aqui. O dono resolve em um argumento; um clipe com o rosto
+        # na borda não se resolve depois de publicado.
+        ready, why = face_detection_status()
+        if not ready:
+            # Um lado nomeado é o dono dizendo onde o sujeito está, e isso é
+            # honrado sem detector nenhum -- o detector só refinaria. O que não
+            # se pode é inventar: sem instrução e sem detector, não há de onde
+            # tirar a faixa, e recusar aqui é a diferença entre um argumento a
+            # mais e um rosto cortado no arquivo publicado.
+            if crop in (None, "auto"):
+                raise RuntimeError(
+                    f"no face detection on this machine ({why}) -- pass --crop "
+                    f"left|right|center|<0-100> to say where the subject is, or "
+                    f"rebuild the image, which ships the detector.")
+            notes.append(f"framed by crop {crop} as given: no face detector on "
+                         f"this machine to refine it ({why})")
+        else:
+            faces = _face_centers(source, start, length)
+            face_fx = _face_crop_fraction(faces, crop, kept)
+            if face_fx is not None:
+                fx = face_fx
+                framed_by = "face" + ("" if crop in (None, "auto")
+                                      else f" on the {crop}")
 
     # ------------------------------------------------------- olhar o material
     #
@@ -1280,14 +1379,26 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     # cadeia. Até aqui ela media pixels sem nunca olhar nenhum, e foi assim que
     # a borda do material entrou no enquadramento e a legenda do acervo ficou
     # cortada ao meio embaixo da nossa.
-    looked = []
     try:
         looked = S.sample_frames(source, start, length, count=8)
-    except Exception:
-        pass
-    source_text = S.burned_text_bands(looked) if looked else {
-        "top": False, "bottom": False, "evidence": "could not open the frames"}
-    border = S.frame_border(looked) if looked else {"left": 0, "right": 0}
+    except Exception as exc:
+        raise RuntimeError(
+            f"could not open any frame of {os.path.basename(source)} between "
+            f"{float(start):.1f}s and {float(start) + length:.1f}s "
+            f"({type(exc).__name__}: {exc}), so nothing here has seen this "
+            "footage -- refusing to guess that it is clean.")
+    if not looked:
+        # O silêncio caro: sem quadros, `bottom` sai False, e False aqui lê como
+        # "material limpo, não precisa cobrir". É uma resposta que a ferramenta
+        # não tem, com a cara de uma que ela tem.
+        raise RuntimeError(
+            f"could not open any frame of {os.path.basename(source)} between "
+            f"{float(start):.1f}s and {float(start) + length:.1f}s, so this "
+            "cut cannot tell whether the footage carries its own burned text "
+            "or a border. Check the window is inside the file.")
+    source_text = S.burned_text_bands(looked)
+    source_text["looked"] = True
+    border = S.frame_border(looked)
 
     # A moldura sai do enquadramento antes de qualquer outra conta. `crop` no
     # source, não no destino: recua a faixa para dentro do conteúdo, e o scale
@@ -1528,7 +1639,14 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     if embed:
         # The track enters at its drop unless told otherwise, because an edit
         # that opens on an intro has spent its first second on nothing.
-        at = track_start if track_start is not None else (grid or {}).get("drop_s", 0.0)
+        at = track_start
+        if at is None:
+            at = (grid or {}).get("drop_s")
+        if at is None:
+            at = 0.0
+            notes.append("no drop was found in this track -- it never gains "
+                         "body -- so the music enters at 0.00s, which is its "
+                         "intro. Pass --track-start to choose a better entry.")
         args += ["-ss", f"{float(at):.3f}", "-i", track]
         track_index = next_input
         next_input += 1
@@ -1563,10 +1681,23 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         fade = max(0.5, min(3.0, length * 0.12))
         music = (f"[{track_index}:a]atrim=duration={length:.3f},asetpts=N/SR/TB,"
                  f"volume=-6dB,afade=t=out:st={max(0, length - fade):.3f}:d={fade:.3f}[m]")
-        has_source_audio = bool(subprocess.run(
+        # "não tem áudio" e "não consegui perguntar" davam os dois `False`, e
+        # `False` aqui joga fora a faixa de fala inteira: o clipe sai só com a
+        # música, num modo cujo comentário logo abaixo diz que as palavras é que
+        # carregam o clipe. Um mosaico de quadros não mostra fala faltando.
+        sonda = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
              "stream=codec_name", "-of", "csv=p=0", source],
-            capture_output=True, text=True).stdout.strip())
+            capture_output=True, text=True)
+        if sonda.returncode != 0:
+            raise RuntimeError(
+                f"could not ask whether {os.path.basename(source)} has an audio "
+                f"track (ffprobe exited {sonda.returncode}). Mixing a track over "
+                f"it now would silently drop the speech, so this cut stops.")
+        has_source_audio = bool(sonda.stdout.strip())
+        if not has_source_audio:
+            notes.append("this footage has no audio track, so the clip carries "
+                         "only the music -- no speech was dropped, there was none")
         if has_source_audio:
             # Speech over music, not music over speech: the track carries the
             # cut, the words carry the clip.
@@ -1626,8 +1757,12 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     try:
         with open(style_path, "w", encoding="utf-8") as fh:
             json.dump(style_facts, fh, ensure_ascii=False, indent=1)
-    except OSError:
+    except OSError as exc:
         style_path = None
+        notes.append(f"could not write {os.path.basename(style_path or '')} "
+                     f"beside this clip ({type(exc).__name__}), so a later "
+                     f"`warden style check` on it has only the approximate "
+                     f"pixel metrics, which reject nothing.")
 
     sheet = None
     try:

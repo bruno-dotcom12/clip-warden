@@ -13,3 +13,7 @@ agent_index_client.py
 build.log
 check.log
 .DS_Store
+
+# O checkout do plow-agents que o install.sh traz para dentro do repo,
+# para o host não ter uma pasta solta a mais para apagar depois.
+.plow-agents/

@@ -20,6 +20,7 @@ aqui escala a partir dessa proporção, para um quadro de qualquer largura.
 import json
 import os
 import subprocess
+import sys as _sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -538,11 +539,18 @@ def sample_frames(video, start, length, count=8):
              "-vf", f"fps={count / length:.6f}", "-frames:v", str(count),
              os.path.join(tmp, "s%03d.png")],
             capture_output=True, timeout=120)
+        perdidos = 0
         for name in sorted(os.listdir(tmp)):
             try:
                 out.append(Image.open(os.path.join(tmp, name)).convert("L").copy())
             except Exception:
-                continue
+                perdidos += 1
+        if perdidos:
+            # Metade das evidências é uma evidência mais fraca, e quem lê o
+            # resultado tem de saber disso em vez de recebê-lo como completo.
+            print(f"warden: {perdidos} of {count} sampled frames could not be "
+                  f"read from {os.path.basename(video)}; the footage checks ran "
+                  f"on {len(out)}", file=_sys.stderr)
     except Exception:
         return out
     finally:
@@ -753,11 +761,11 @@ def contact_sheet(video, out_png, tiles=8, cols=4, label=None):
         head = 46
         sheet = Image.new("RGB", (cols * tw, head + rows * th), (17, 17, 19))
         d = ImageDraw.Draw(sheet)
-        try:
-            title_font = _font(24)
-            tag_font = _font(20)
-        except Exception:
-            title_font = tag_font = None
+        # Sem try: a folha de contato É o portão, e uma folha com a fonte
+        # bitmap do PIL tem carimbo de tempo que ninguém lê. Cair para uma
+        # fallback aqui, calado, é entregar um portão que não se atravessa.
+        title_font = _font(24)
+        tag_font = _font(20)
 
         w, h = shots[0][1].size
         caption = label or os.path.basename(video)
@@ -856,11 +864,20 @@ def measure(video, samples=10):
     except ValueError:
         out["fps"] = None
     if not dur or not out["width"]:
+        # A outra saída desta função. Sem a chave, `check_against` não via
+        # `measured is False` e voltava a imprimir "dentro da faixa em tudo"
+        # sobre zero evidência -- o mesmo defeito, pela porta de cima.
+        out["measured"] = False
         return out
 
     frames = sample_frames(video, 0, dur, count=samples)
     if not frames:
+        # `measure` devolvendo tudo None fazia o `style check` pular toda métrica
+        # e imprimir "dentro da faixa em tudo": uma aprovação construída sobre
+        # zero evidência, que é o defeito que este comando existe para não ter.
+        out["measured"] = False
         return out
+    out["measured"] = True
 
     w, h = frames[0].size
     usable = usable_width(w)
@@ -1102,6 +1119,10 @@ def check_sidecar(side):
 def check_against(measured, spec):
     """[(nível, mensagem)] de um render contra os limites, com a faixa ao lado."""
     out = []
+    if measured.get("measured") is False:
+        return [("REJECT", "no frame of this file could be opened, so nothing "
+                           "was measured. 'inside the range' on zero evidence "
+                           "is the failure this command exists to avoid.")]
     ranges = spec or {}
     for name, (lo, hi, what) in LIMITS.items():
         got = measured.get(name)

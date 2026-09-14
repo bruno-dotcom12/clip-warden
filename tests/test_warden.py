@@ -472,7 +472,7 @@ class RealRender(unittest.TestCase):
                   caption={"required_hashtags": [], "required_mentions": [],
                           "banned_terms": []})
         out = os.path.join(self.dir, "clip.mp4")
-        result = self.M.cut(self.src, out, r, start=1, end=4, sound="platform")
+        result = self.M.cut(self.src, out, r, start=1, end=4, sound="platform", crop="center")
         self.assertTrue(os.path.isfile(out))
         media = warden.probe(out)
         # The render sits inside the window it was cut to.
@@ -489,7 +489,7 @@ class RealRender(unittest.TestCase):
         r = rules(video={"duration_max_s": 5, "width": 1080, "height": 1920,
                          "audio": "forbidden"})
         out = os.path.join(self.dir, "silent.mp4")
-        self.M.cut(self.src, out, r, start=0, end=4, sound="platform")
+        self.M.cut(self.src, out, r, start=0, end=4, sound="platform", crop="center")
         media = warden.probe(out)
         self.assertFalse(media.get("audio_codec"),
                          "a forbidden-audio campaign must ship silent")
@@ -515,7 +515,7 @@ class RealRender(unittest.TestCase):
         out = io.StringIO()
         with self.assertRaises(SystemExit):
             with redirect_stdout(out):
-                warden.main(["cut", self.src, "--campaign", cid,
+                warden.main(["cut", self.src, "--campaign", cid, "--crop", "center",
                              "--start", "0", "--end", "3", "--out", "s.mp4"])
         self.assertNotIn("MEDIA:", out.getvalue())
 
@@ -523,7 +523,7 @@ class RealRender(unittest.TestCase):
         r = rules(video={"duration_min_s": 1, "duration_max_s": 3,
                          "width": 1080, "height": 1920, "audio": "forbidden"})
         out = os.path.join(self.dir, "clamped.mp4")
-        result = self.M.cut(self.src, out, r, start=0, end=6, sound="platform")
+        result = self.M.cut(self.src, out, r, start=0, end=6, sound="platform", crop="center")
         self.assertLessEqual(warden.probe(out)["duration_s"], 3.5)
         self.assertTrue(any("trimmed" in n for n in result["notes"]))
 
@@ -556,8 +556,8 @@ class RealRender(unittest.TestCase):
                          "audio": "forbidden"})
         plain = os.path.join(self.dir, "plain.mp4")
         capped = os.path.join(self.dir, "capped.mp4")
-        self.M.cut(black, plain, r, start=0, end=3, sound="platform")
-        result = self.M.cut(black, capped, r, start=0, end=3, sound="platform",
+        self.M.cut(black, plain, r, start=0, end=3, sound="platform", crop="center")
+        result = self.M.cut(black, capped, r, start=0, end=3, sound="platform", crop="center",
                             caption_srt=srt)
         white_plain = self._white_pixels(plain)
         white_capped = self._white_pixels(capped)
@@ -580,7 +580,7 @@ class RealRender(unittest.TestCase):
                          "audio": "forbidden"},
                   sources={"archive_has_captions": True})
         out = os.path.join(self.dir, "nocap.mp4")
-        result = self.M.cut(black, out, r, start=0, end=3, sound="platform",
+        result = self.M.cut(black, out, r, start=0, end=3, sound="platform", crop="center",
                             caption_srt=srt)
         self.assertLess(self._white_pixels(out), 500,
                         "captions were burned despite archive_has_captions=true")
@@ -733,7 +733,7 @@ class DeliveryLine(unittest.TestCase):
         fires on a clean render and points into the deliverable directory."""
         self._store("line-ok", duration_min_s=3, duration_max_s=5,
                     width=1080, height=1920, aspect="9:16", audio="forbidden")
-        code, out = self._run_cut(["cut", self.src, "--campaign", "line-ok",
+        code, out = self._run_cut(["cut", self.src, "--campaign", "line-ok", "--crop", "center",
                                    "--start", "1", "--end", "4", "--out", "c.mp4"])
         media_lines = [l for l in out.splitlines() if l.startswith("MEDIA:")]
         self.assertEqual(code, 0)
@@ -752,7 +752,7 @@ class DeliveryLine(unittest.TestCase):
         # A tiny file cap the render cannot meet, so check rejects after cut.
         self._store("line-reject", duration_max_s=5, width=1080, height=1920,
                     audio="forbidden", max_file_mb=0.001)
-        code, out = self._run_cut(["cut", self.src, "--campaign", "line-reject",
+        code, out = self._run_cut(["cut", self.src, "--campaign", "line-reject", "--crop", "center",
                                    "--start", "0", "--end", "4", "--out", "r.mp4"])
         self.assertEqual(code, 1)
         self.assertFalse(any(l.startswith("MEDIA:") for l in out.splitlines()),
@@ -918,14 +918,14 @@ class Signals(unittest.TestCase):
         segs = [{"start": 1.0, "end": 2.0, "text": "bom dia a todos"},
                 {"start": 3.0, "end": 4.0, "text": "isso é um absurdo!"},
                 {"start": 5.0, "end": 6.0, "text": "tudo bem por aqui"}]
-        rows = self.M.analyze_signals(segs)
+        rows, _why = self.M.analyze_signals(segs)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["text"], "isso é um absurdo!")
         self.assertIn("superlative", rows[0]["signals"])
 
     def test_analyze_without_audio_adds_no_loud_tag(self):
         segs = [{"start": 0.0, "end": 1.0, "text": "o pior de todos?"}]
-        rows = self.M.analyze_signals(segs)          # no source
+        rows, _why = self.M.analyze_signals(segs)     # no source
         self.assertNotIn("loud", rows[0]["signals"])
 
 
@@ -1084,7 +1084,7 @@ class ContactSheet(unittest.TestCase):
         r = rules(video={"duration_min_s": 1, "duration_max_s": 5, "width": 1080,
                          "height": 1920, "audio": "forbidden"})
         out = os.path.join(self.dir, "clip.mp4")
-        result = self.M.cut(self.src, out, r, start=0, end=4, sound="platform")
+        result = self.M.cut(self.src, out, r, start=0, end=4, sound="platform", crop="center")
         self.assertTrue(result.get("sheet"), "cut devolveu render sem contact sheet")
         self.assertTrue(os.path.isfile(result["sheet"]))
         from PIL import Image
@@ -1100,7 +1100,7 @@ class ContactSheet(unittest.TestCase):
         out = os.path.join(self.dir, "movel.mp4")
         r = rules(video={"duration_max_s": 6, "width": 1080, "height": 1920,
                          "audio": "forbidden"})
-        self.M.cut(self.src, out, r, start=0, end=6, sound="platform")
+        self.M.cut(self.src, out, r, start=0, end=6, sound="platform", crop="center")
         sheet = self.S.contact_sheet(out, os.path.join(self.dir, "s.jpg"), tiles=8)
         from PIL import Image
         im = Image.open(sheet).convert("RGB")
@@ -1120,7 +1120,7 @@ class ContactSheet(unittest.TestCase):
                   caption={"required_hashtags": [], "required_mentions": [],
                            "banned_terms": []})
         out = os.path.join(self.dir, "semfolha.mp4")
-        result = self.M.cut(self.src, out, r, start=0, end=4, sound="platform")
+        result = self.M.cut(self.src, out, r, start=0, end=4, sound="platform", crop="center")
         result["sheet"] = None                      # como se o mosaico tivesse falhado
         saida, erro = io.StringIO(), io.StringIO()
         with redirect_stdout(saida), redirect_stderr(erro):
@@ -1139,7 +1139,7 @@ class ContactSheet(unittest.TestCase):
                   caption={"required_hashtags": [], "required_mentions": [],
                            "banned_terms": []})
         out = os.path.join(self.dir, "comfolha.mp4")
-        result = self.M.cut(self.src, out, r, start=0, end=4, sound="platform")
+        result = self.M.cut(self.src, out, r, start=0, end=4, sound="platform", crop="center")
         saida, erro = io.StringIO(), io.StringIO()
         with redirect_stdout(saida), redirect_stderr(erro):
             code = warden.deliver(result, r, "test", [])
@@ -1172,7 +1172,7 @@ class BatchContract(unittest.TestCase):
 
     def _plan(self, clips, **extra):
         plan = {"campaign": self.cid, "source": self.src, "sound": "platform",
-                "clips": clips}
+                "crop": "center", "clips": clips}
         plan.update(extra)
         path = os.path.join(self.dir, "plano.json")
         with open(path, "w") as fh:
@@ -1515,7 +1515,7 @@ class BurnedText(unittest.TestCase):
         legenda se conserta, um `jokovic jokovic` publicado não."""
         out = os.path.join(self.dir, "semaprovar.mp4")
         result = self.M.cut(self.black, out, self.r, start=0, end=3,
-                            sound="platform", caption_srt=self.srt)
+                            sound="platform", crop="center", caption_srt=self.srt)
         self.assertLess(self._white(out), 500, "queimou sem aprovação")
         self.assertTrue(any("has not been approved" in n for n in result["notes"]))
 
@@ -1523,7 +1523,7 @@ class BurnedText(unittest.TestCase):
         self.S.write_approval(self.srt)
         out = os.path.join(self.dir, "aprovado.mp4")
         result = self.M.cut(self.black, out, self.r, start=0, end=3,
-                            sound="platform", caption_srt=self.srt)
+                            sound="platform", crop="center", caption_srt=self.srt)
         self.assertGreater(self._white(out), 3000, "nenhuma palavra chegou na imagem")
         self.assertTrue(any("caption cues" in n for n in result["notes"]))
 
@@ -1540,7 +1540,7 @@ class BurnedText(unittest.TestCase):
                                      "text": "segunda fala do teste"}]))
         self.S.write_approval(pausado)
         out = os.path.join(self.dir, "sai.mp4")
-        self.M.cut(self.black, out, self.r, start=0, end=3, sound="platform",
+        self.M.cut(self.black, out, self.r, start=0, end=3, sound="platform", crop="center",
                    caption_srt=pausado)
         self.assertGreater(self._white(out, at=0.7), 2000, "a cue não apareceu")
         self.assertLess(self._white(out, at=2.0), 500,
@@ -1550,7 +1550,7 @@ class BurnedText(unittest.TestCase):
         out = os.path.join(self.dir, "hook.mp4")
         hook = "ele apostou contra o Djokovic e ganhou 90 mil"
         result = self.M.cut(self.black, out, self.r, start=0, end=3,
-                            sound="platform", hook=hook)
+                            sound="platform", crop="center", hook=hook)
         self.assertGreater(self._white(out), 2000, "o hook não chegou na imagem")
         # Nenhum pixel branco encosta na borda lateral: é o corte dos dois lados.
         import subprocess
@@ -1576,7 +1576,7 @@ class BurnedText(unittest.TestCase):
         self.S.write_approval(ingles)
         out = os.path.join(self.dir, "misturado.mp4")
         result = self.M.cut(self.black, out, self.r, start=0, end=3,
-                            sound="platform", caption_srt=ingles,
+                            sound="platform", crop="center", caption_srt=ingles,
                             hook="ele apostou contra o Djokovic e ganhou muito")
         self.assertTrue(any("not burning captions" in n and "language" not in n.lower()
                             or "reads as en" in n for n in result["notes"]),
@@ -1700,7 +1700,7 @@ class Movement(unittest.TestCase):
 
     def test_a_clip_moves_in_scale_by_default(self):
         out = os.path.join(self.dir, "mov.mp4")
-        result = self.M.cut(self.src, out, self.r, start=0, end=4, sound="platform")
+        result = self.M.cut(self.src, out, self.r, start=0, end=4, sound="platform", crop="center")
         self.assertTrue(any("scale moves" in n for n in result["notes"]),
                         result["notes"])
         self.assertGreater(self._scale_changed(out), 0.02,
@@ -1709,7 +1709,7 @@ class Movement(unittest.TestCase):
     def test_motion_can_be_turned_off_explicitly(self):
         out = os.path.join(self.dir, "parado.mp4")
         result = self.M.cut(self.src, out, self.r, start=0, end=4,
-                            sound="platform", motion=False)
+                            sound="platform", crop="center", motion=False)
         self.assertFalse(any("scale moves" in n for n in result["notes"]))
 
 
@@ -1746,14 +1746,14 @@ class FootageTreatment(unittest.TestCase):
 
     def test_the_source_border_is_trimmed_before_framing(self):
         out = os.path.join(self.dir, "semborda.mp4")
-        result = self.M.cut(self.src, out, self.r, start=0, end=3, sound="platform")
+        result = self.M.cut(self.src, out, self.r, start=0, end=3, sound="platform", crop="center")
         self.assertTrue(any("source furniture" in n for n in result["notes"]),
                         result["notes"])
 
     def test_burning_over_source_text_covers_it_and_says_so(self):
         out = os.path.join(self.dir, "coberto.mp4")
         result = self.M.cut(self.src, out, self.r, start=0, end=3,
-                            sound="platform", caption_srt=self.srt)
+                            sound="platform", crop="center", caption_srt=self.srt)
         self.assertTrue(any("already carries burned text" in n
                             and "Covered it" in n for n in result["notes"]),
                         result["notes"])
@@ -1772,7 +1772,7 @@ class FootageTreatment(unittest.TestCase):
     def test_not_covering_is_a_choice_that_warns_instead_of_burning_silently(self):
         out = os.path.join(self.dir, "naocobre.mp4")
         result = self.M.cut(self.src, out, self.r, start=0, end=3,
-                            sound="platform", caption_srt=self.srt,
+                            sound="platform", crop="center", caption_srt=self.srt,
                             cover_footer=False)
         self.assertTrue(any("Not covering it" in n for n in result["notes"]),
                         result["notes"])
@@ -1782,7 +1782,7 @@ class FootageTreatment(unittest.TestCase):
         limpa = _make_source(os.path.join(self.dir, "limpa.mp4"), seconds=5)
         out = os.path.join(self.dir, "semrodape.mp4")
         result = self.M.cut(limpa, out, self.r, start=0, end=3,
-                            sound="platform", caption_srt=self.srt)
+                            sound="platform", crop="center", caption_srt=self.srt)
         self.assertFalse(any("Covered it" in n for n in result["notes"]),
                          result["notes"])
 
@@ -2116,7 +2116,7 @@ class DefinitionOfDone(unittest.TestCase):
                                 "banned_terms": []})
         self.out = os.path.join(self.dir, "golden.mp4")
         self.result = self.M.cut(self.src, self.out, self.r, start=0, end=5,
-                                 sound="platform", caption_srt=self.srt,
+                                 sound="platform", crop="center", caption_srt=self.srt,
                                  hook=self.hook)
         self.style = self.result["style"]
 
@@ -2165,3 +2165,282 @@ class DefinitionOfDone(unittest.TestCase):
         with open(self.result["style_path"], encoding="utf-8") as fh:
             gravado = json.load(fh)
         self.assertEqual(gravado["hook"]["lines"], self.style["hook"]["lines"])
+
+
+# ══════════════════════════════════════════════════ dependência que falta
+#
+# Bloco A. A forma de defeito é uma só: falta uma dependência, o código segue
+# com um resultado pior e ninguém é avisado. Cada caso aqui já custou alguma
+# coisa, e o primeiro custou um clipe com o rosto na borda do quadro.
+
+class MissingDependencySpeaks(unittest.TestCase):
+    """Sem detector de rosto o corte para; nunca cai no centro calado."""
+
+    def setUp(self):
+        _ffmpeg_or_skip()
+        _pillow_or_skip()
+        import warden_media
+        self.M = warden_media
+        self.dir = tempfile.mkdtemp(prefix="warden-dep-")
+        self.src = _make_source(os.path.join(self.dir, "s.mp4"), w=1920, h=1080)
+        self.r = rules(video={"duration_max_s": 5, "width": 1080, "height": 1920,
+                              "audio": "forbidden"})
+
+    def _sem_detector(self):
+        """Finge a máquina de um host que não tem OpenCV."""
+        real = self.M.face_detection_status
+        self.M.face_detection_status = lambda: (False, "OpenCV is not installed")
+        self.addCleanup(lambda: setattr(self.M, "face_detection_status", real))
+
+    def test_a_landscape_cut_with_no_crop_stops_instead_of_centring(self):
+        self._sem_detector()
+        with self.assertRaises(RuntimeError) as erro:
+            self.M.cut(self.src, os.path.join(self.dir, "a.mp4"), self.r,
+                       start=0, end=3, sound="platform")
+        mensagem = str(erro.exception)
+        self.assertIn("no face detection", mensagem)
+        self.assertIn("--crop", mensagem, "o erro tem de dizer o que fazer")
+
+    def test_a_named_side_is_honoured_without_a_detector(self):
+        """A mensagem manda passar --crop, então --crop tem de funcionar. Um
+        portão que recusa a própria saída que oferece é uma mentira."""
+        self._sem_detector()
+        r = self.M.cut(self.src, os.path.join(self.dir, "b.mp4"), self.r,
+                       start=0, end=3, sound="platform", crop="center")
+        self.assertTrue(os.path.isfile(r["out"]))
+        self.assertTrue(any("no face detector on this machine" in n
+                            for n in r["notes"]), r["notes"])
+
+    def test_an_exact_percentage_is_honoured_without_a_detector(self):
+        self._sem_detector()
+        r = self.M.cut(self.src, os.path.join(self.dir, "c.mp4"), self.r,
+                       start=0, end=3, sound="platform", crop="25")
+        self.assertTrue(os.path.isfile(r["out"]))
+
+    def test_a_portrait_source_needs_no_detector_at_all(self):
+        """Nada a escolher: a fonte já tem a forma do quadro."""
+        self._sem_detector()
+        vertical = _make_source(os.path.join(self.dir, "v.mp4"), w=1080, h=1920)
+        r = self.M.cut(vertical, os.path.join(self.dir, "d.mp4"), self.r,
+                       start=0, end=3, sound="platform")
+        self.assertTrue(os.path.isfile(r["out"]))
+
+    def test_status_names_the_detector_when_it_is_missing(self):
+        """`warden status` é onde se descobre isso ANTES de cortar."""
+        import io
+        from contextlib import redirect_stdout
+        self._sem_detector()
+        saida = io.StringIO()
+        with redirect_stdout(saida):
+            warden.cmd_status(None)
+        texto = saida.getvalue()
+        self.assertIn("face detection:", texto)
+        self.assertIn("MISSING", texto)
+
+
+class NothingDegradesQuietly(unittest.TestCase):
+    """Os outros sítios da mesma varredura."""
+
+    def setUp(self):
+        import warden_media, warden_style
+        self.M, self.S = warden_media, warden_style
+
+    def test_a_clip_whose_frames_cannot_be_read_is_not_called_clean(self):
+        """Sem quadros, `bottom: False` lia como 'material limpo'. É uma
+        resposta que a ferramenta não tem, com a cara de uma que ela tem."""
+        _ffmpeg_or_skip()
+        _pillow_or_skip()
+        d = tempfile.mkdtemp(prefix="warden-cego-")
+        src = _make_source(os.path.join(d, "s.mp4"), seconds=4, w=1080, h=1920)
+        r = rules(video={"duration_max_s": 5, "width": 1080, "height": 1920,
+                         "audio": "forbidden"})
+        # Uma janela inteiramente fora do arquivo: nenhum quadro sai de lá.
+        with self.assertRaises(RuntimeError) as erro:
+            self.M.cut(src, os.path.join(d, "fora.mp4"), r,
+                       start=900, end=903, sound="platform", crop="center")
+        self.assertIn("could not open any frame", str(erro.exception))
+
+    def test_style_check_refuses_to_pass_on_zero_measurements(self):
+        """'dentro da faixa em tudo' sobre nenhuma evidência é o defeito que
+        este comando existe para não ter."""
+        achados = self.S.check_against({"measured": False}, {})
+        self.assertTrue(any(lv == "REJECT" for lv, _m in achados), achados)
+        self.assertIn("nothing was measured",
+                      " ".join(m for _lv, m in achados))
+
+    def test_the_signals_list_says_when_the_loud_signal_is_absent(self):
+        """Um envelope vazio por falta de ffmpeg e um vídeo mudo são a mesma
+        lista e não são a mesma coisa."""
+        segs = [{"start": 0.0, "end": 2.0, "text": "sera que da certo?"}]
+        _rows, why = self.M.analyze_signals(segs)          # sem fonte
+        self.assertTrue(why, "silenciou sobre a ausência do sinal de som")
+        self.assertIn("only the words", why)
+
+    def test_the_beat_grid_says_what_is_missing_not_the_module_name(self):
+        import warden_beat
+        real = warden_beat._numpy
+        warden_beat._numpy = lambda: (_ for _ in ()).throw(
+            RuntimeError("numpy is not installed, and finding the tempo is "
+                         "arithmetic over the waveform."))
+        try:
+            with self.assertRaises(RuntimeError) as erro:
+                warden_beat.analyse("/tmp/nao-existe.wav")
+            self.assertIn("numpy is not installed", str(erro.exception))
+        finally:
+            warden_beat._numpy = real
+
+    def test_snap_still_works_without_numpy_because_it_is_arithmetic(self):
+        """A guarda não pode ser larga demais: recusar o módulo inteiro tirava
+        do ar a metade dele que não precisa da dependência."""
+        import warden_beat
+        snapped, bars = warden_beat.snap(20.0, 2.0, 15, 25)
+        self.assertIsNotNone(snapped)
+
+    def test_the_contact_sheet_refuses_a_fallback_font(self):
+        """A folha de contato É o portão. Uma folha com a fonte bitmap do PIL
+        tem carimbo de tempo que ninguém lê -- é um portão que não se atravessa."""
+        _ffmpeg_or_skip()
+        _pillow_or_skip()
+        d = tempfile.mkdtemp(prefix="warden-fonte-")
+        src = _make_source(os.path.join(d, "s.mp4"), seconds=3, w=1080, h=1920)
+        real = self.S.FONT_PATH
+        self.S.FONT_PATH = os.path.join(d, "nao-existe.ttf")
+        try:
+            with self.assertRaises(RuntimeError) as erro:
+                self.S.contact_sheet(src, os.path.join(d, "f.jpg"))
+            self.assertIn("a fonte não está", str(erro.exception))
+        finally:
+            self.S.FONT_PATH = real
+
+
+# ══════════════════════════════════════════════════ dependência que falta
+#
+# Bloco A. A forma de defeito é uma só: falta uma dependência, o código segue
+# com um resultado pior e ninguém é avisado. O primeiro caso custou um clipe
+# entregue com o rosto na borda do quadro.
+
+class MissingDependencySpeaks(unittest.TestCase):
+    """Sem detector de rosto o corte para; nunca cai no centro calado."""
+
+    def setUp(self):
+        _ffmpeg_or_skip()
+        _pillow_or_skip()
+        import warden_media
+        self.M = warden_media
+        self.dir = tempfile.mkdtemp(prefix="warden-dep-")
+        self.src = _make_source(os.path.join(self.dir, "s.mp4"), w=1920, h=1080)
+        self.r = rules(video={"duration_max_s": 5, "width": 1080, "height": 1920,
+                              "audio": "forbidden"})
+
+    def _sem_detector(self):
+        """Finge a máquina de um host que não tem OpenCV."""
+        real = self.M.face_detection_status
+        self.M.face_detection_status = lambda: (False, "OpenCV is not installed")
+        self.addCleanup(lambda: setattr(self.M, "face_detection_status", real))
+
+    def test_a_landscape_cut_with_no_crop_stops_instead_of_centring(self):
+        self._sem_detector()
+        with self.assertRaises(RuntimeError) as erro:
+            self.M.cut(self.src, os.path.join(self.dir, "a.mp4"), self.r,
+                       start=0, end=3, sound="platform")
+        mensagem = str(erro.exception)
+        self.assertIn("no face detection", mensagem)
+        self.assertIn("--crop", mensagem, "o erro tem de dizer o que fazer")
+
+    def test_a_named_side_is_honoured_without_a_detector(self):
+        """A mensagem manda passar --crop, então --crop tem de funcionar. Um
+        portão que recusa a própria saída que oferece é uma mentira."""
+        self._sem_detector()
+        r = self.M.cut(self.src, os.path.join(self.dir, "b.mp4"), self.r,
+                       start=0, end=3, sound="platform", crop="center")
+        self.assertTrue(os.path.isfile(r["out"]))
+        self.assertTrue(any("no face detector on this machine" in n
+                            for n in r["notes"]), r["notes"])
+
+    def test_an_exact_percentage_is_honoured_without_a_detector(self):
+        self._sem_detector()
+        r = self.M.cut(self.src, os.path.join(self.dir, "c.mp4"), self.r,
+                       start=0, end=3, sound="platform", crop="25")
+        self.assertTrue(os.path.isfile(r["out"]))
+
+    def test_a_portrait_source_needs_no_detector_at_all(self):
+        """Nada a escolher: a fonte já tem a forma do quadro."""
+        self._sem_detector()
+        vertical = _make_source(os.path.join(self.dir, "v.mp4"), w=1080, h=1920)
+        r = self.M.cut(vertical, os.path.join(self.dir, "d.mp4"), self.r,
+                       start=0, end=3, sound="platform")
+        self.assertTrue(os.path.isfile(r["out"]))
+
+    def test_status_names_the_detector_when_it_is_missing(self):
+        """`warden status` é onde se descobre isso ANTES de cortar."""
+        import io
+        from contextlib import redirect_stdout
+        self._sem_detector()
+        saida = io.StringIO()
+        with redirect_stdout(saida):
+            warden.cmd_status(None)
+        texto = saida.getvalue()
+        self.assertIn("face detection:", texto)
+        self.assertIn("MISSING", texto)
+
+
+class NothingDegradesQuietly(unittest.TestCase):
+    """Os outros sítios da mesma varredura."""
+
+    def setUp(self):
+        import warden_media, warden_style
+        self.M, self.S = warden_media, warden_style
+
+    def test_a_clip_whose_frames_cannot_be_read_is_not_called_clean(self):
+        """Sem quadros, `bottom: False` lia como 'material limpo'. É uma
+        resposta que a ferramenta não tem, com a cara de uma que ela tem."""
+        _ffmpeg_or_skip()
+        _pillow_or_skip()
+        d = tempfile.mkdtemp(prefix="warden-cego-")
+        src = _make_source(os.path.join(d, "s.mp4"), seconds=4, w=1080, h=1920)
+        r = rules(video={"duration_max_s": 5, "width": 1080, "height": 1920,
+                         "audio": "forbidden"})
+        # Uma janela inteiramente fora do arquivo: nenhum quadro sai de lá.
+        with self.assertRaises(RuntimeError) as erro:
+            self.M.cut(src, os.path.join(d, "fora.mp4"), r,
+                       start=900, end=903, sound="platform", crop="center")
+        self.assertIn("could not open any frame", str(erro.exception))
+
+    def test_style_check_refuses_to_pass_on_zero_measurements(self):
+        """'dentro da faixa em tudo' sobre nenhuma evidência é o defeito que
+        este comando existe para não ter."""
+        achados = self.S.check_against({"measured": False}, {})
+        self.assertTrue(any(lv == "REJECT" for lv, _m in achados), achados)
+        self.assertIn("nothing was measured",
+                      " ".join(m for _lv, m in achados))
+
+    def test_the_signals_list_says_when_the_loud_signal_is_absent(self):
+        """Um envelope vazio por falta de ffmpeg e um vídeo mudo são a mesma
+        lista e não são a mesma coisa."""
+        segs = [{"start": 0.0, "end": 2.0, "text": "sera que da certo?"}]
+        _rows, why = self.M.analyze_signals(segs)          # sem fonte
+        self.assertTrue(why, "silenciou sobre a ausência do sinal de som")
+        self.assertIn("only the words", why)
+
+    def test_snap_still_works_without_numpy_because_it_is_arithmetic(self):
+        """A guarda não pode ser larga demais: recusar o módulo inteiro tirava
+        do ar a metade dele que não precisa da dependência."""
+        import warden_beat
+        snapped, bars = warden_beat.snap(20.0, 2.0, 15, 25)
+        self.assertIsNotNone(snapped)
+
+    def test_the_contact_sheet_refuses_a_fallback_font(self):
+        """A folha de contato É o portão. Uma folha com a fonte bitmap do PIL
+        tem carimbo de tempo que ninguém lê -- é um portão que não se atravessa."""
+        _ffmpeg_or_skip()
+        _pillow_or_skip()
+        d = tempfile.mkdtemp(prefix="warden-fonte-")
+        src = _make_source(os.path.join(d, "s.mp4"), seconds=3, w=1080, h=1920)
+        real = self.S.FONT_PATH
+        self.S.FONT_PATH = os.path.join(d, "nao-existe.ttf")
+        try:
+            with self.assertRaises(RuntimeError) as erro:
+                self.S.contact_sheet(src, os.path.join(d, "f.jpg"))
+            self.assertIn("a fonte não está", str(erro.exception))
+        finally:
+            self.S.FONT_PATH = real

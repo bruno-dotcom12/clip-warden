@@ -19,12 +19,30 @@ carries both and a wheel that needs a compiler is a build that fails on a host.
 import os
 import subprocess
 
+
+def _numpy():
+    """numpy, ou um erro que diz o que fazer em vez do nome do módulo.
+
+    Guardado aqui e não no topo do arquivo de propósito: `snap()` é aritmética
+    sobre números que já foram medidos e funciona sem numpy nenhum. Exigir a
+    dependência na importação tirava do ar a metade do módulo que não precisa
+    dela -- trocar um silêncio por uma recusa larga demais também é um defeito.
+    """
+    try:
+        import numpy as np
+        return np
+    except ImportError:
+        raise RuntimeError(
+            "numpy is not installed, and finding the tempo is arithmetic over "
+            "the waveform. `warden beat` and `--track` need it; the image "
+            "ships it, so this is a run outside the image.")
+
 SR, HOP, WIN = 22050, 512, 2048
 BPM_FLOOR, BPM_CEIL = 70, 200
 
 
 def _samples(path):
-    import numpy as np
+    np = _numpy()
     done = subprocess.run(
         ["ffmpeg", "-v", "error", "-i", path, "-ac", "1", "-ar", str(SR),
          "-f", "f32le", "-"], capture_output=True, timeout=300)
@@ -34,7 +52,7 @@ def _samples(path):
 
 
 def _onsets(x):
-    import numpy as np
+    np = _numpy()
     count = 1 + (len(x) - WIN) // HOP
     if count < 4:
         raise RuntimeError("this track is too short to find a tempo in")
@@ -49,7 +67,7 @@ def _onsets(x):
 
 
 def _rough_bpm(env):
-    import numpy as np
+    np = _numpy()
     fps = SR / HOP
     auto = np.correlate(env, env, mode="full")[len(env) - 1:]
     lo, hi = int(fps * 60 / BPM_CEIL), int(fps * 60 / BPM_FLOOR)
@@ -64,7 +82,7 @@ def _rough_bpm(env):
 
 def _score(env, bpm, fps):
     """How much onset energy falls on this tempo's grid, at its best phase."""
-    import numpy as np
+    np = _numpy()
     step = 60.0 / bpm * fps
     best = -1e9
     for offset in np.arange(0, step, 0.5):
@@ -74,7 +92,7 @@ def _score(env, bpm, fps):
 
 
 def _pick_bpm(env, rough, fps):
-    import numpy as np
+    np = _numpy()
     candidates = sorted({round(rough * f, 1) for f in (0.5, 2 / 3, 1.0, 1.5, 2.0)}
                         & {round(v, 1) for v in np.arange(80, 190.1, 0.1)})
     if not candidates:
@@ -83,7 +101,7 @@ def _pick_bpm(env, rough, fps):
 
 
 def _first_beat(env, bpm, fps):
-    import numpy as np
+    np = _numpy()
     step = 60.0 / bpm * fps
     best, phase = -1e9, 0.0
     for offset in np.arange(0, step, 0.5):
@@ -96,12 +114,12 @@ def _first_beat(env, bpm, fps):
 
 def _drop(x, beat_s, first_beat):
     """Where the track gains body, snapped to the nearest bar."""
-    import numpy as np
+    np = _numpy()
     half = SR // 2
     levels = np.array([np.sqrt((x[i:i + half] ** 2).mean())
                        for i in range(0, len(x) - half, half)])
     if not len(levels):
-        return 0.0
+        return None
     floor = float(np.percentile(levels, 20))
     ceiling = float(np.percentile(levels, 90))
     threshold = floor + (ceiling - floor) * 0.45
@@ -109,7 +127,11 @@ def _drop(x, beat_s, first_beat):
         if (levels[i:i + 8] > threshold).mean() > 0.75:
             beats = round((i * 0.5 - first_beat) / beat_s)
             return round(max(first_beat + round(beats / 4) * 4 * beat_s, 0.0), 3)
-    return 0.0
+    # None, não 0.0. Zero é uma resposta legítima -- "o drop é no começo" -- e
+    # usá-la também para "não achei drop nenhum" faz a trilha entrar na intro
+    # com uma nota dizendo "entrou em 0.00s", que é verdadeira e inútil, como o
+    # "enquadrei no centro" era.
+    return None
 
 
 def analyse(path):

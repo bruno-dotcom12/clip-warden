@@ -205,6 +205,12 @@ def check(rules, media, caption, ledger):
         else:
             ok(f"resolution {w}x{h}")
     want_aspect = R.get(rules, "video.aspect")
+    if want_aspect and not (w and h):
+        # Sem dimensões legíveis a regra de aspecto sumia da saída inteira, e o
+        # relatório terminava em "Nothing blocks this clip" sobre um arquivo cujo
+        # formato ninguém conferiu.
+        reject(f"this campaign requires {want_aspect} and the file gives no "
+               "readable width or height, so the shape could not be checked")
     if want_aspect and w and h:
         try:
             a, b = (int(n) for n in str(want_aspect).split(":"))
@@ -495,6 +501,28 @@ def cmd_status(args):
                  if R.get(rules, "posting.deadline") else ""))
     print("ffprobe: " + (shutil.which("ffprobe") or "MISSING"))
     print("ffmpeg:  " + (shutil.which("ffmpeg") or "MISSING"))
+    # Tudo que um corte precisa e que pode não estar aqui. Cada linha existe
+    # porque a ausência dela já degradou um clipe em silêncio: sem o detector o
+    # enquadramento foi para o centro e entregou o rosto na borda, e sem Pillow
+    # não há hook nem legenda, porque todo texto deste renderizador é PNG do PIL.
+    try:
+        ok, why = _media().face_detection_status()
+        print("face detection: " + (why if ok else f"MISSING -- {why}"))
+    except Exception as exc:
+        print(f"face detection: MISSING -- {type(exc).__name__}: {exc}")
+    try:
+        import PIL
+        print(f"pillow (all burned text): {PIL.__version__}")
+    except ImportError:
+        print("pillow (all burned text): MISSING -- no hook and no caption "
+              "can be drawn without it")
+    import warden_style as S
+    print("style font: " + (S.FONT_PATH if S.font_available()
+                            else f"MISSING at {S.FONT_PATH} -- text would fall "
+                                 "back to a system face"))
+    spec = specs_path()
+    print("measured style spec: " + (spec if os.path.isfile(spec)
+                                     else f"MISSING at {spec}"))
     # The models arrive after boot rather than inside the image, so whether they
     # are here yet is a real question with a real answer, not a constant.
     home = os.environ.get("HF_HOME", "/var/lib/hermes/models")
@@ -537,14 +565,26 @@ def trusted_path():
     return os.path.join(state_dir(), "trusted.json")
 
 
-def load_trusted():
+def load_trusted(strict=False):
     if not os.path.exists(trusted_path()):
         return []
     try:
         with open(trusted_path()) as fh:
             data = json.load(fh)
-        return data if isinstance(data, list) else []
-    except Exception:
+        if not isinstance(data, list):
+            raise ValueError("the trusted list is not a list")
+        return data
+    except Exception as exc:
+        # Um arquivo quebrado não é um arquivo ausente. A resposta antiga --
+        # "nenhuma fonte confiável foi configurada" -- afirma que o dono nunca
+        # fez nada, e o `trusted add` seguinte gravava por cima do que ele fez.
+        if strict:
+            die(f"{trusted_path()} exists but could not be read as a trusted "
+                f"list ({type(exc).__name__}: {exc}). Fix or delete it; writing "
+                f"over it now would erase the sources you did add.", code=1)
+        print(f"warden: {trusted_path()} is unreadable "
+              f"({type(exc).__name__}), so no source counts as trusted until "
+              f"it is fixed", file=sys.stderr)
         return []
 
 
@@ -577,6 +617,8 @@ def cmd_trusted(args):
             return 0
         print(f"NOT trusted: {reason}", file=sys.stderr)
         return 1
+    if args.action in ("add", "remove"):
+        entries = load_trusted(strict=True)
     if args.action == "add":
         if not args.value:
             die("add needs a channel or domain: `warden trusted add @Channel` "
@@ -718,9 +760,13 @@ def cmd_signals(args):
     if not isinstance(data, dict) or not isinstance(data.get("segments"), list):
         die(f"{args.transcript} is not a transcript this tool wrote", code=1)
     try:
-        rows = _media().analyze_signals(data["segments"], source=args.source)
+        rows, quiet = _media().analyze_signals(data["segments"], source=args.source)
     except Exception as exc:
         die(f"{type(exc).__name__}: {exc}", code=1)
+    if quiet:
+        # Sem esta linha, "nenhum pico de som" e "não consegui ler o som" eram a
+        # mesma saída, e quem escolhe a janela não sabia em qual dos dois estava.
+        print(f"# the loud signal is NOT in this list: {quiet}", file=sys.stderr)
     if not rows:
         print("no strong signals stood out. Read the digest and choose on the "
               "words; a quiet transcript is not a bad one.", file=sys.stderr)

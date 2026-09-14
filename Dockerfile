@@ -40,7 +40,7 @@ RUN command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null \
 # display, which drops the GUI libs and most of the weight.
 RUN set -eu; \
     PY=/opt/hermes/.venv/bin/python3; \
-    PKGS="yt-dlp>=2025.1.1 gdown>=5.2 faster-whisper>=1.1 opencv-python-headless>=4.9 pillow>=10.0"; \
+    PKGS="yt-dlp>=2025.1.1 gdown>=5.2 faster-whisper>=1.1 opencv-python-headless>=4.9 pillow>=10.0 numpy>=1.24"; \
     if "$PY" -m pip --version >/dev/null 2>&1; then \
       "$PY" -m pip install --no-cache-dir $PKGS; \
     elif command -v uv >/dev/null 2>&1; then \
@@ -50,7 +50,7 @@ RUN set -eu; \
     else \
       echo "no pip, no uv and no ensurepip in this base image" >&2; exit 1; \
     fi; \
-    "$PY" -c "import yt_dlp, gdown, faster_whisper, cv2, PIL"
+    "$PY" -c "import yt_dlp, gdown, faster_whisper, cv2, PIL, numpy"
 
 # The YuNet face-detection model, fetched at build from the commit vendor/yunet.pin
 # names and checked against the hash beside it -- the same discipline as the
@@ -66,7 +66,14 @@ RUN set -eu; \
       "https://media.githubusercontent.com/media/opencv/opencv_zoo/${sha}/${path}"; \
     got="$(sha256sum /opt/plow/yunet.onnx | cut -d' ' -f1)"; \
     [ "$got" = "$want" ] || { echo "yunet model is $got, pin says $want" >&2; exit 1; }; \
-    chmod 0644 /opt/plow/yunet.onnx
+    chmod 0644 /opt/plow/yunet.onnx; \
+    /opt/hermes/.venv/bin/python3 -c "import cv2; cv2.FaceDetectorYN_create('/opt/plow/yunet.onnx','',(320,320),0.6,0.3,5000)"
+
+# O detector construído, não só os dois arquivos presentes. Um OpenCV que importa
+# com um modelo cujo hash bate ainda pode não montar o detector -- e essa falha
+# aparecia na primeira renderização de um host, como um rosto na borda do quadro,
+# não aqui. `warden status` faz a mesma pergunta em tempo de execução, e `cut`
+# para em vez de enquadrar no centro quando a resposta é não.
 
 # The transcription models are NOT baked. They used to be, and it cost about
 # 600 MB of download on every install of this agent.
@@ -135,8 +142,14 @@ COPY image/s6-overlay/ /etc/s6-overlay/
 # land there or it cannot be handed over at all. Created here, agent-owned, for
 # the same reason as the rest -- whatever creates it first in a named volume
 # owns it forever, and root creating it locks the agent out of its own delivery.
+# `warden/campaigns` entra nesta lista porque `state_dir()` faz mkdir dele na
+# primeira chamada, e um `docker compose exec` -- que entra como root -- o criaria
+# root:root dentro de um diretório 0700 do uid 10000. O agente perderia a escrita
+# e `campaign save` passaria a falhar; pior, `warden status` diria `writable: yes`,
+# porque root escreve, e o diagnóstico esconderia o dano.
 RUN install -d -o 10000 -g 10000 -m 0700 /var/lib/hermes/warden \
  && install -d -o 10000 -g 10000 -m 0700 /var/lib/hermes/warden/footage \
+ && install -d -o 10000 -g 10000 -m 0700 /var/lib/hermes/warden/campaigns \
  && install -d -o 10000 -g 10000 -m 0700 /var/lib/hermes/models \
  && install -d -o 10000 -g 10000 -m 0755 /var/lib/hermes/cache \
  && install -d -o 10000 -g 10000 -m 0755 /var/lib/hermes/cache/videos

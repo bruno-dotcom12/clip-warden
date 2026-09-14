@@ -57,27 +57,25 @@ It does not reach anywhere else. There is no social login, and it never posts.
 
 ## Install
 
-`plow-agents` is a checkout you put on your PATH, not something Docker brings:
-
 ```sh
-git clone https://github.com/plow-pbc/plow-agents.git
-export PATH="$PWD/plow-agents/bin:$PATH"
+git clone https://github.com/bruno-dotcom12/clip-warden.git && cd clip-warden
+./install.sh
 ```
 
-Then, from this repository:
+The script clones the `plow-agents` command, logs you in, asks which line the
+agent should answer on, mints its credential, builds, starts, and then checks
+the container came up with everything a clip needs. It prints every command it
+runs and stops at the first thing it cannot do. `docs/INSTALL.md` has the same
+path typed out by hand, and the three ordering traps that bite when you do.
 
-```sh
-plow-agents login           # text the printed phrase from the phone that owns the account
-plow-agents lines           # the line UIDs you own
-plow-agents mint ln_xxx     # that line's credential -> ./plow-credentials
-docker compose up --build -d
-```
-
-`mint` takes the line as an argument; there is no default. `docs/INSTALL.md` is
-the same path with the places you would otherwise have to guess written down.
+Docker Desktop needs at least 4 GiB of RAM in its VM: the agent uses about 2 GiB
+to transcribe and render at once, and a smaller VM turns the first clip into an
+out-of-memory kill. The script measures it and says so.
 
 Then text the agent a campaign link. Nothing else to configure: no API keys, no
-OAuth, no accounts.
+OAuth, no accounts. Its first question will be whether clips keep the original
+sound or ship silent for you to add a track in the app -- it asks once and
+stores the answer.
 
 The transcription models are not in the image. A supervised service pulls them
 in the background on first boot, while you are reading the agent's first reply,
