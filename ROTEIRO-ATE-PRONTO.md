@@ -73,12 +73,29 @@ cortes, e o `style check` reprova fora da faixa em vez de só relatar.
 ## Bloco F. Pacote de publicação
 
 Descrição, hashtags dentro das regras da campanha e horário sugerido, prontos
-para colar. Sem API de postagem: TikTok, YouTube e Instagram travam publicação
-automática em privado até auditoria, e cada credencial a mais derruba a taxa de
-instalação.
+para colar, com o texto passando pelo fiscal de regras antes de aparecer.
 
-Fecha quando: o agente entrega o clipe e o texto junto, e o texto passa pelo
-fiscal de regras da campanha antes de aparecer.
+Fecha quando: o agente entrega o clipe e o texto junto, e o fiscal aprovou o
+texto.
+
+## Bloco F2. Postar de verdade
+
+Verificado em 14/09/2026, ver `ANALISE-POSTAGEM-REDES.md` para as fontes. O
+agente PODE ser ponta a ponta no TikTok, para qualquer pessoa, sem auditoria e
+sem intermediário, pelo fluxo de inbox (escopo `video.upload`): o clipe cai nos
+rascunhos do app e o dono publica com um toque, na visibilidade que quiser. A
+restrição de `SELF_ONLY` vale para o Direct Post, não para o inbox.
+
+O Instagram publica Reel público direto, sem App Review, quando o app serve a
+conta profissional do próprio dono. O YouTube está descartado: vídeo de projeto
+não auditado fica travado em privado sem saída manual, e embarcar credenciais em
+projeto open source é proibido pela política deles.
+
+Antes de qualquer código, um teste barato tem que provar a hipótese do inbox,
+porque ela é inferência por convergência e não declaração oficial.
+
+Fecha quando: um clipe sai do agente e chega publicado no TikTok com um toque, e
+o README diz a verdade sobre as três redes.
 
 ## Bloco G. Campanha ponta a ponta
 
