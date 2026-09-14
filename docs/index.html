@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clip Warden</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+         max-width: 42rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+  h1 { font-size: 1.9rem; margin-bottom: .25rem; }
+  h2 { font-size: 1.2rem; margin-top: 2.25rem; }
+  .sub { opacity: .7; margin-top: 0; }
+  nav { margin: 2rem 0 0; font-size: .95rem; }
+  nav a { margin-right: 1rem; }
+  code { font-size: .9em; padding: .1em .35em; border-radius: 3px;
+         background: rgba(127,127,127,.15); }
+  ul { padding-left: 1.2rem; }
+  footer { margin-top: 3.5rem; font-size: .9rem; opacity: .7; }
+</style>
+</head>
+<body>
+
+<h1>Clip Warden</h1>
+<p class="sub">An open-source agent that cuts long videos into vertical clips for paid
+clipping campaigns, and keeps each clip inside the campaign's rules.</p>
+
+<h2>What it does</h2>
+<p>Paid clipping campaigns reject submissions after the views have already accrued,
+and a rejected clip is unpaid work. The reasons are almost always mechanical: a
+second over the limit, a missing hashtag, footage that did not come from the
+archive the brief authorises.</p>
+<p>You give Clip Warden a campaign link and a source video. It reads the brief,
+writes down what the campaign demands, transcribes the video, picks the moments
+that stand on their own, renders vertical clips that already sit inside the rules,
+and hands the files back with a caption you can paste.</p>
+
+<h2>Where it runs</h2>
+<p>Clip Warden runs on your own computer, inside a container you start yourself.
+There is no Clip Warden server, no account to create, and no hosted service.
+Your videos are read from your disk and written back to your disk. Nothing is
+uploaded to us, because there is no "us" to upload to.</p>
+
+<h2>Publishing to social platforms</h2>
+<p>Publishing is <strong>optional</strong>. Clip Warden works fully without connecting
+any social account, and it never connects one on its own. When you choose to
+connect an account, this is exactly what happens:</p>
+<ul>
+  <li><strong>TikTok.</strong> With your permission (scope <code>video.upload</code>),
+      Clip Warden sends a finished clip to the drafts inbox of your own TikTok
+      account. It does not publish. You open TikTok, review the draft, edit it if
+      you want, choose who can see it, and post it yourself.</li>
+  <li><strong>Instagram.</strong> With your permission, Clip Warden can publish a
+      Reel to your own Instagram professional account, using the caption you
+      approved beforehand.</li>
+</ul>
+<p>Clip Warden only ever touches accounts you connected yourself. It cannot post to
+anyone else's account, and it does not read your feed, your followers, your
+messages, or your analytics.</p>
+
+<h2>What it does not promise</h2>
+<p>It does not promise views, payment, or that a campaign will accept your clip.
+A human still decides whether a moment is worth clipping, and a campaign can
+reject a submission for editorial reasons no software can predict. What Clip
+Warden checks is the mechanical part: duration, resolution, required hashtags,
+audio rules, and the source of the footage.</p>
+
+<h2>Source code</h2>
+<p>Clip Warden is free software, released under the MIT License. The full source is
+public at <a href="https://github.com/bruno-dotcom12/clip-warden">github.com/bruno-dotcom12/clip-warden</a>,
+including installation instructions.</p>
+
+<nav>
+  <a href="./privacy.html">Privacy Policy</a>
+  <a href="./terms.html">Terms of Service</a>
+  <a href="https://github.com/bruno-dotcom12/clip-warden">Source code</a>
+</nav>
+
+<footer>
+  Clip Warden is an independent open-source project by Bruno Arantes. It is not
+  affiliated with, endorsed by, or sponsored by TikTok, Instagram, Meta, YouTube,
+  or any clipping campaign.
+</footer>
+
+</body>
+</html>

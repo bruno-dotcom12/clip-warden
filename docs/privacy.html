@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy — Clip Warden</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+         max-width: 42rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+  h1 { font-size: 1.7rem; margin-bottom: .25rem; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; }
+  .sub { opacity: .7; margin-top: 0; }
+  nav { margin: 2rem 0 0; font-size: .95rem; }
+  nav a { margin-right: 1rem; }
+  code { font-size: .9em; padding: .1em .35em; border-radius: 3px;
+         background: rgba(127,127,127,.15); }
+  ul { padding-left: 1.2rem; }
+  footer { margin-top: 3.5rem; font-size: .9rem; opacity: .7; }
+</style>
+</head>
+<body>
+
+<h1>Privacy Policy</h1>
+<p class="sub">Clip Warden · Last updated 14 September 2026</p>
+
+<h2>The short version</h2>
+<p>Clip Warden runs entirely on your own computer. There is no Clip Warden server
+and no Clip Warden account. We do not collect, receive, store, or have any
+technical means of accessing your videos, your transcripts, your social media
+data, or your access tokens. Everything stays on your machine.</p>
+
+<h2>Who is responsible</h2>
+<p>Clip Warden is an independent open-source project maintained by Bruno Arantes,
+an individual developer in Brazil. Contact details are at the bottom of this page.</p>
+
+<h2>What the software handles, and where it stays</h2>
+<p>When you use Clip Warden, the following data is processed <strong>locally, on your
+own device</strong>, and is never transmitted to the maintainer:</p>
+<ul>
+  <li><strong>Video and audio files</strong> you point it at, and the clips it renders
+      from them.</li>
+  <li><strong>Transcripts</strong> generated from your audio. Transcription runs offline
+      on your machine; the audio is not sent to any transcription service.</li>
+  <li><strong>Campaign rules</strong> read from the public campaign pages you give it.</li>
+  <li><strong>Access tokens</strong> for any social account you choose to connect. These
+      are stored in a file on your own disk, readable only by your user account.</li>
+</ul>
+
+<h2>What leaves your machine, and only when you ask</h2>
+<p>Clip Warden makes outbound network requests in three situations, all of them
+initiated by you:</p>
+<ul>
+  <li><strong>Downloading source footage</strong> from the archive a campaign brief
+      authorises.</li>
+  <li><strong>Reading a campaign page</strong> whose link you supplied.</li>
+  <li><strong>Publishing</strong>, if and only if you connected a social account and asked
+      for a clip to be sent. In that case the video file and the caption you
+      approved are sent directly from your machine to that platform's official API,
+      over an encrypted connection. They are not routed through any server of ours.</li>
+</ul>
+<p>There is no analytics, no telemetry, no crash reporting, and no usage tracking of
+any kind.</p>
+
+<h2>Platform data we request, and why</h2>
+<p>If you connect a social account, Clip Warden requests the narrowest permission
+that makes the feature work:</p>
+<ul>
+  <li><strong>TikTok</strong> — <code>video.upload</code>, which allows sending a video to your
+      own account's drafts so that you can review and post it yourself. Clip Warden
+      does not request permission to publish directly, and does not request access
+      to your profile data, your videos, your followers, or your analytics.</li>
+  <li><strong>Instagram</strong> — the permissions needed to publish a Reel to your own
+      professional account and to confirm which account is connected. Clip Warden
+      does not read your feed, your comments, your direct messages, or your
+      insights.</li>
+</ul>
+<p>Data obtained from these platforms is used solely to carry out the action you
+requested. It is never sold, never shared with third parties, never used for
+advertising, and never used to train any model.</p>
+
+<h2>How to revoke access</h2>
+<p>You can disconnect Clip Warden from a platform at any time, directly in that
+platform's own settings, without needing the software:</p>
+<ul>
+  <li><strong>TikTok:</strong> Profile → Settings and privacy → Security and permissions →
+      Manage app permissions → remove Clip Warden.</li>
+  <li><strong>Instagram / Meta:</strong> Settings → Website permissions → Apps and websites →
+      remove Clip Warden.</li>
+</ul>
+<p>Revoking access immediately invalidates the stored token.</p>
+
+<h2>How to delete your data</h2>
+<p>Because nothing is stored on our side, there is no deletion request to send to us
+and no database for us to erase. To remove everything Clip Warden has kept:</p>
+<ul>
+  <li>Delete the working directory where it wrote your clips, transcripts and
+      contact sheets.</li>
+  <li>Delete the credentials file where any access token was stored. Its location is
+      documented in the installation instructions.</li>
+  <li>Revoke the app's access in the platform's settings, as described above.</li>
+</ul>
+<p>If you believe the maintainer nonetheless holds data about you, write to the
+contact address below and it will be deleted.</p>
+
+<h2>Children</h2>
+<p>Clip Warden is not directed at children and is not intended for use by anyone
+under the minimum age required by the platforms it connects to.</p>
+
+<h2>Changes to this policy</h2>
+<p>If this policy changes, the new version is published on this page with a new
+date, and the change is recorded in the project's public source history.</p>
+
+<h2>Contact</h2>
+<p>Questions about this policy, or requests relating to your data, can be sent to
+<a href="mailto:wardenclip@gmail.com">wardenclip@gmail.com</a>.</p>
+
+<nav>
+  <a href="./index.html">Home</a>
+  <a href="./terms.html">Terms of Service</a>
+  <a href="https://github.com/bruno-dotcom12/clip-warden">Source code</a>
+</nav>
+
+<footer>
+  Clip Warden is an independent open-source project. It is not affiliated with,
+  endorsed by, or sponsored by TikTok, Instagram, Meta, or YouTube.
+</footer>
+
+</body>
+</html>
