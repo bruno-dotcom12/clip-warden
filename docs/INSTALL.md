@@ -182,8 +182,11 @@ Plow base publishes a single-architecture manifest, so there is no arm64 to
 build against. On Apple Silicon the agent runs emulated. It does not slow the
 build; it only matters when the agent runs.
 
-If the **image** pull fails with `denied` or `403` from `ghcr.io`, that is a
-stale credential there: `docker logout ghcr.io`, then `docker compose up -d`.
+If the **image** pull fails with `denied` from `ghcr.io`, the likely cause is not
+on your machine: a package published to GHCR is **private by default**, even from
+a public repository, and has to be switched to public once by its owner. Nothing
+you type fixes that — tell us. (`docker logout ghcr.io` is the wrong reflex here:
+if you happen to be logged in, it removes the one credential that was working.)
 
 The rest of this block is for the local-build path only. If the **base** pull
 fails with a `403`, it is a stale registry credential rather than a permission

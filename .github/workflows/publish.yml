@@ -1,28 +1,29 @@
 # Publica a imagem no GHCR, para que a máquina de quem instala baixe em vez de
 # construir.
 #
-# O build local custa ao host duas coisas que ele não pediu: 4,68 GB de imagem
-# desempacotada MAIS 4,68 GB de cache de build, e a chance de um erro de build
-# virar uma instalação falha por um motivo que não é dele -- um apt-get que caiu,
-# um wheel que saiu do PyPI, um host de CDN fora do ar. Baixar uma imagem já
-# construída troca tudo isso por 1,06 GB comprimidos e um `docker pull`.
+# O build local custa ao host 4,68 GB de cache de build além da imagem, e faz de
+# qualquer tropeço durante o build -- um apt-get que caiu, um wheel que saiu do
+# PyPI -- uma instalação falha por um motivo que nunca foi dele. Um `docker pull`
+# de 1,06 GB comprimidos troca as duas coisas.
 #
 # amd64 apenas, e isso não é escolha: a base `plow-cloud-agents` publica um
-# manifesto único de uma arquitetura. Verificado com `imagetools inspect --raw`:
-# é `manifest.v2+json`, não um índice. Enquanto ela for assim, arm64 é
-# impossível, e num Apple Silicon a imagem roda emulada -- que é exatamente o
-# que acontece hoje com o build local.
+# manifesto único de uma arquitetura (verificado com `imagetools inspect --raw`:
+# é `manifest.v2+json`, não um índice). Enquanto for assim, arm64 é impossível e
+# num Apple Silicon a imagem roda emulada -- que é o que já acontece hoje.
 name: publish image
 
 on:
   push:
     branches: [main]
-    # Mudança em documentação não merece uma imagem nova.
+    # Uma tag `v1.2.3` publica `:v1.2.3` além de mover `:latest`. O gatilho de
+    # tag precisa estar aqui: sem ele o `type=semver` do metadata-action é código
+    # morto e não produz tag nenhuma, calado.
+    tags: ['v*.*.*']
+    # Filtro de caminho não é avaliado em push de tag, então isto vale só para o
+    # push em main e não bloqueia o release.
     paths-ignore:
       - '**.md'
       - 'docs/**'
-  # Uma tag `v1.2.3` publica `:v1.2.3` além de `:latest`, para quem quiser
-  # prender a versão.
   workflow_dispatch:
 
 concurrency:
@@ -35,58 +36,60 @@ jobs:
     permissions:
       contents: read
       packages: write
-      # Para a atestação de proveniência: diz de qual commit e de qual workflow
-      # a imagem saiu, que é o que um estranho não consegue verificar sozinho.
+      # Para a atestação de proveniência: diz de qual commit e de qual workflow a
+      # imagem saiu, que é o que um estranho não consegue verificar sozinho.
       id-token: write
       attestations: write
 
     steps:
-      - uses: actions/checkout@v4
+      # Majors com runtime Node 24. O Node 20 sai dos runners em 23/09/2026 e,
+      # depois disso, uma action presa nele falha ao carregar -- antes do build,
+      # com um erro que não fala de Docker nenhum.
+      - uses: actions/checkout@v5
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Só a tag imutável por sha neste passo. `latest` é movida no fim, depois
+      # da imagem passar na verificação -- ver o comentário lá embaixo.
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=long
             type=semver,pattern=v{{version}}
 
       - id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # O cache vive no registro, não na máquina de ninguém.
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Cache no próprio registro, não no serviço de cache do Actions: a cota
+          # ali é de 10 GB por repositório, `mode=max` exporta toda camada
+          # intermediária, e uma imagem deste tamanho enche a cota em duas ou três
+          # execuções. A partir daí cada run sobe GB que serão despejados antes do
+          # run seguinte, e o cache vira custo puro.
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache,mode=max,ignore-error=true
           provenance: true
 
-      - uses: actions/attest-build-provenance@v1
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-name: ghcr.io/${{ github.repository }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
-
-      # O digest é o que o caminho cloud da Plow exige -- `provider=exe:<image>@sha256:<digest>`,
-      # porque uma tag pode ser reapontada e uma tag nunca é uma referência.
-      - name: digest
-        run: |
-          echo "## imagem publicada" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          # Storage record só existe para artefato de repositório de organização,
+          # e este é de usuário. Deixado no padrão, o passo falha ao gravá-lo.
+          create-storage-record: false
 
       # A imagem publicada tem de ter o detector de rosto funcionando. Sem esta
       # checagem, uma imagem quebrada chega à máquina de um host e o defeito
@@ -106,3 +109,45 @@ jobs:
           import PIL, numpy, faster_whisper, yt_dlp
           print('ok:', why)
           "
+
+      # Um pacote novo no GHCR nasce PRIVADO, mesmo num repositório público, e
+      # este job continua autenticado -- então o `docker run` acima passa e todo
+      # estranho que rodar `docker compose up` recebe `denied`. Um build verde
+      # escondendo uma instalação quebrada é o pior resultado possível, então a
+      # checagem é feita deslogado, como um estranho faria.
+      #
+      # Se falhar: a visibilidade se muda uma vez, à mão, em
+      # github.com/users/<dono>/packages/container/<pacote>/settings.
+      - name: puxável sem credencial nenhuma
+        run: |
+          docker logout ghcr.io
+          docker manifest inspect \
+            "ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}" >/dev/null \
+            || { echo "::error::o pacote está privado -- quem instalar recebe 'denied'. \
+          Mude a visibilidade para Public nas settings do pacote." >&2; exit 1; }
+
+      # `latest` só agora, e só a partir do branch padrão.
+      #
+      # Publicar `latest` junto com o build punha a imagem na frente dos hosts
+      # ANTES da verificação: quando o teste do detector falhasse, `latest` já
+      # apontava para a imagem quebrada havia minutos, e um build vermelho não
+      # desfaz uma tag. `imagetools create` copia o manifesto sem reconstruir e
+      # preserva o índice com a proveniência.
+      - name: mover latest, verificada
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker buildx imagetools create \
+            --tag "ghcr.io/${{ github.repository }}:latest" \
+            "ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
+
+      - name: digest
+        run: |
+          {
+            echo "## imagem publicada"
+            echo '```'
+            echo "ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
+            echo '```'
+            echo "O caminho cloud da Plow pede o digest, não a tag:"
+            echo "\`provider=exe:ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
