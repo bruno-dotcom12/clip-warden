@@ -1,0 +1,88 @@
+{
+ "schema": 1,
+ "measured_from": [
+  "01-trabalho-a-fazer-LONGA-youtube-reels.mp4",
+  "01-trabalho-a-fazer-TIKTOK-som-no-app.mp4",
+  "02-nao-quero-viver-assim-LONGA-youtube-reels.mp4",
+  "02-nao-quero-viver-assim-TIKTOK-som-no-app.mp4",
+  "03-protejo-o-meu-povo-LONGA-youtube-reels.mp4",
+  "03-protejo-o-meu-povo-TIKTOK-som-no-app.mp4",
+  "04-nao-e-uma-pegadinha-LONGA-youtube-reels.mp4",
+  "04-nao-e-uma-pegadinha-TIKTOK-som-no-app.mp4",
+  "01-alastor.mp4",
+  "01-corte-terrivelmente-simples-TIKTOK-E-YOUTUBE.mp4",
+  "02-corte-essas-cores-de-novo-TIKTOK-E-YOUTUBE.mp4",
+  "03-edit-diva-de-terapia-TIKTOK.mp4",
+  "03-edit-diva-de-terapia-YOUTUBE.mp4",
+  "04-edit-custe-o-que-custar-TIKTOK.mp4",
+  "04-edit-custe-o-que-custar-YOUTUBE.mp4",
+  "05-edit-mesma-escolha-TIKTOK.mp4",
+  "05-edit-mesma-escolha-YOUTUBE.mp4",
+  "07-eu-falhei-com-o-senhor-TIKTOK.mp4",
+  "08-o-mais-poderoso-pecador-TIKTOK.mp4",
+  "09-eu-matei-o-conquista-TIKTOK.mp4"
+ ],
+ "ranges": {
+  "width": {
+   "min": 1080,
+   "median": 1080,
+   "max": 1080,
+   "n": 20
+  },
+  "height": {
+   "min": 1920,
+   "median": 1920,
+   "max": 1920,
+   "n": 20
+  },
+  "fps": {
+   "min": 30.0,
+   "median": 30.0,
+   "max": 30.0,
+   "n": 20
+  },
+  "duration_s": {
+   "min": 13.0,
+   "median": 25.05,
+   "max": 73.0,
+   "n": 20
+  },
+  "text_width_ratio": {
+   "min": 0.0,
+   "median": 0.977,
+   "max": 1.036,
+   "n": 20
+  },
+  "text_rows": {
+   "min": 0.9,
+   "median": 1.5,
+   "max": 2.1,
+   "n": 20
+  },
+  "caption_lines_max": {
+   "min": 1,
+   "median": 2,
+   "max": 4,
+   "n": 20
+  },
+  "cut_interval_s": {
+   "min": 0.63,
+   "median": 1.23,
+   "max": 4.61,
+   "n": 20
+  },
+  "scale_variation": {
+   "min": 0.1202,
+   "median": 0.5529,
+   "max": 0.8323,
+   "n": 20
+  },
+  "bottom_text": {
+   "values": [
+    false,
+    true
+   ],
+   "n": 20
+  }
+ }
+}

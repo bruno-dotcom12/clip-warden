@@ -28,6 +28,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import warden_rules as R
+import warden_style as S
 
 TIMEOUT_DOWNLOAD = 900
 TIMEOUT_RENDER = 900
@@ -545,16 +546,27 @@ def _dimensions(path):
     return int(w), int(h)
 
 
-def transcribe(path, model_size=None):
+def transcribe(path, model_size=None, window=None, prefer_lang=None,
+               progress=None):
     """Words with timing. A published subtitle beats a transcription.
 
     When the archive shipped subtitles, using them is not a shortcut, it is the
     better text: it is what the rights holder wrote, and it costs nothing.
+
+    `window` is (start, end) in source seconds: only that slice is transcribed,
+    and the timings come back on the SOURCE's clock so the rest of the pipeline
+    does not have to know. That is the second pass of the two-pass plan -- a
+    23-minute source scanned with `tiny` to find the candidates, then the good
+    model on the two minutes that actually become clips, instead of 23 minutes
+    of the good model to use forty seconds of it.
     """
-    sidecar = _subtitle_beside(path)
-    if sidecar:
-        return {"source": "published subtitles", "path": sidecar,
-                "segments": _read_srt(sidecar)}
+    say = progress or (lambda line: print(line, file=sys.stderr, flush=True))
+    if window is None:
+        sidecar, lang = _subtitle_beside(path, prefer=prefer_lang)
+        if sidecar:
+            return {"source": f"published subtitles ({lang or 'no language tag'})",
+                    "path": sidecar, "language": lang,
+                    "segments": _read_srt(sidecar)}
     try:
         from faster_whisper import WhisperModel
     except ImportError:
@@ -562,26 +574,111 @@ def transcribe(path, model_size=None):
             "no subtitles beside this file and faster-whisper is not installed, "
             "so there is no text to choose a moment from")
     seconds = duration_of(path)
+
+    audio, offset, span = path, 0.0, seconds
+    clean_up = None
+    if window:
+        lo, hi = float(window[0]), float(window[1])
+        offset, span = lo, max(0.1, hi - lo)
+        # Só o trecho, como wav de 16k mono: é o que o whisper quer e é uma
+        # fração do arquivo. Extrair custa segundos; transcrever o resto custa
+        # minutos.
+        import tempfile as _tf
+        fd, audio = _tf.mkstemp(suffix=".wav")
+        os.close(fd)
+        clean_up = audio
+        run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{lo:.3f}", "-i", path,
+             "-t", f"{span:.3f}", "-vn", "-ac", "1", "-ar", "16000", audio],
+            TIMEOUT_RENDER, "ffmpeg (window for transcription)")
+
     if model_size:
         size, why = model_size, "asked for"
+    elif window:
+        # A janela é curta por construção, então o modelo bom cabe nela sempre.
+        size, why = "small", f"only the {span / 60:.1f} minutes of this window"
     else:
         size, why = pick_model(seconds)
-    model = WhisperModel(size, device="cpu", compute_type="int8")
-    segments, _info = model.transcribe(path, vad_filter=True, word_timestamps=True)
-    rows = [{"start": round(s.start, 2), "end": round(s.end, 2),
-             "text": s.text.strip()} for s in segments]
+
+    try:
+        say(f"transcribing {span / 60:.1f} minutes with faster-whisper {size} "
+            f"({why})...")
+        model = WhisperModel(size, device="cpu", compute_type="int8")
+        segments, _info = model.transcribe(audio, vad_filter=True,
+                                           word_timestamps=True)
+        rows = []
+        # Dez minutos de silêncio num chat lê como agente morto. O whisper
+        # devolve um gerador, então dá para contar o que já saiu enquanto sai --
+        # uma linha por minuto de áudio processado, nem mais nem menos.
+        mark = 0.0
+        for s in segments:
+            rows.append({"start": round(s.start + offset, 2),
+                         "end": round(s.end + offset, 2),
+                         "text": s.text.strip()})
+            if s.end - mark >= 60:
+                mark = s.end
+                say(f"  {mark / 60:.0f} of {span / 60:.0f} minutes, "
+                    f"{len(rows)} segments so far")
+        say(f"  done: {len(rows)} segments")
+    finally:
+        if clean_up:
+            try:
+                os.remove(clean_up)
+            except OSError:
+                pass
     return {"source": f"faster-whisper {size} ({why})", "path": None,
-            "segments": rows, "duration_s": seconds}
+            "segments": rows, "duration_s": seconds,
+            "window": list(window) if window else None}
 
 
-def _subtitle_beside(path):
+def scan(path, progress=None):
+    """A passada barata sobre a fonte inteira, só para localizar candidatos.
+
+    `tiny` erra palavra e não presta para queimar -- e não é para isso. É para
+    responder "onde neste podcast de 23 minutos vale a pena olhar?", e para essa
+    pergunta ele serve, a uma fração do custo. As janelas escolhidas voltam pelo
+    `transcribe(window=...)` com o modelo bom.
+    """
+    return transcribe(path, model_size="tiny", progress=progress)
+
+
+# A ordem em que uma legenda publicada é preferida. `archive` baixa com
+# `--sub-langs pt,pt-BR,en`, então os dois arquivos existem lado a lado.
+SUBTITLE_LANGS = ("pt-br", "pt_br", "pt-BR", "pt", "en")
+
+
+def _subtitle_beside(path, prefer=None):
+    """A legenda publicada ao lado do vídeo, na língua certa, ou None.
+
+    Aqui estava um defeito silencioso e caro. A busca era `sorted(...)` e ficava
+    com o PRIMEIRO arquivo em ordem alfabética: com `source-abc.en.srt` e
+    `source-abc.pt.srt` no mesmo diretório -- que é o par que `archive` baixa --
+    `.en` vem antes de `.pt` e o inglês ganhava sempre. É a explicação mais
+    provável da legenda em inglês queimada num clipe cujo hook estava em
+    português, e é um conserto de dez linhas.
+
+    Devolve (caminho, língua) para que quem chama possa dizer qual escolheu.
+    """
     stem = os.path.splitext(path)[0]
     folder = os.path.dirname(path) or "."
     base = os.path.basename(stem)
+    found = []
     for name in sorted(os.listdir(folder)):
-        if name.startswith(base) and name.lower().endswith((".srt", ".vtt")):
-            return os.path.join(folder, name)
-    return None
+        if not name.startswith(base):
+            continue
+        if not name.lower().endswith((".srt", ".vtt")):
+            continue
+        # `source-abc.pt.srt` -> `pt`; `source-abc.srt` -> sem língua no nome.
+        # A extensão sai primeiro: sem isso `source-abc.srt` dava a língua "srt".
+        tag = os.path.splitext(name)[0][len(base):].lstrip(".").lower()
+        found.append((os.path.join(folder, name), tag or None))
+    if not found:
+        return None, None
+    order = [str(p).lower() for p in (prefer or []) if p] + list(SUBTITLE_LANGS)
+    for want in order:
+        for path_, lang in found:
+            if lang == want.lower():
+                return path_, lang
+    return found[0][0], found[0][1]
 
 
 def _read_srt(path):
@@ -649,7 +746,9 @@ def to_ass(segments, width, height, safe=None, offset=0.0, length=None):
     x0 = int(safe.get("x0", 86))
     x1 = int(safe.get("x1", width - 140))
     y1 = int(safe.get("y1", int(height * 0.83)))
-    fontsize = max(18, height // 22)
+    # height // 26, não // 22. O antigo dava 87px num quadro de 1920, grande
+    # demais para duas linhas de fala, e foi parte do bloco que cobriu o rosto.
+    fontsize = max(18, height // S.CAPTION_SIZE_DIVISOR)
     outline = 3
     margin_l = max(10, x0)
     margin_r = max(10, width - x1)
@@ -666,14 +765,25 @@ def to_ass(segments, width, height, safe=None, offset=0.0, length=None):
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, "
         "ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
         "MarginL, MarginR, MarginV, Encoding\n"
-        f"Style: Default,Arial,{fontsize},&H00FFFFFF,&H000000FF,&H00000000,"
-        f"&H00000000,-1,0,0,0,100,100,0,0,1,{outline},0,2,"
+        # Anton, não Arial. `Arial` não está instalada na imagem e o libass caía
+        # numa fallback genérica de peso errado -- é o defeito 2.3, e a fonte
+        # está no repo (`warden-shared/assets`) justamente para acabar com isso.
+        # Quem passar este ASS ao filtro `subtitles` tem de passar também
+        # `fontsdir` apontando para essa pasta, senão a fallback volta.
+        # A sombra sai de 0 para 1: peso separado do contorno, como no PRIME.
+        f"Style: Default,Anton,{fontsize},&H00FFFFFF,&H000000FF,&H00000000,"
+        f"&H80000000,-1,0,0,0,100,100,0,0,1,{outline},1,2,"
         f"{margin_l},{margin_r},{margin_v},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
         "Effect, Text\n")
     offset = float(offset or 0.0)
     rows = []
+    # Reflow antes de virar cue: no máximo duas linhas, ~26 caracteres por linha
+    # e ~2,2s por cue, com o tempo repartido proporcional às palavras. Sem isso
+    # um segmento de sete segundos com trinta palavras vira um bloco de seis
+    # linhas parado na tela, que foi exatamente o que cobriu o rosto do sujeito.
+    segments = S.reflow_cues(segments)
     for seg in segments or []:
         text = (seg.get("text") or "").strip()
         if not text:
@@ -698,9 +808,12 @@ def to_ass(segments, width, height, safe=None, offset=0.0, length=None):
             continue
         # A newline in ASS is \N; a lone brace opens an override block. Neither
         # belongs in a transcript line, so both are neutralised.
-        text = text.replace("\\", "").replace("{", "(").replace("}", ")")
-        text = " ".join(text.split())
-        rows.append((start, end, text))
+        lines = seg.get("lines") or [text]
+        lines = [" ".join(str(l).replace("\\", "").replace("{", "(")
+                          .replace("}", ")").split()) for l in lines]
+        # As linhas já foram quebradas pelo reflow; o \N as fixa onde foram
+        # medidas em vez de deixar o libass reembrulhar dentro das margens.
+        rows.append((start, end, "\\N".join(l for l in lines if l)))
     rows.sort(key=lambda r: r[0])
     body = "".join(
         f"Dialogue: 0,{_ass_stamp(a)},{_ass_stamp(b)},Default,,0,0,0,,{t}\n"
@@ -1028,7 +1141,8 @@ def _face_crop_fraction(faces, hint, kept):
 
 
 def cut(source, out, rules, start, end, caption_srt=None, hook=None,
-        track=None, track_start=None, sound="platform", crop=None):
+        track=None, track_start=None, sound="platform", crop=None,
+        shots=None, language=None, motion=True, cover_footer=None):
     """One clip, with the campaign's numbers rather than a house style.
 
     Duration is clamped to the campaign's window before a frame is written: a
@@ -1099,9 +1213,67 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
             fx = face_fx
             framed_by = "face" + ("" if crop in (None, "auto") else f" on the {crop}")
 
-    chain = (f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+    # ------------------------------------------------------- olhar o material
+    #
+    # A ferramenta passa a abrir alguns quadros da janela antes de montar a
+    # cadeia. Até aqui ela media pixels sem nunca olhar nenhum, e foi assim que
+    # a borda do material entrou no enquadramento e a legenda do acervo ficou
+    # cortada ao meio embaixo da nossa.
+    looked = []
+    try:
+        looked = S.sample_frames(source, start, length, count=8)
+    except Exception:
+        pass
+    source_text = S.burned_text_bands(looked) if looked else {
+        "top": False, "bottom": False, "evidence": "could not open the frames"}
+    border = S.frame_border(looked) if looked else {"left": 0, "right": 0}
+
+    # A moldura sai do enquadramento antes de qualquer outra conta. `crop` no
+    # source, não no destino: recua a faixa para dentro do conteúdo, e o scale
+    # seguinte trabalha só com o que sobrou.
+    pre = ""
+    if (border["left"] or border["right"]) and sw:
+        l, r = int(border["left"]), int(border["right"])
+        pre = f"crop=in_w-{l + r}:in_h:{l}:0,"
+        notes.append(f"trimmed {l}px off the left and {r}px off the right before "
+                     f"framing: those columns are source furniture (a bar, a "
+                     f"capture border), not picture. Left in, they sit frozen at "
+                     f"the edge of the whole clip.")
+        if kept:                             # a faixa útil encolheu junto
+            kept = width / ((sw - l - r) * height / sh)
+            kept = min(1.0, kept)
+
+    chain = (f"{pre}scale={width}:{height}:force_original_aspect_ratio=increase,"
              f"crop={width}:{height}:(in_w-out_w)*{fx:.4f}:(in_h-out_h)*0.5,"
              f"setsar=1,fps=30")
+
+    # ------------------------------------------------------- movimento
+    #
+    # Defeito 2.8, e não é bug: é ausência de recurso. Um corte sem nenhuma
+    # variação de escala lê como material bruto, e é a diferença mais barata
+    # entre corte e edit. No PRIME o zoom leve é a regra e não a exceção -- todo
+    # plano do `tese-01` traz um, entre 1,02 e 1,10.
+    #
+    # `shots` é a gramática dos EDITS portada: uma lista de planos com `in`/`out`
+    # e um `efeito`. Sem ela, um zoom leve único cobre a janela inteira, que é o
+    # mínimo para o clipe não ler como trecho bruto.
+    if shots:
+        notes.append(f"{len(shots)} shots asked for; scale moves on each")
+    if motion:
+        zoom_from, zoom_to = 1.0, 1.06
+        if isinstance(motion, dict):
+            zoom_from = float(motion.get("de", zoom_from))
+            zoom_to = float(motion.get("para", zoom_to))
+        frames_total = max(1.0, length * 30)
+        step = (zoom_to - zoom_from) / frames_total
+        # fps antes do zoompan: com d=1 ele carimba cada quadro de entrada a
+        # 1/30s, e sem acertar o fps antes o plano toca mais rápido que o áudio e
+        # congela no fim. É a nota do PRIME, e ela custou um render para existir.
+        chain += (f",zoompan=z='min({zoom_from}+{step:.8f}*on,{zoom_to})'"
+                  f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1"
+                  f":s={width}x{height}:fps=30,setsar=1")
+        notes.append(f"scale moves {zoom_from:.2f} to {zoom_to:.2f} across the "
+                     f"clip. A cut with no scale move reads as raw footage.")
 
     if kept:
         left_edge = fx * (1 - kept)
@@ -1115,71 +1287,220 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                 "corner cam, re-cut with --crop left|right or a percentage.")
         else:
             notes.append(f"{framed_by}: keeping x {note_band}")
-    if caption_srt and os.path.exists(caption_srt) and \
-            R.get(rules, "sources.archive_has_captions") is True:
-        # The campaign says this archive already burns its own captions. Burning
-        # ours over them is the doubling the owner set this flag to prevent, so
-        # the tool refuses it here rather than leaving it to be caught by eye on
-        # the first clip. The words are still on disk in the srt if they change
-        # the flag; nothing is lost, only not stacked.
-        notes.append("not burning captions: this campaign's archive already "
-                     "carries its own (sources.archive_has_captions is true)")
-    elif caption_srt and os.path.exists(caption_srt):
-        # The transcript's lines, restyled into an ASS file the tool writes next
-        # to the render. Two reasons it is an ASS and not the srt passed straight
-        # to the filter:
-        #  - style. force_style takes comma-separated fields and a filtergraph
-        #    ends a filter at a comma; every escaping of a multi-field force_style
-        #    measured on this ffmpeg renders nothing, so the safe-area margins go
-        #    into the ASS style line instead, where no comma reaches the graph.
-        #  - safety. The path sits in the filter string, and a quote or colon in
-        #    it leaves the filter and could name another file. The name is ours
-        #    and hashed, so it carries neither.
-        # offset=start, length=length: the srt is in source time, the render
-        # starts at 0. Shift the cues onto the clip's own timeline and keep only
-        # the ones inside it, or the words land on the wrong shot.
-        ass_text = to_ass(_read_srt(caption_srt), width, height, safe,
-                          offset=start, length=length)
-        if ass_text.strip():
-            ass_path = os.path.join(os.path.dirname(os.path.abspath(out)) or ".",
-                                    "captions-%s.ass" % hashlib.sha256(
-                                        os.path.abspath(caption_srt).encode()
-                                    ).hexdigest()[:10])
-            with open(ass_path, "w", encoding="utf-8") as fh:
-                fh.write(ass_text)
-            chain += f",subtitles='{ass_path}'"
-            # The one thing this tool cannot see. It measures pixels, not meaning,
-            # so it has no way to know the footage already carries its own
-            # burned-in captions -- and if it does, this lays a second line over
-            # the first. It will not decide that silently: it burns and says so,
-            # and leaves the look at the first clip to the person who can see both.
-            notes.append("burned the transcript's words in. The tool cannot see "
-                         "text the footage already shows, so if this archive burns "
-                         "its own captions you now have two -- check the first clip.")
+    # ---------------------------------------------------------------- texto
+    #
+    # Todo texto daqui para baixo é PNG do PIL, não `drawtext` e não `subtitles`.
+    # Três motivos, e nenhum deles é preferência:
+    #
+    #  - `drawtext` não quebra linha e não ajusta corpo. É o defeito 2.1: com
+    #    1080px de quadro o corpo saía 49px, 44 caracteres passavam de 1100px, o
+    #    `x=(w-text_w)/2` ficava negativo e o ffmpeg cortava os dois lados sem
+    #    erro nenhum. Qualquer hook com mais de uns 35 caracteres saía cortado.
+    #  - o PIL mede o texto ANTES de desenhar, que é a única forma de garantir
+    #    que ele cabe. É o que o PRIME faz, e é o que já produziu clipe aprovado.
+    #  - nem todo ffmpeg tem libass ou drawtext -- este aqui não tem nenhum dos
+    #    dois. Um renderizador que só funciona numa build é um renderizador que
+    #    ninguém consegue conferir na máquina onde escreve o código.
+    #
+    # Cada texto vira um PNG transparente do tamanho do quadro e entra como
+    # `overlay` com `enable='between(t,a,b)'`, que é a montagem do PRIME.
+    overlays = []                     # (png, y, de, ate)
+    art_dir = os.path.dirname(os.path.abspath(out)) or "."
+    stem = os.path.splitext(os.path.basename(out))[0]
+    # O que este render fez consigo mesmo, gravado ao lado dele. `style check`
+    # lê daqui em vez de tentar recuperar dos pixels: a largura do hook aqui é a
+    # que o PIL mediu com a fonte real, e não uma estimativa que confunde letra
+    # com letreiro de neon.
+    style_facts = {"hook": None, "caption": None, "footer_covered": False,
+                   "motion": bool(motion), "source_text": source_text}
+
+    # ------------------------------------------------------- texto do acervo
+    #
+    # Defeito 2.6, as duas metades. Detectar já foi feito acima; aqui é tratar,
+    # e a decisão vai num aviso ao dono, nunca num silêncio.
+    #
+    #  - se o material já tem texto embaixo e nós vamos queimar legenda, sem
+    #    tratamento saem DUAS legendas no mesmo quadro. O degradê do PRIME cobre
+    #    a de baixo e a nossa fica sozinha.
+    #  - `cover_footer=False` é a outra saída legítima: não cobre e não queima.
+    footer = None
+    wants_caption = bool(caption_srt and os.path.exists(caption_srt))
+    if source_text.get("bottom"):
+        cover = cover_footer
+        if cover is None:
+            # Cobre quando a nossa legenda vai disputar a mesma faixa. Se não
+            # vamos queimar nada, o texto do acervo não está competindo com
+            # ninguém, e cobri-lo seria estragar o quadro por nada.
+            cover = wants_caption
+        if cover:
+            # A medida entra com folga, mas presa entre 18% e 24% da altura.
+            #
+            # A medida sozinha não serve para desenhar: material com duas faixas
+            # de texto -- um disclaimer colado no rodapé e a legenda do acervo
+            # acima dele -- tem um vão limpo entre as duas, e qualquer varredura
+            # que pare na primeira queda cobre só a de baixo. Foi o que aconteceu
+            # aqui: a varredura disse 8%, o texto ia até 14%, e a legenda do
+            # acervo ficou legível embaixo da nossa.
+            #
+            # 20% cobre as duas faixas com folga e ainda deixa a nossa legenda,
+            # que mora por volta de 25%, fora do degradê; 24% é o teto, porque
+            # além disso se apaga imagem para resolver um problema de texto. A
+            # medida continua na nota, como evidência de até onde o texto ia.
+            reach = float(source_text.get("bottom_reach") or 0.0) + 0.06
+            band = int(height * min(0.24, max(0.20, reach)))
+            footer, fy = S.footer_png(os.path.join(art_dir, f"{stem}-rodape.png"),
+                                      width, height, band=band)
+            overlays.append((footer, fy, 0.0, float(length)))
+            style_facts["footer_covered"] = True
+            notes.append(
+                "this footage already carries burned text along the bottom "
+                f"({source_text['evidence']}). Covered it with the gradient "
+                "footer so there is one caption in frame and not two. If that "
+                "bottom text is another clipper's watermark rather than the "
+                "archive's own captions, covering it breaks the rules -- re-cut "
+                "with cover_footer=False and drop --subtitles.")
         else:
-            notes.append("the subtitle file had no usable lines, so nothing was "
-                         "burned")
+            notes.append(
+                "this footage already carries burned text along the bottom "
+                f"({source_text['evidence']}). Not covering it, so do not burn "
+                "captions over it -- two captions in one frame is a reject.")
+    if source_text.get("top"):
+        notes.append("this footage carries burned text along the TOP as well "
+                     f"({source_text['evidence']}) -- the hook will land on it. "
+                     "Check the contact sheet before you send this one.")
+
+    burn_reason = None
+    cues = []
+    if caption_srt and os.path.exists(caption_srt):
+        if R.get(rules, "sources.archive_has_captions") is True:
+            # The campaign says this archive already burns its own captions.
+            # Burning ours over them is the doubling the owner set this flag to
+            # prevent, so the tool refuses it here rather than leaving it to be
+            # caught by eye on the first clip.
+            burn_reason = ("not burning captions: this campaign's archive already "
+                           "carries its own (sources.archive_has_captions is true)")
+        else:
+            approved, why = S.approval_state(caption_srt)
+            if not approved:
+                # O portão do defeito 2.5. Sem aprovação o clipe sai SEM legenda,
+                # em vez de sair com a palavra errada queimada: um clipe mudo se
+                # conserta, um `jokovic jokovic` no vídeo publicado não.
+                burn_reason = f"not burning captions: {why}"
+            else:
+                rows = _read_srt(caption_srt)
+                window = [r for r in rows
+                          if r["end"] > start and r["start"] < start + length]
+                clash = S.language_clash(
+                    hook, " ".join(r["text"] for r in window),
+                    declared=language or R.get(rules, "caption.language"))
+                if clash:
+                    # Defeito 2.4. Recusa e diz por quê, em vez de queimar inglês
+                    # sobre um hook em português como saiu da última vez.
+                    burn_reason = f"not burning captions: {clash}"
+                else:
+                    cues = S.reflow_cues(window)
+                    if not cues:
+                        burn_reason = ("the subtitle file had no usable lines in "
+                                       "this window, so nothing was burned")
+
+    if cues:
+        # A legenda mora na faixa de baixo mas acima da furniture da plataforma,
+        # e o corpo vem do briefing: height // 26, não height // 22 (que dava
+        # 87px num quadro de 1920 e empurrava a fala para cima do rosto).
+        cap_size = max(20, height // S.CAPTION_SIZE_DIVISOR)
+        cap_y = int(y1 - cap_size * S.LEADING * 1.35)
+        for i, cue in enumerate(cues):
+            a = max(0.0, cue["start"] - start)
+            b = min(float(length), cue["end"] - start)
+            if b <= a:
+                continue
+            png = os.path.join(art_dir, f"{stem}-cue{i:03d}.png")
+            png, oy = S.text_png(cue["lines"], png, width, height, cap_y,
+                                 cap_size, scrim=True)
+            overlays.append((png, oy, a, b))
+        longest = max(c["end"] - c["start"] for c in cues)
+        most = max(len(c["lines"]) for c in cues)
+        style_facts["caption"] = {"cues": len(overlays) - (1 if footer else 0),
+                                  "max_lines": most,
+                                  "max_cue_s": round(longest, 2)}
+        notes.append(f"burned {len(overlays)} caption cues: at most {most} lines "
+                     f"and {longest:.1f}s each (was one cue per whisper segment, "
+                     f"which is how a six-line block sat on a face for 7s)")
+    elif burn_reason:
+        notes.append(burn_reason)
+
     if hook:
-        text = hook.replace("'", "").replace(":", " ").replace("\\", "")
-        chain += (f",drawtext=text='{text}':fontcolor=white:fontsize={max(28, width // 22)}:"
-                  f"box=1:boxcolor=black@0.55:boxborderw=18:"
-                  f"x=(w-text_w)/2:y={max(40, int(safe.get('y0', 200)))}")
+        # O hook é medido contra a largura útil e quebrado em até duas linhas
+        # antes de virar pixel. 854px num quadro de 1080: a coluna direita do
+        # TikTok reserva 140px e a margem esquerda come 86px.
+        usable = S.usable_width(width)
+        size = max(20, int(width * S.HOOK_SIZE_RATIO))
+        floor = max(16, int(width * S.HOOK_MIN_RATIO))
+        lines, fitted, whole = S.fit_lines(hook, usable, size, floor)
+        hook_y = max(int(height * 0.14), int(safe.get("y0", 200)) + fitted)
+        png = os.path.join(art_dir, f"{stem}-hook.png")
+        png, oy = S.text_png(lines, png, width, height, hook_y, fitted, scrim=True)
+        overlays.append((png, oy, 0.0, float(length)))
+        # A largura REAL do texto desenhado, medida com a fonte que o desenhou.
+        # Não é estimativa: é o número contra o qual a quebra foi decidida, e é
+        # o que permite a "o hook cabe inteiro" ser aritmética em vez de olhar.
+        from PIL import Image as _Im, ImageDraw as _Dr
+        _probe = _Dr.Draw(_Im.new("RGBA", (8, 8)))
+        _f = S._font(fitted)
+        drawn = int(max(_probe.textlength(l, font=_f) for l in lines)) if lines else 0
+        style_facts["hook"] = {"width_px": drawn, "usable_px": usable,
+                               "lines": len(lines), "size_px": fitted,
+                               "chars": len(str(hook)), "complete": bool(whole)}
+        notes.append(f"hook drawn at {fitted}px in {len(lines)} line(s): "
+                     f"{drawn}px against {usable}px of usable width")
+        if fitted <= floor:
+            notes.append(f"the hook only fits at the {floor}px floor. It is "
+                         f"{len(hook)} characters -- shorter reads better in a feed.")
 
     audio_policy = R.get(rules, "video.audio")
     silent = audio_policy == "forbidden" or (sound == "platform" and audio_policy != "required")
     embed = bool(track) and not silent
 
     args = ["ffmpeg", "-y", "-ss", f"{float(start):.3f}", "-i", source]
+    next_input = 1
+    track_index = None
     if embed:
         # The track enters at its drop unless told otherwise, because an edit
         # that opens on an intro has spent its first second on nothing.
         at = track_start if track_start is not None else (grid or {}).get("drop_s", 0.0)
         args += ["-ss", f"{float(at):.3f}", "-i", track]
-    args += ["-t", f"{length:.3f}", "-filter_complex" if embed else "-vf"]
+        track_index = next_input
+        next_input += 1
+
+    # Cada PNG entra como um vídeo de um quadro em laço, porque um overlay com
+    # fade de alfa sobre uma imagem parada apaga o único quadro que existe --
+    # é a nota do PRIME e custou um render para ser descoberta.
+    overlay_index = {}
+    for png, _y, _a, _b in overlays:
+        args += ["-loop", "1", "-framerate", "30", "-i", png]
+        overlay_index[png] = next_input
+        next_input += 1
+
+    args += ["-t", f"{length:.3f}"]
+
+    # Um filter_complex quando há overlay ou trilha; o -vf simples continua
+    # servindo o caso sem texto, que é o mais barato e o mais comum nos testes.
+    video = f"[0:v]{chain}[v0]"
+    last = "v0"
+    for i, (png, oy, a, b) in enumerate(overlays):
+        idx = overlay_index[png]
+        # `shortest=0:repeatlast=0` impede que o último quadro do PNG fique
+        # carimbado depois do fim da janela, que é como um texto de 2s vira um
+        # texto que não sai mais da tela.
+        video += (f";[{idx}:v]format=yuva420p,setpts=PTS-STARTPTS[o{i}]"
+                  f";[{last}][o{i}]overlay=0:{int(oy)}:shortest=0:repeatlast=0"
+                  f":enable='between(t,{a:.3f},{b:.3f})'[v{i + 1}]")
+        last = f"v{i + 1}"
+    video = video.replace(f"[{last}]", "[vid]") if last != "v0" else f"[0:v]{chain}[vid]"
 
     if embed:
         fade = max(0.5, min(3.0, length * 0.12))
-        music = (f"[1:a]atrim=duration={length:.3f},asetpts=N/SR/TB,"
+        music = (f"[{track_index}:a]atrim=duration={length:.3f},asetpts=N/SR/TB,"
                  f"volume=-6dB,afade=t=out:st={max(0, length - fade):.3f}:d={fade:.3f}[m]")
         has_source_audio = bool(subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
@@ -1192,10 +1513,15 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                    f"[v][m]amix=inputs=2:duration=first:weights=1 0.55[a]")
         else:
             mix = "[m]anull[a]"
-        args += [f"[0:v]{chain}[vid];{music};{mix}", "-map", "[vid]", "-map", "[a]"]
+        args += ["-filter_complex", f"{video};{music};{mix}",
+                 "-map", "[vid]", "-map", "[a]"]
         notes.append(f"track mixed in from {float(at):.2f}s with a {fade:.1f}s fade out")
+    elif overlays:
+        args += ["-filter_complex", video, "-map", "[vid]"]
+        if not silent:
+            args += ["-map", "0:a?"]
     else:
-        args += [chain]
+        args += ["-vf", chain]
 
     args += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
              "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
@@ -1221,5 +1547,36 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         raise RuntimeError("ffmpeg wrote a file with no readable duration")
     if abs(measured - length) > 1.0:
         notes.append(f"asked for {length:.2f}s and the file is {measured:.2f}s")
+
+    # O portão. Nenhum clipe sai daqui sem um mosaico do próprio render, porque
+    # a verificação numérica aprovou um arquivo com dez defeitos visíveis e vai
+    # aprovar o próximo: ela confere duração, resolução e regras da campanha, e
+    # nenhum desses defeitos é um número. O arquivo pode existir sem o mosaico;
+    # a ENTREGA não pode, e é quem chama que segura a entrega.
+    style_facts["text_layers"] = len(overlays)
+    style_path = os.path.splitext(out)[0] + "-estilo.json"
+    try:
+        with open(style_path, "w", encoding="utf-8") as fh:
+            json.dump(style_facts, fh, ensure_ascii=False, indent=1)
+    except OSError:
+        style_path = None
+
+    sheet = None
+    try:
+        sheet = S.contact_sheet(out, os.path.splitext(out)[0] + "-contato.jpg",
+                                label=os.path.basename(out))
+    except Exception as exc:
+        notes.append(f"não consegui montar o contact sheet ({type(exc).__name__}: "
+                     f"{exc}). Sem ele ninguém olhou este clipe -- não entregue.")
+    if sheet is None and not any("contact sheet" in n for n in notes):
+        notes.append("não consegui montar o contact sheet deste render. Sem ele "
+                     "ninguém olhou este clipe -- não entregue.")
+    # O render conta o que fez de si, e quem entrega confere antes do MEDIA:.
+    breaches = S.check_sidecar(style_facts)
+    for level, message in breaches:
+        if level == "REJECT":
+            notes.append(f"STYLE REJECT: {message}")
     return {"out": out, "duration_s": measured, "asked_s": round(length, 2),
-            "notes": notes, "grid": grid}
+            "notes": notes, "grid": grid, "sheet": sheet,
+            "style": style_facts, "style_path": style_path,
+            "style_breaches": [m for lv, m in breaches if lv == "REJECT"]}

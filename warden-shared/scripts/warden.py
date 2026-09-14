@@ -638,8 +638,21 @@ def cmd_archive(args):
 def cmd_transcribe(args):
     target = safe_out(args.out or os.path.splitext(args.file)[0] + ".transcript.json",
                       "transcript")
+    window = None
+    if args.window:
+        try:
+            a, b = args.window.split("-")
+            window = (float(a), float(b))
+        except ValueError:
+            die("--window is two seconds, as 120-240")
     try:
-        result = _media().transcribe(args.file, model_size=args.model)
+        result = _media().transcribe(
+            args.file,
+            # `--scan` é a primeira passada: `tiny` na fonte inteira, só para
+            # achar os candidatos. Transcrever 23 minutos com o modelo bom para
+            # aproveitar 40 segundos é a conta que fazia isto levar 15 minutos.
+            model_size="tiny" if args.scan else args.model,
+            window=window, prefer_lang=[args.lang] if args.lang else None)
     except Exception as exc:
         die(f"{type(exc).__name__}: {exc}", code=1)
     with open(target, "w", encoding="utf-8") as fh:
@@ -650,6 +663,13 @@ def cmd_transcribe(args):
     # the moment; this is for putting the words on the screen. Only the usable
     # lines survive to_srt, so a transcript that was all silence writes no file
     # and says so rather than leaving an empty one that looks like a caption.
+    if args.scan:
+        # A passada barata não escreve SRT de propósito. `tiny` erra palavra, e
+        # um arquivo que se parece com legenda é um arquivo que alguém queima.
+        print("  this was the scan pass: good enough to choose a window, not to "
+              "put on screen. Re-run with --window <a>-<b> for the words you "
+              "will actually burn.", file=sys.stderr)
+        return 0
     srt_text = _media().to_srt(result["segments"])
     if srt_text.strip():
         srt_path = safe_out(os.path.splitext(target)[0].replace(".transcript", "")
@@ -657,6 +677,9 @@ def cmd_transcribe(args):
         with open(srt_path, "w", encoding="utf-8") as fh:
             fh.write(srt_text)
         print(f"{srt_path}  (subtitles to burn with --subtitles, if you want them)")
+        print("  nothing burns from it until you have read it: "
+              f"`warden captions review {srt_path} --start <s> --end <s>`",
+              file=sys.stderr)
     else:
         print("  no usable lines for a caption track: nothing to burn",
               file=sys.stderr)
@@ -725,7 +748,75 @@ def clip_out(path):
     return safe_out(path, "clip")
 
 
+def deliver(result, rules, campaign, ledger):
+    """Um render pronto vira entrega, ou não vira e diz por quê.
+
+    Três portões, nesta ordem, porque é a ordem em que uma entrega se perde: as
+    regras da campanha (que é aritmética), o contact sheet (que é a única coisa
+    que olha a imagem) e só então a linha que anexa o arquivo. O `MEDIA:` não é
+    impresso sem o mosaico: enquanto ele não existir, ninguém olhou este clipe, e
+    foi assim que um arquivo com dez defeitos visíveis foi relatado como aprovado.
+
+    Devolve 0 quando a entrega saiu, 1 quando não saiu.
+    """
+    for note in result["notes"]:
+        print(f"  note: {note}", file=sys.stderr)
+    media = probe(result["out"])
+    findings = check(rules, media, None, ledger)
+    blocking = [m for level, m in findings if level == REPROVA]
+    print(result["out"])
+    if blocking:
+        print("this render does not clear the campaign yet:", file=sys.stderr)
+        for message in blocking:
+            print(f"  REJECT {message}", file=sys.stderr)
+        return 1
+    # O que o próprio render registrou sobre si: largura do hook contra a área
+    # útil, linhas por cue, duração da cue mais longa. São exatos -- medidos por
+    # quem desenhou -- então uma falha aqui é a definição de pronto quebrada, e
+    # não uma estimativa discutível.
+    breaches = result.get("style_breaches") or []
+    if breaches:
+        print("this render breaks the style rules, so it is not delivered:",
+              file=sys.stderr)
+        for message in breaches:
+            print(f"  REJECT {message}", file=sys.stderr)
+        print("  re-cut it: a shorter hook, a different window, or no "
+              "--subtitles.", file=sys.stderr)
+        return 1
+    sheet = result.get("sheet")
+    if not sheet or not os.path.isfile(sheet):
+        print("no contact sheet was written for this render, so nothing has "
+              "looked at it. Not delivering: a clip nobody saw is how a file "
+              "with a cropped hook and a six-line caption got reported as "
+              "passing.", file=sys.stderr)
+        return 1
+    # Impresso antes do MEDIA: de propósito. A ordem na tela é a ordem do
+    # trabalho -- abrir a imagem, conferir os cinco itens, e só então entregar.
+    print(f"SHEET:{sheet}")
+    print("open that image and check all five before you send the clip:",
+          file=sys.stderr)
+    import warden_style as S
+    for item in S.CHECKLIST:
+        print(f"  [ ] {item}", file=sys.stderr)
+    print("  any one of them failing rejects the clip, even with every check "
+          "green.", file=sys.stderr)
+    # A linha que realmente entrega o arquivo. Impressa pela ferramenta e não
+    # composta pelo modelo, pelo mesmo motivo que todo número aqui vem da
+    # ferramenta: um caminho digitado de memória é um caminho que não existe, e a
+    # falha é silenciosa.
+    print(f"MEDIA:{result['out']}")
+    return 0
+
+
 def cmd_cut(args):
+    if getattr(args, "plan", None):
+        return cmd_cut_plan(args)
+    missing = [name for name in ("source", "campaign", "start", "end", "out")
+               if getattr(args, name, None) is None]
+    if missing:
+        die("cut needs " + ", ".join("--" + m if m != "source" else "a source"
+                                     for m in missing)
+            + " -- or a --plan that carries them for a whole batch")
     rules = load_campaign(args.campaign)
     # Sound is decided before a frame is written, and never by default. If the
     # campaign settles it, use that; otherwise it is the owner's stored choice;
@@ -743,26 +834,256 @@ def cmd_cut(args):
                               args.start, args.end,
                               caption_srt=args.subtitles, hook=args.hook,
                               track=args.track, track_start=args.track_start,
-                              sound=sound, crop=args.crop)
+                              sound=sound, crop=args.crop,
+                              motion=args.motion, cover_footer=args.cover_footer)
     except Exception as exc:
         die(f"{type(exc).__name__}: {exc}", code=1)
-    for note in result["notes"]:
-        print(f"  note: {note}", file=sys.stderr)
-    media = probe(result["out"])
-    findings = check(rules, media, None, ledger_for(args.campaign))
-    blocking = [m for level, m in findings if level == REPROVA]
-    print(result["out"])
-    if blocking:
-        print("this render does not clear the campaign yet:", file=sys.stderr)
-        for message in blocking:
-            print(f"  REJECT {message}", file=sys.stderr)
+    return deliver(result, rules, args.campaign, ledger_for(args.campaign))
+
+
+def specs_path():
+    """Onde a faixa medida do corpus mora, dentro do repo e versionada.
+
+    No repo e não no estado do agente de propósito: é uma spec do projeto, ela
+    entra num commit e um golden test quebra quando alguém a muda sem querer.
+    """
+    return os.path.join(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))), "SPECS",
+        "estilo-aprovado.json")
+
+
+def cmd_style(args):
+    """Medir o que já ficou bom, e reprovar o que sai da faixa.
+
+    "Ficou feio" não é um erro que o agente vê sozinho. Um número fora da faixa
+    dos aprovados é. Isto não treina modelo nenhum: mede clipes que o dono já
+    aprovou, guarda as faixas, e compara o render novo com elas.
+    """
+    import warden_style as S
+    if args.action == "extract":
+        alvos = []
+        for alvo in args.files:
+            if os.path.isdir(alvo):
+                alvos += [os.path.join(alvo, f) for f in sorted(os.listdir(alvo))
+                          if f.lower().endswith((".mp4", ".mov", ".m4v"))]
+            elif os.path.isfile(alvo):
+                alvos.append(alvo)
+        if not alvos:
+            die("no clip to measure in what you passed", code=1)
+        medidas = []
+        for path in alvos:
+            print(f"# measuring {os.path.basename(path)}", file=sys.stderr)
+            try:
+                m = S.measure(path)
+            except Exception as exc:
+                print(f"  skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
+                continue
+            m["file"] = os.path.basename(path)
+            medidas.append(m)
+        if not medidas:
+            die("nothing could be measured", code=1)
+        if args.consolidate:
+            spec = {"schema": 1,
+                    "measured_from": [m["file"] for m in medidas],
+                    "ranges": S.consolidate(medidas)}
+            target = args.out or specs_path()
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "w", encoding="utf-8") as fh:
+                json.dump(spec, fh, ensure_ascii=False, indent=1)
+            print(target)
+            print(json.dumps(spec["ranges"], ensure_ascii=False, indent=1))
+        else:
+            print(json.dumps(medidas, ensure_ascii=False, indent=1))
+        return 0
+
+    if args.action == "check":
+        spec_file = args.spec or specs_path()
+        if not os.path.isfile(spec_file):
+            die(f"no measured spec at {spec_file}. Build one first with "
+                f"`warden style extract <approved clips> --consolidate`.", code=2)
+        with open(spec_file, encoding="utf-8") as fh:
+            spec = json.load(fh)
+        medida = S.measure(args.files[0])
+        achados = S.check_against(medida, spec.get("ranges", {}))
+        # Se o `cut` escreveu o que fez ao lado do arquivo, esses números valem
+        # mais que qualquer coisa recuperada dos pixels: a largura do hook ali é
+        # a que o PIL mediu com a fonte real antes de desenhar.
+        lado = os.path.splitext(args.files[0])[0] + "-estilo.json"
+        if os.path.isfile(lado):
+            try:
+                with open(lado, encoding="utf-8") as fh:
+                    achados = S.check_sidecar(json.load(fh)) + achados
+            except Exception as exc:
+                print(f"  (could not read {lado}: {type(exc).__name__})",
+                      file=sys.stderr)
+        else:
+            print("  (no -estilo.json beside this file, so the text checks are "
+                  "the approximate pixel ones. A clip this tool rendered has "
+                  "one.)", file=sys.stderr)
+        print(json.dumps(medida, ensure_ascii=False, indent=1))
+        piores = [m for lv, m in achados if lv == "REJECT"]
+        rotulo = {"REJECT": "REJECT", "ok": "ok    ", "note": "      "}
+        for lv, m in achados:
+            print(f"  {rotulo[lv]} {m}", file=sys.stderr)
+        if piores:
+            print(f"\nthis render is outside the approved range on "
+                  f"{len(piores)} count(s). Look at the contact sheet: a number "
+                  "out of band is usually visible.", file=sys.stderr)
+            return 1
+        print("\ninside the approved range on every enforced metric. That is not "
+              "the same as good -- it is the same as not obviously broken. The "
+              "contact sheet is still the gate.", file=sys.stderr)
+        return 0
+    die(f"unknown style action {args.action!r}")
+
+
+def cmd_captions(args):
+    """As linhas que vão para a tela, para alguém ler antes de queimar.
+
+    O comentário do `to_srt` já dizia que uma palavra errada queimada é pior que
+    legenda nenhuma e que essa checagem fica com a pessoa. Só que nada obrigava
+    essa pessoa a existir, e saiu um clipe com `jokovic jokovic` e uma frase que
+    o sujeito não disse. Este comando é essa pessoa: imprime as linhas da janela
+    do corte, e `--approve` assina o conteúdo do arquivo.
+    """
+    import warden_style as S
+    if args.action == "review":
+        if not os.path.isfile(args.srt):
+            die(f"there is no subtitle file at {args.srt}", code=1)
+        rows = _media()._read_srt(args.srt)
+        lo = args.start if args.start is not None else 0.0
+        hi = args.end if args.end is not None else float("inf")
+        window = [r for r in rows if r["end"] > lo and r["start"] < hi]
+        if not window:
+            die(f"no caption line falls between {lo} and {hi}s", code=1)
+        approved, why = S.approval_state(args.srt)
+        print(f"# {len(window)} lines will burn between {lo:.1f}s and "
+              f"{'end' if hi == float('inf') else f'{hi:.1f}s'} "
+              f"({'approved' if approved else 'NOT approved'})")
+        print("# read every one against the video. Whisper mishears, and the "
+              "viewer finds out before you do.")
+        for r in window:
+            print(f"[{r['start']:7.2f} -> {r['end']:7.2f}]  {r['text']}")
+        # As cues como vão realmente aparecer, que não é como estão no SRT: o
+        # reflow parte um segmento longo em pedaços de duas linhas.
+        cues = S.reflow_cues(window)
+        longest = max((c["end"] - c["start"] for c in cues), default=0)
+        most = max((len(c["lines"]) for c in cues), default=0)
+        print(f"\n# on screen that becomes {len(cues)} cues, at most {most} "
+              f"lines and {longest:.1f}s each.")
+        if args.approve:
+            path = S.write_approval(args.srt)
+            print(f"\napproved: {path}")
+            print("that approval is of the file's CONTENT -- edit the srt and it "
+                  "stops counting, which is the point.")
+            return 0
+        if not approved:
+            print("\nnothing is approved yet, so `warden cut --subtitles` will "
+                  "render this clip WITHOUT captions rather than burn a word "
+                  "nobody checked. Re-run with --approve when the lines are "
+                  "right.", file=sys.stderr)
+            return 1
+        print(f"\n{why}")
+        return 0
+    die(f"unknown captions action {args.action!r}")
+
+
+def cmd_cut_plan(args):
+    """Um lote de N janelas, com ponto de controle por clipe e uma conta no fim.
+
+    O contrato de quantidade é a correção do defeito 2.9: pediram dois cortes e
+    chegou um, e nada acusou a falta porque não havia comando de lote nem número
+    pedido em lugar nenhum. Aqui o número pedido é o tamanho de `clips`, cada
+    clipe é entregue assim que existe -- não o lote no fim -- e o comando só sai
+    com 0 se todos saíram. Um que falhe é nomeado com o motivo, e o lote não é
+    declarado pronto.
+
+    O plano é um JSON:
+
+      {"campaign": "<id>", "source": "<arquivo>", "sound": "platform",
+       "clips": [{"out": "corte-01.mp4", "start": 12.0, "end": 32.0,
+                  "hook": "...", "_": "por que este trecho"}]}
+
+    O campo `_` de cada clipe é a função narrativa daquele corte, na gramática
+    dos EDITS do PRIME: escrever por que o trecho é um clipe antes de renderizar
+    é o que separa uma janela escolhida de vinte segundos de material bruto.
+    """
+    try:
+        with open(args.plan, encoding="utf-8") as fh:
+            plan = json.load(fh)
+    except Exception as exc:
+        die(f"could not read the plan {args.plan}: {type(exc).__name__}: {exc}")
+    if not isinstance(plan, dict) or not isinstance(plan.get("clips"), list):
+        die(f"{args.plan} is not a cut plan: it needs a 'clips' list")
+    clips = plan["clips"]
+    if not clips:
+        die(f"{args.plan} asks for no clips")
+
+    cid = args.campaign or plan.get("campaign")
+    if not cid:
+        die("the plan has no 'campaign' and --campaign was not passed")
+    rules = load_campaign(cid)
+    source = args.source or plan.get("source")
+    if not source:
+        die("the plan has no 'source' and none was passed")
+    sound = (args.sound or plan.get("sound")
+             or P.effective(P.load(state_dir()), rules)[0].get("sound"))
+    if not sound:
+        die("no sound decision for this batch: neither the campaign, the plan "
+            "nor the owner has chosen. Ask, then set it in the plan's 'sound' "
+            "or with `warden prefs set --key sound --value embedded|platform`.",
+            code=1)
+
+    asked = len(clips)
+    print(f"# {asked} clips asked for. Each one is delivered as it exists, not "
+          f"the batch at the end.", file=sys.stderr)
+    delivered, failed = [], []
+    ledger = ledger_for(cid)
+    for i, spec in enumerate(clips, 1):
+        if not isinstance(spec, dict):
+            failed.append((f"clip {i}", "not an object in the plan"))
+            continue
+        name = spec.get("out") or f"clip-{i:02d}.mp4"
+        why = spec.get("_")
+        print(f"\n# clip {i} of {asked}: {name}"
+              + (f"  -- {why}" if why else ""), file=sys.stderr)
+        try:
+            if spec.get("start") is None or spec.get("end") is None:
+                raise RuntimeError("the plan gives no start/end for this clip")
+            result = _media().cut(
+                spec.get("source") or source, clip_out(name), rules,
+                float(spec["start"]), float(spec["end"]),
+                caption_srt=spec.get("subtitles", plan.get("subtitles")),
+                hook=spec.get("hook"),
+                track=spec.get("track", plan.get("track")),
+                track_start=spec.get("track_start", plan.get("track_start")),
+                sound=spec.get("sound", sound),
+                crop=spec.get("crop", plan.get("crop")),
+                shots=spec.get("shots"),
+                language=spec.get("language", plan.get("language")),
+                motion=spec.get("motion", plan.get("motion", True)),
+                cover_footer=spec.get("cover_footer", plan.get("cover_footer")))
+            code = deliver(result, rules, cid, ledger)
+        except SystemExit:                     # `die` inside a clip is that clip's
+            raise
+        except Exception as exc:
+            failed.append((name, f"{type(exc).__name__}: {exc}"))
+            print(f"  this clip failed: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            continue
+        if code == 0:
+            delivered.append(name)
+        else:
+            failed.append((name, "rendered but did not clear delivery"))
+
+    print(f"\n# {len(delivered)} of {asked} delivered.", file=sys.stderr)
+    for name, why in failed:
+        print(f"#   missing: {name} -- {why}", file=sys.stderr)
+    if len(delivered) < asked:
+        print(f"# this batch is NOT done: {asked - len(delivered)} of the {asked} "
+              "clips asked for are missing. Say which failed and why; do not "
+              "report the batch as finished.", file=sys.stderr)
         return 1
-    # The line that actually hands the file over. Printed by the tool rather
-    # than composed by the model, for the same reason every other number here
-    # comes from the tool: a path typed from memory is a path that does not
-    # exist, and the failure is silent -- the runtime drops an unattachable
-    # MEDIA line and the person is told about a clip that never arrived.
-    print(f"MEDIA:{result['out']}")
     return 0
 
 
@@ -905,6 +1226,13 @@ def main(argv=None):
     p.add_argument("file")
     p.add_argument("--out")
     p.add_argument("--model")
+    p.add_argument("--scan", action="store_true",
+                   help="first pass: the fast model over the whole source, to "
+                        "find candidate windows. Do not burn these words")
+    p.add_argument("--window", help="seconds, as 120-240: transcribe only this "
+                   "slice with the good model. The second pass")
+    p.add_argument("--lang", help="which published subtitle to prefer when the "
+                   "archive shipped more than one (pt, pt-BR, en)")
     p.set_defaults(func=cmd_transcribe)
 
     p = sub.add_parser("digest")
@@ -919,11 +1247,16 @@ def main(argv=None):
     p.set_defaults(func=cmd_signals)
 
     p = sub.add_parser("cut")
-    p.add_argument("source")
-    p.add_argument("--campaign", required=True)
-    p.add_argument("--start", type=float, required=True)
-    p.add_argument("--end", type=float, required=True)
-    p.add_argument("--out", required=True)
+    # Tudo opcional quando vem um --plan: o plano carrega a fonte, a campanha e
+    # as N janelas. `warden cut --plan lote.json` é a forma de um lote, e o
+    # tamanho da lista de clipes é o número pedido, que é o que passa a ser
+    # cobrado no fim.
+    p.add_argument("source", nargs="?")
+    p.add_argument("--plan", help="a batch of N windows as JSON; see the skill")
+    p.add_argument("--campaign")
+    p.add_argument("--start", type=float)
+    p.add_argument("--end", type=float)
+    p.add_argument("--out")
     p.add_argument("--subtitles")
     p.add_argument("--hook")
     p.add_argument("--track", help="audio file to cut to, for an edit")
@@ -931,10 +1264,38 @@ def main(argv=None):
                    help="where the track enters; its drop by default")
     p.add_argument("--sound", choices=["platform", "embedded"],
                    help="overrides the stored preference for this one render")
+    p.add_argument("--no-motion", dest="motion", action="store_false",
+                   help="render with no scale move. The default is a light zoom, "
+                        "because a cut that never changes scale reads as raw footage")
+    p.add_argument("--no-cover-footer", dest="cover_footer",
+                   action="store_false", default=None,
+                   help="do not cover text the footage already burns along the "
+                        "bottom. Use it when that text is another clipper's "
+                        "watermark, which campaigns forbid covering -- and then "
+                        "do not pass --subtitles either")
     p.add_argument("--crop", help="which side of a wider source to keep: "
                    "left, center, right, auto, or a percentage. A side or auto "
                    "follows the detected face; a percentage is exact. Center by default")
     p.set_defaults(func=cmd_cut)
+
+    p = sub.add_parser("style")
+    p.add_argument("action", choices=["extract", "check"])
+    p.add_argument("files", nargs="+", help="clips, or a folder of them")
+    p.add_argument("--consolidate", action="store_true",
+                   help="write the ranges to SPECS/estilo-aprovado.json")
+    p.add_argument("--out", help="where to write the consolidated spec")
+    p.add_argument("--spec", help="the spec to check against")
+    p.set_defaults(func=cmd_style)
+
+    p = sub.add_parser("captions")
+    p.add_argument("action", choices=["review"])
+    p.add_argument("srt")
+    p.add_argument("--start", type=float, help="the cut's start, in source seconds")
+    p.add_argument("--end", type=float, help="the cut's end, in source seconds")
+    p.add_argument("--approve", action="store_true",
+                   help="sign these words off for burning; without it, cut "
+                        "renders the clip with no caption rather than a wrong one")
+    p.set_defaults(func=cmd_captions)
 
     p = sub.add_parser("beat")
     p.add_argument("track")

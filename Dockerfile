@@ -40,7 +40,7 @@ RUN command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null \
 # display, which drops the GUI libs and most of the weight.
 RUN set -eu; \
     PY=/opt/hermes/.venv/bin/python3; \
-    PKGS="yt-dlp>=2025.1.1 gdown>=5.2 faster-whisper>=1.1 opencv-python-headless>=4.9"; \
+    PKGS="yt-dlp>=2025.1.1 gdown>=5.2 faster-whisper>=1.1 opencv-python-headless>=4.9 pillow>=10.0"; \
     if "$PY" -m pip --version >/dev/null 2>&1; then \
       "$PY" -m pip install --no-cache-dir $PKGS; \
     elif command -v uv >/dev/null 2>&1; then \
@@ -50,7 +50,7 @@ RUN set -eu; \
     else \
       echo "no pip, no uv and no ensurepip in this base image" >&2; exit 1; \
     fi; \
-    "$PY" -c "import yt_dlp, gdown, faster_whisper, cv2"
+    "$PY" -c "import yt_dlp, gdown, faster_whisper, cv2, PIL"
 
 # The YuNet face-detection model, fetched at build from the commit vendor/yunet.pin
 # names and checked against the hash beside it -- the same discipline as the
@@ -94,7 +94,10 @@ COPY warden-campaign/ /opt/hermes/skills/warden-campaign/
 COPY warden-check/    /opt/hermes/skills/warden-check/
 COPY warden-clip/     /opt/hermes/skills/warden-clip/
 COPY warden-package/  /opt/hermes/skills/warden-package/
+COPY warden-style/    /opt/hermes/skills/warden-style/
 COPY warden-shared/   /opt/hermes/skills/warden-shared/
+# A faixa medida do corpus aprovado: `warden style check` compara com ela.
+COPY SPECS/           /opt/hermes/skills/SPECS/
 
 RUN find /opt/hermes/skills -mindepth 1 -type d -exec chmod 0755 {} + \
  && find /opt/hermes/skills -mindepth 1 -type f ! -perm -u+x -exec chmod 0644 {} + \

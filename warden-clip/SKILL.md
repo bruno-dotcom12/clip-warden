@@ -137,23 +137,84 @@ the bottom and the right rail and no brief mentions that.
 It runs the check on its own output and exits non-zero if the render still does
 not clear the campaign. Do not send a clip whose cut exited non-zero.
 
-## 5. Send
+## 5. Look at the clip before you send it
 
-On a render that clears, `warden cut` prints the path and then the line that
-delivers it:
+**This is not optional and it is not a review step you may skip when the checks
+are green.** A clip was once delivered with the hook cropped off at both edges,
+a six-line English caption covering the speaker's face, and the source's own
+disclaimer sliced in half along the bottom -- and it was reported as having
+passed verification, because verification counts pixels and seconds and every
+one of those defects is invisible to arithmetic.
+
+So `warden cut` now writes a contact sheet of its own render and prints it:
 
 ```
-/var/lib/hermes/cache/videos/clip-01.mp4
+SHEET:/var/lib/hermes/cache/videos/clip-01-contato.jpg
 MEDIA:/var/lib/hermes/cache/videos/clip-01.mp4
 ```
 
-The second line goes into your reply on a line of its own, copied exactly. That
-is what attaches the file; without it the person gets prose about a clip they
-cannot open. It is stripped from what they read, so it costs nothing to include
-and everything to leave out.
+**Open that image with the Read tool before the `MEDIA:` line leaves your
+reply.** Then say, in your own words, what you saw. Five things, and every one
+of them rejects the clip on its own:
+
+- [ ] the hook fits inside the frame, uncropped, in at most two lines
+- [ ] the caption is at most two lines
+- [ ] there are not two captions in the same frame
+- [ ] no frame edge, source border or third party's text is sliced at the margin
+- [ ] the subject's face is not covered by text
+
+A clip that fails any of them is rejected **even if every check passed**. Re-cut
+it -- a different window, `--crop`, no `--subtitles` -- and look again. Never
+send a clip whose sheet you did not open, and never write "it passed
+verification" about a file you have not seen.
+
+If `warden cut` says it could not build the sheet, that is not a detail to
+mention in passing: nothing has looked at that clip, so it does not ship. It
+withholds the `MEDIA:` line itself in that case.
+
+## 6. Send, and deliver the number that was asked for
+
+On a render that clears both the campaign and your own eyes, the `MEDIA:` line
+goes into your reply on a line of its own, copied exactly. That is what attaches
+the file; without it the person gets prose about a clip they cannot open. It is
+stripped from what they read, so it costs nothing to include and everything to
+leave out.
 
 One message per clip: that line, the caption from `warden-package`, and the one
 thing they must do on the platform, which is usually the sound.
+
+### Two clips asked for means two clips delivered
+
+**Do not end your turn while the number of files you have delivered is smaller
+than the number you were asked for.** "One good clip" is not a batch of two, and
+stopping at the first is the exact failure this rule exists for: two cuts were
+asked for, one arrived, and nothing accused the shortfall.
+
+For more than one clip, write a plan and let the tool hold the count:
+
+```json
+{
+  "campaign": "acme-set", "source": "/path/source.mp4", "sound": "platform",
+  "clips": [
+    {"out": "corte-01.mp4", "start": 312.0, "end": 332.0,
+     "hook": "ele apostou contra o favorito",
+     "_": "gancho: a claim absurda, e a reacao da mesa fecha"},
+    {"out": "corte-02.mp4", "start": 745.5, "end": 765.0,
+     "hook": "o numero que ninguem esperava",
+     "_": "gancho: a pergunta; o meio paga; fecha na risada"}
+  ]
+}
+```
+
+`warden cut --plan lote.json` renders them in order, delivers each one the
+moment it exists rather than the batch at the end, prints a sheet for each, and
+counts at the end. It exits non-zero when any clip is missing and names which
+and why. If it does, say exactly that: which clip failed and for what reason.
+Do not report a batch as finished while it is short.
+
+The `_` field on each clip is what that cut is *for* -- the hook, what sustains
+it, what closes it. Write it before you render. A window you cannot justify in a
+sentence is not a clip yet.
 
 Tell them before you start that a source of an hour takes ten to thirty minutes,
 and give them the first clip as soon as it exists rather than the batch at the
