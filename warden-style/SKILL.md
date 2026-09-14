@@ -31,6 +31,12 @@ text with its ends under the platform's own furniture, or off the edge entirely.
   a free app's watermark.
 - 3px black stroke plus a separate weight shadow. That is what makes it readable
   over a bright plate.
+- **It leaves at 3s**, with a 0.4s fade. A hook is a promise about the first
+  seconds; after that it is a sign parked on the picture, fighting the caption
+  for the same frame. Measured: the two cuts of 14/09 carried theirs through all
+  eight tiles of the contact sheet, 1.2s to 18.8s. `cut` writes the seconds it
+  stayed into the `-estilo.json` and the delivery gate rejects a hook that never
+  left.
 
 **Write the hook to about nine words.** The measured fact: at the 76px body,
 roughly 44 characters fit on a line, so two lines is about 88 characters. Past
@@ -42,13 +48,46 @@ so; shorten it rather than shipping it.
 
 ## The caption
 
-- **Two lines maximum per cue, about 26 characters a line.**
-- **No cue over 2.2s.** A whisper segment is not a cue: a seven-second segment
-  with thirty words becomes a six-line block parked on the speaker's face. `cut`
-  reflows them, splitting the segment's time in proportion to each piece's word
-  count.
-- Body `height // 26`, which is 73px on a 1920 frame. Not `// 22` — that is 87px
-  and it pushes the speech over the face.
+The caption is **ASS burned by libass**, not a PIL PNG like the hook. That is
+what makes word-by-word highlighting possible at all: `{\k}` lights each word
+as it is said, inside one line of text, instead of one PNG per word state.
+The image's ffmpeg is built `--enable-libass`; a homebrew ffmpeg usually is not,
+and there `cut` **refuses** to burn rather than shipping a podcast cut with no
+speech on screen. `warden status` has a `libass` line for exactly this.
+
+- **Two lines maximum per cue, about 26 characters a line.** This is the limit
+  that actually protects the frame, and it did not move.
+- **Target 2.2s a cue, hard ceiling 3.4s.** A whisper segment is not a cue: a
+  seven-second segment with thirty words becomes a six-line block parked on the
+  speaker's face.
+- **A cue never ends on a word that needs the next one.** No preposition,
+  article, conjunction or unstressed pronoun at the end, in either language.
+  `cut` moves the break to the nearest real boundary — punctuation first, then
+  by extending past the dangling word, then by pulling back. Extending is why
+  the ceiling is 3.4s and not 2.2s: "é o meu veredito," costs half a second more
+  than "é o meu" and is the difference between a sentence and a fragment.
+- **A fixed expression is one word.** "crème de la crème" was split in 14/09 and
+  "LA CREME DO MERCADO" sat alone on screen for two seconds. The list lives in
+  `EXPRESSOES_FIXAS`; it grows when a cut shows the next one.
+- **Each word gets the time its syllables ask for**, not an equal share. That is
+  what keeps the yellow highlight on the mouth instead of ahead of it.
+- **Body `height // 16`, which is 120 on a 1920 frame, and that number is
+  CALIBRATED — do not "simplify" it back to a round divisor.** What matters is
+  the height of the LETTER, which is what a person sees: 120 measures **67px of
+  ink, 3.49% of the frame** on capitals and ~3.12% on ordinary mixed case. The
+  ASS `Fontsize` is not the same unit as a PIL font size, and that cost a
+  delivered clip: when the caption moved from PIL to ASS the number stayed at 73
+  and the letter shrank 45%, from ~3.2% of the frame to 1.88%. Nothing caught it,
+  because everything checked the number and nothing measured the ink.
+- 26 characters a line still fit at that body: 21 capitals measure 664px, so 26
+  are ~822px against 854px usable.
+- **The highlight is white → yellow**: a word is white until it is said and
+  yellow after. In ASS that is PrimaryColour for the *said* word and
+  SecondaryColour for the one still coming, which is the opposite of what the
+  names suggest — inverting them ships the whole caption yellow. The yellow is
+  **not** from the approved corpus: that corpus is scenepacks and contains no
+  running caption at all. It is the owner's call of 14/09, recorded as a
+  decision and not as a measurement.
 - The caption and the hook must be **in the same language**. `cut` compares them
   and refuses to burn on a mismatch. A Portuguese hook over an English caption
   went out once.
@@ -57,6 +96,40 @@ so; shorten it rather than shipping it.
   them. The approval is of the file's content, so editing the srt voids it. With
   no approval the clip renders with **no caption**, which is right: a clip
   without captions can be fixed, a misheard word in a published video cannot.
+
+## The hook's accent colour
+
+The hook is **white**, and one or two key words carry an accent. Mark them in
+the hook text with asterisks:
+
+```
+--hook "COPILOTO GANHA *70 MIL* POR MES"
+```
+
+A whole line in colour reads cheap. And the accent is **#FF3B30**, a red-orange,
+deliberately not the caption's yellow: if the hook's colour and the karaoke's
+colour are the same, the eye reads them as one thing and the word-by-word
+highlight stops meaning anything.
+
+Neither colour comes from the approved corpus — that corpus is scenepacks, with
+no running caption and no accented hook. Both are recorded decisions, and both
+live in one constant each.
+
+## The track, when someone asks for an edit on the beat
+
+This agent **ships no music and downloads none**. Say that in one sentence when
+it comes up, point at **studio.youtube.com > Áudio**, whose library is free to
+use and is downloaded under the person's own account, and keep whatever they
+send:
+
+```
+warden tracks add <file>        keeps it
+warden tracks list              what is already kept
+warden cut … --track <name>     finds it by name
+```
+
+Keeping it is the point: asking for the same file on every clip is the agent
+forgetting what it was already given.
 
 ## The footage
 
@@ -89,7 +162,7 @@ warden style extract <clip|folder> [--consolidate]   measure approved clips
 warden style check <render.mp4>                      measure a new one
 ```
 
-`extract --consolidate` writes `SPECS/estilo-aprovado.json`: min, median and max
+`extract --consolidate` writes `SPECS/estilo-aprovado-scenepack.json`: min, median and max
 of each metric across the corpus. Ranges, not single values — one approved clip
 runs 13s and another 73s and neither is "the right one".
 
@@ -106,13 +179,27 @@ three things only. Be clear about why the list is short:
   clips) but it read 1.14 on an approved clip whose text is small and clearly
   inside the frame — neon signs and high-contrast art look like white-on-black
   letters. A metric that would reject a clip the owner approved cannot reject
-  anything, so it is reported and not enforced.
+  alone. It was **not** deleted, because it sees something the `-estilo.json`
+  cannot: the sidecar knows the hook, which PIL drew, and knows nothing about
+  text that was already in the frame — the archive's burned captions, another
+  clipper's mark. Two instruments, different blind spots. So `check` crosses
+  them: it rejects when both say the text is too wide, and when they disagree it
+  names which is which instead of picking one and silencing the other.
+- The spec is called `estilo-aprovado-scenepack.json` and not
+  `estilo-aprovado.json` for the same reason. A generic name over a specific
+  corpus is how a range measured on one format ends up rejecting another. When
+  you `check` a clip that carries burned speech captions, the command says out
+  loud that this corpus does not contain that format. The speech corpus is
+  Bloco E and does not exist yet.
 
 What **is** enforced is exact, because it comes from the renderer rather than
 from pixels: `cut` writes a `-estilo.json` beside every clip with the hook's
-real drawn width against the usable width, the lines per cue, the longest cue,
-and whether the scale moved. Those are the numbers the Definition of Done is
-checked against, and `cut` refuses to print `MEDIA:` when one of them fails.
+real drawn width against the usable width, the seconds the hook stayed on, the
+lines per cue, the longest cue, whether the scale moved, and — when `--seconds`
+was passed — the duration the person asked for against the duration delivered.
+Those are the numbers the Definition of Done is checked against, and `cut`
+refuses to print `MEDIA:` when one of them fails, which is also why a clip that
+fails one of them has no path to hand to `send_message`.
 
 ## And none of it replaces looking
 

@@ -8,7 +8,7 @@ description: Go from a campaign's authorised archive to finished vertical clips.
 The order is fixed and it is not a preference.
 
 ```
-rule set  ->  archive  ->  text  ->  chosen windows  ->  render  ->  check  ->  send
+rule set -> archive -> text -> chosen windows -> render -> sheet -> send_message
 ```
 
 ## 1. The rule set first
@@ -98,7 +98,11 @@ what `--subtitles` takes -- so the words the tool heard can go on the screen eve
 when the archive shipped no subtitles of its own. Two things it cannot decide for
 you. First, whisper mishears, and a wrong word burned on the screen is worse than
 no caption: read the transcript before you burn, and if a line is wrong, fix the
-srt or leave captions off. Second, the tool measures pixels, not meaning, so it
+srt or leave captions off. The srt does not burn on its own, and that is the same
+rule enforced: `warden captions review <srt> --start <s> --end <s>` prints the
+lines inside the window and `--approve` signs them, and with no signature `cut`
+renders the clip with **no caption at all** rather than burning words nobody
+read. So sign after reading, never before, and editing the srt voids it. Second, the tool measures pixels, not meaning, so it
 cannot see text the footage already carries -- a lower-third, a channel's own
 burned captions, the Prime archive's own subtitles. Burn over those and you have
 two. The cut says so every time it burns; look at the first clip, and if the
@@ -118,7 +122,8 @@ plate, a creature, an object -- falls back to the centre and says so, and there
 before a batch: a comparison video with the subject off to one side is exactly
 what a fixed centre crop gets wrong.
 
-For an edit, add `--track <audio>`. `warden beat <track>` shows what it found:
+For an edit, add `--track <name|file>` -- a track already kept by
+`warden tracks add` is found by its name. `warden beat <track>` shows what it found:
 tempo, where the grid starts, how long a bar is, and where the track gains body.
 The cut is then a whole number of bars, and the track enters at its drop rather
 than at its intro.
@@ -137,6 +142,56 @@ the bottom and the right rail and no brief mentions that.
 It runs the check on its own output and exits non-zero if the render still does
 not clear the campaign. Do not send a clip whose cut exited non-zero.
 
+## 4b. Text before pixels, and the duration the person said
+
+### Pull the words first. Never the video.
+
+```
+warden archive --campaign <id> --text-first     subtitles, or audio if none
+```
+
+Measured on the 18-minute source of 14/09: the published subtitle comes down in
+**5s and 76 KB**; the whole video is **25s and 345 MB**; transcribing it costs
+**195s**. Choosing a window is work on TEXT. Pulling 345 MB to find out where to
+cut is paying for the video before knowing whether you want it.
+
+So the order is: `--text-first`, read, choose the windows, then
+`warden archive` without the flag to pull the video, then cut. That took the
+time-to-first-window from **211s to 30s** on the same source.
+
+When the source publishes no subtitle, `--text-first` pulls the **audio** — 15 MB
+against 345 MB for the same words — and you transcribe that.
+
+**Do not pull only the chosen windows.** It was measured and it is slower:
+`--download-sections` costs 37s for two windows against 25s for the whole file,
+because each section renegotiates. It saves disk, not time. And with the current
+format selector it silently produces an mp4 with no video track at all.
+
+### The number the person said is the request
+
+```
+warden cut … --seconds 20
+```
+
+Pass `--seconds` whenever a person said a duration. The cut is moved to it from
+the same start, the `-estilo.json` records what was asked, and the delivery gate
+rejects a file that misses it.
+
+On 14/09 two clips of "20 segundos" were asked for and 20.6s and 22.2s were
+delivered. The renderer was not wrong — it cut exactly the window it was given.
+What did not exist was any way for the person's number to reach it: the windows
+had been aligned to transcript boundaries and nobody went back to the number.
+
+Only a campaign rule may override it. When one does, `cut` says which rule, and
+you repeat that to the person. "It came out a bit longer" is not a reason.
+
+### Do not re-cut four times to find the window
+
+That same session rendered clip 1 **four times** — 128-148, then 157.8-178.3,
+then 178.3-201.6, then 181-201.6 — at ~30s a render. Two minutes went into
+changing your mind with the video open. Choose the window on the text, in
+`--text-first`, where changing your mind is free.
+
 ## 5. Look at the clip before you send it
 
 **This is not optional and it is not a review step you may skip when the checks
@@ -153,12 +208,16 @@ SHEET:/var/lib/hermes/cache/videos/clip-01-contato.jpg
 MEDIA:/var/lib/hermes/cache/videos/clip-01.mp4
 ```
 
-**Open that image with the Read tool before the `MEDIA:` line leaves your
-reply.** Then say, in your own words, what you saw. Five things, and every one
-of them rejects the clip on its own:
+**Open that image with the Read tool before you call `send_message` for that
+clip** -- the sheet is what stands between a render and a delivery, and section 6
+is where the delivery happens. Then say, in your own words, what you saw. Eight
+things, and every one of them rejects the clip on its own:
 
 - [ ] the hook fits inside the frame, uncropped, in at most two lines
+- [ ] the hook **left**: it is on the first tiles of the sheet and not the last
 - [ ] the caption is at most two lines
+- [ ] no cue ends mid-sentence — on a preposition, article or conjunction
+- [ ] the yellow highlight tracks the speech, instead of a whole cue lit at once
 - [ ] there are not two captions in the same frame
 - [ ] no frame edge, source border or third party's text is sliced at the margin
 - [ ] the subject's face is not covered by text
@@ -170,18 +229,67 @@ verification" about a file you have not seen.
 
 If `warden cut` says it could not build the sheet, that is not a detail to
 mention in passing: nothing has looked at that clip, so it does not ship. It
-withholds the `MEDIA:` line itself in that case.
+withholds the `MEDIA:` path itself in that case, so there is no path to put in a
+`send_message` and that clip is not one of the ones you deliver.
 
 ## 6. Send, and deliver the number that was asked for
 
-On a render that clears both the campaign and your own eyes, the `MEDIA:` line
-goes into your reply on a line of its own, copied exactly. That is what attaches
-the file; without it the person gets prose about a clip they cannot open. It is
-stripped from what they read, so it costs nothing to include and everything to
-leave out.
+### Deliver each clip with `send_message`. Writing MEDIA: in your narration does nothing.
 
-One message per clip: that line, the caption from `warden-package`, and the one
-thing they must do on the platform, which is usually the sound.
+This is the hardest rule on this page and it was written from a measurement.
+
+On 14/09 two clips were asked for, both rendered, both announced as ready, and
+**one arrived**. The agent wrote `MEDIA:/…/clip-piloto-emirates.mp4` at 21:57:59
+in the middle of a turn and moved on to the next clip. The gateway log for that
+turn is one line: at 21:59:18 it sent one response and delivered one attachment
+— the second clip's. Between 21:46:59 and 21:59:18 nothing at all left the
+machine. Four assistant messages from that turn, including the one carrying the
+first clip, are in the database and were never sent.
+
+**Only the last message of a turn is delivered.** Text you write between tool
+calls is narration: it stays on this side. A `MEDIA:` line inside it attaches
+nothing, and nothing anywhere reports that it attached nothing.
+
+So a clip is delivered by CALLING A TOOL, never by writing a line and hoping:
+
+```
+send_message(target="plow_chat",
+             message="Corte 1: <caption>\n\nMEDIA:/var/lib/hermes/cache/videos/clip-01.mp4")
+```
+
+`send_message` is what the file rides on — its own description says so: "To send
+an image or file, include MEDIA:<local_path> in the message — the platform will
+deliver it as a native media attachment." One call per clip, and the call
+happens **immediately after you looked at that clip's contact sheet**, not at
+the end of the batch. `--plan` batches the renders; it does not batch the sends.
+
+### Read the result. A send you did not confirm is not a delivery.
+
+`send_message` returns a result. Read it. If it did not succeed, say so in the
+conversation, in words, and call it again:
+
+> "O corte 1 não foi anexado na primeira tentativa. Reenviando."
+
+Going on to the next clip without looking at the result is how the first one
+disappeared with nobody — not even the agent — noticing.
+
+### "Os N clipes estão prontos" is a forbidden sentence until every file is confirmed
+
+Do not write that the batch is ready, or done, or delivered, in any wording,
+while a single clip is still unconfirmed. **Rendered is not delivered. Pronto is
+in the person's hand, not on the disk.** The count you report is the count of
+`send_message` calls that came back successful — never the count of files you
+rendered.
+
+The last message of the turn says what actually arrived, by name:
+
+> "Entreguei os 2: corte 1 (Emirates) e corte 2 (chave de buceta). Ambos
+> confirmados."
+
+and if one did not make it, that is the sentence instead:
+
+> "Entreguei 1 de 2. O corte 2 falhou no envio três vezes; o arquivo está em
+> <caminho>. Não está entregue."
 
 ### Two clips asked for means two clips delivered
 
@@ -190,32 +298,58 @@ than the number you were asked for.** "One good clip" is not a batch of two, and
 stopping at the first is the exact failure this rule exists for: two cuts were
 asked for, one arrived, and nothing accused the shortfall.
 
-For more than one clip, write a plan and let the tool hold the count:
+For more than one clip, write a plan. The tool holds the count of renders; you
+hold the count of sends, and only the second one is the count you report:
 
 ```json
 {
   "campaign": "acme-set", "source": "/path/source.mp4", "sound": "platform",
+  "seconds": 20,
   "clips": [
     {"out": "corte-01.mp4", "start": 312.0, "end": 332.0,
      "hook": "ele apostou contra o favorito",
      "_": "gancho: a claim absurda, e a reacao da mesa fecha"},
-    {"out": "corte-02.mp4", "start": 745.5, "end": 765.0,
+    {"out": "corte-02.mp4", "start": 745.5, "end": 765.0, "seconds": 25,
      "hook": "o numero que ninguem esperava",
      "_": "gancho: a pergunta; o meio paga; fecha na risada"}
   ]
 }
 ```
 
-`warden cut --plan lote.json` renders them in order, delivers each one the
-moment it exists rather than the batch at the end, prints a sheet for each, and
-counts at the end. It exits non-zero when any clip is missing and names which
-and why. If it does, say exactly that: which clip failed and for what reason.
-Do not report a batch as finished while it is short.
+`seconds` is `--seconds` inside the plan and carries the same number the person
+said: put it at the top when they named one duration for the batch, and on a
+clip when that clip was asked for at a different one. Leave it out only when
+nobody named a duration -- a plan without it is the 14/09 defect written down,
+where the windows are transcript boundaries and the person's number never
+reaches the renderer.
+
+`warden cut --plan lote.json` **renders and clears; it does not deliver**, and
+it says so itself on its first line:
+
+```
+# 2 clips asked for. This command RENDERS and clears them; it does not deliver.
+...
+# 2 of 2 cleared for delivery. NONE of them has been sent by this command.
+# now send the 2 of them, one send_message each, and read every result.
+```
+
+That last line is your instruction, not a summary: N clips cleared on disk are N
+`send_message` calls still owed. Work down the list in order -- read that clip's
+sheet, send that clip, read the result, then the next -- and send the first one
+as soon as its sheet is clear instead of holding the batch until the last one is
+open.
+
+`--plan` exits non-zero when a clip is missing and names which and why. A clip it
+did not clear has no `MEDIA:` path, so it is not sent and it does not count: say
+exactly which one failed and for what reason. Do not report a batch as finished
+while it is short.
 
 The `_` field on each clip is what that cut is *for* -- the hook, what sustains
 it, what closes it. Write it before you render. A window you cannot justify in a
 sentence is not a clip yet.
 
-Tell them before you start that a source of an hour takes ten to thirty minutes,
-and give them the first clip as soon as it exists rather than the batch at the
-end.
+Tell them before you start that a source of an hour takes ten to thirty minutes.
+The first clip leaves on its own confirmed `send_message` as soon as its sheet is
+clear; nothing waits for the last render. "As soon as it exists" means sent and
+confirmed, not rendered -- a file on disk that nobody called `send_message` for
+is the clip that vanished on 14/09.
