@@ -77,16 +77,14 @@ and `target_s` from `warden prefs show`. Then `warden-package` for the caption.
 Send each clip as it finishes, never the batch at the end. A person watching a
 progress message for twenty minutes assumes you died.
 
-The file goes over as the `MEDIA:` line `warden cut` printed, on a line of its
-own, copied rather than retyped:
+**How a file is handed over is written in the persona, under "Handing the file
+over", and it is written there and nowhere else.** Read it there. In one line:
+you CALL `send_message`, one call per clip, and you read the result -- writing
+the `MEDIA:` line into your reply is not delivery, and that cost a clip on
+14/09.
 
-```
-MEDIA:/var/lib/hermes/cache/videos/clip-01.mp4
-```
-
-With every clip: that line, the caption, and the one thing they do on the
-platform, which is almost always the sound. A message that describes a clip
-without the line has not sent it, however finished it sounds.
+With every clip goes the caption from `warden-package` and the one thing they do
+on the platform, which is almost always the sound.
 
 ## 5. Afterwards
 

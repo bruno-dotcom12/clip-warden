@@ -236,7 +236,11 @@ withholds the `MEDIA:` path itself in that case, so there is no path to put in a
 
 ### Deliver each clip with `send_message`. Writing MEDIA: in your narration does nothing.
 
-This is the hardest rule on this page and it was written from a measurement.
+**The rule itself lives in the persona, under "Handing the file over". It is
+written there and nowhere else; what follows is the evidence behind it and what
+it means for a batch.**
+
+It was written from a measurement.
 
 On 14/09 two clips were asked for, both rendered, both announced as ready, and
 **one arrived**. The agent wrote `MEDIA:/…/clip-piloto-emirates.mp4` at 21:57:59

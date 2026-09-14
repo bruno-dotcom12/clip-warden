@@ -186,7 +186,8 @@ defeitos da seção 1 é numérico.
 Correção, e essa é a mais importante de todas: **nenhum clipe sai sem um contact
 sheet revisado.** O `cut()` passa a gerar um mosaico de seis a oito frames do
 próprio render, e o SKILL passa a obrigar o agente a abrir essa imagem e olhar
-antes de mandar o `MEDIA:`. O checklist do olhar é curto e objetivo: o hook cabe
+antes de chamar `send_message` para aquele clipe (a entrega está definida na
+persona, em "Handing the file over"). O checklist do olhar é curto: o hook cabe
 inteiro no frame, a legenda tem no máximo duas linhas, não há duas legendas, não
 há moldura de material na borda, o rosto não está coberto. Qualquer item que
 falhe reprova o clipe.
