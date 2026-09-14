@@ -683,7 +683,12 @@ def _subtitle_beside(path, prefer=None):
 
 def _read_srt(path):
     def seconds(stamp):
-        stamp = stamp.replace(",", ".")
+        # Um timestamp de VTT vem seguido dos parâmetros da cue --
+        # `00:00:02.629 align:start position:0%` -- e o `split(":")` disso
+        # devolvia seis pedaços contra três esperados. `archive` baixa VTT por
+        # padrão, então este era o formato mais provável de chegar aqui, e ele
+        # quebrava o `transcribe` inteiro com um ValueError.
+        stamp = stamp.replace(",", ".").strip().split()[0]
         hours, minutes, rest = stamp.split(":")
         return int(hours) * 3600 + int(minutes) * 60 + float(rest)
     rows, block = [], []
@@ -697,12 +702,68 @@ def _read_srt(path):
         if stamps:
             start, end = [s.strip() for s in stamps[0].split("-->")]
             body = " ".join(l for l in block if "-->" not in l and not l.strip().isdigit())
-            body = re.sub(r"<[^>]+>", "", body).strip()
+            # As entidades saem ANTES das tags: uma legenda do YouTube traz
+            # `[&nbsp;__&nbsp;]` onde censurou um palavrão e `&gt;&gt;` onde
+            # marcou quem fala. Queimadas cruas, é isso que aparece na tela.
+            body = html.unescape(body)
+            body = re.sub(r"<[^>]+>", "", body)
+            # `\h` (espaço duro) vira espaço comum, senão ele fica no meio da
+            # frase e a contagem de caracteres por linha mente.
+            body = " ".join(body.replace("\xa0", " ").split()).strip()
             if body:
                 rows.append({"start": round(seconds(start), 2),
                              "end": round(seconds(end), 2), "text": body})
         block = []
-    return rows
+    return _undo_rollup(rows)
+
+
+def _undo_rollup(rows):
+    """Desfaz a legenda rolante das transcrições automáticas do YouTube.
+
+    Elas não entregam uma cue por fala: entregam a linha anterior mais as
+    palavras novas, de novo e de novo, e ainda repetem a mesma cue duas vezes
+    com dez milissegundos de diferença. Lido cru, um vídeo de 23 minutos vira um
+    transcript em que cada frase aparece três vezes -- e o digest que o modelo lê
+    para escolher a janela fica três vezes maior e ilegível.
+
+    Cada cue fica só com o que ela acrescenta à anterior. Uma cue que não
+    acrescenta nada desaparece, e seu tempo estende a anterior, para que a fala
+    não perca duração no caminho.
+    """
+    out = []
+    for row in rows:
+        text = " ".join(str(row.get("text") or "").split())
+        if not text:
+            continue
+        if out:
+            previous = out[-1]["text"]
+            if text == previous:
+                out[-1]["end"] = max(out[-1]["end"], row["end"])
+                continue
+            if text.startswith(previous + " "):
+                novo = text[len(previous):].strip()
+                if not novo:
+                    out[-1]["end"] = max(out[-1]["end"], row["end"])
+                    continue
+                text = novo
+            elif previous.startswith(text + " "):
+                # a cue nova é um prefixo da anterior: não acrescenta nada
+                out[-1]["end"] = max(out[-1]["end"], row["end"])
+                continue
+        out.append({"start": row["start"], "end": row["end"], "text": text})
+
+    # A legenda rolante ainda deixa cues de 10 milissegundos: são os pontos em
+    # que o YouTube "fecha" uma linha que foi falada antes, no vão silencioso
+    # desde a cue anterior. Mantidas como estão, a frase pisca por 10ms e o
+    # espectador nunca a lê -- é conteúdo perdido, não um detalhe de timing. O
+    # começo volta para onde a anterior acabou, que é quando aquilo foi dito.
+    for i, row in enumerate(out):
+        if row["end"] - row["start"] >= 0.3:
+            continue
+        antes = out[i - 1]["end"] if i else 0.0
+        if antes < row["end"]:
+            row["start"] = antes
+    return [r for r in out if r["end"] - r["start"] > 0.05]
 
 
 def _srt_stamp(t):
@@ -1553,7 +1614,14 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     # aprovar o próximo: ela confere duração, resolução e regras da campanha, e
     # nenhum desses defeitos é um número. O arquivo pode existir sem o mosaico;
     # a ENTREGA não pode, e é quem chama que segura a entrega.
-    style_facts["text_layers"] = len(overlays)
+    # Camadas de texto SIMULTÂNEAS, não inputs de overlay. As cues não se
+    # sobrepõem (o reflow garante), então o que divide um quadro é no máximo:
+    # o degradê do rodapé, uma cue, e o hook. Contar os 14 inputs como 14
+    # camadas foi o que fez o portão reprovar dois clipes corretos.
+    style_facts["text_layers"] = (
+        (1 if footer else 0)
+        + (1 if style_facts.get("caption") else 0)
+        + (1 if style_facts.get("hook") else 0))
     style_path = os.path.splitext(out)[0] + "-estilo.json"
     try:
         with open(style_path, "w", encoding="utf-8") as fh:

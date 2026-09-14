@@ -264,71 +264,87 @@ def reflow_cues(segments, max_chars=MAX_CHARS_PER_LINE, max_lines=MAX_LINES,
     então um segmento de sete segundos com trinta palavras virava um bloco de seis
     linhas parado na tela por sete segundos, cobrindo o rosto do peito ao queixo.
 
-    O segmento é quebrado em pedaços de no máximo `max_lines * max_chars`
-    caracteres, e o tempo é dividido **proporcional ao número de palavras** de
-    cada pedaço, não em fatias iguais: uma frase longa e uma interjeição não
-    duram o mesmo. Um pedaço que ainda passe de `max_cue_s` é dividido de novo.
-    Cada cue sai com as linhas já quebradas, porque quem desenha não deve
-    adivinhar onde quebrar.
+    A ordem importa e custou um render para ficar certa:
+
+    1. JUNTAR primeiro. Uma legenda de origem -- e principalmente a automática do
+       YouTube -- quebra a frase em blocos de 2 a 5 segundos que não respeitam
+       pontuação nenhuma. Subdividir esses blocos produzia cues de duas palavras
+       ("o MBL," sozinho na tela). Blocos contíguos viram um trecho só de fala.
+    2. CORTAR por tempo. O trecho é percorrido palavra a palavra, cada uma com a
+       duração que lhe cabe, e a cue fecha quando chegaria a `max_cue_s` ou
+       quando o texto não caberia mais em `max_lines` linhas de `max_chars`.
+       Cortar pelo tempo é o que faz a cue ter tamanho de fala e não de caractere.
+    3. QUEBRAR em linhas, já com o texto definido.
+
+    Nenhuma palavra se perde e nenhuma cue se sobrepõe à seguinte.
     """
+    spans = _merge_spans(segments)
     out = []
-    for seg in segments or []:
-        text = " ".join(str(seg.get("text") or "").split())
-        if not text:
-            continue
-        start, end = seg.get("start"), seg.get("end")
-        try:
-            start, end = float(start), float(end)
-        except (TypeError, ValueError):
-            continue
-        if not (end > start >= 0):
-            continue
+    for start, end, text in spans:
         words = text.split()
+        if not words:
+            continue
+        span = max(0.05, end - start)
+        per_word = span / len(words)
         budget = max_chars * max_lines
-
-        # 1) quebra por caracteres, em pedaços que cabem em `max_lines` linhas
-        chunks, cur = [], []
-        for w in words:
-            cand = cur + [w]
-            if cur and len(" ".join(cand)) > budget:
-                chunks.append(cur)
-                cur = [w]
+        atual, t = [], start
+        for word in words:
+            cand = atual + [word]
+            duracao = len(cand) * per_word
+            cabe = len(" ".join(cand)) <= budget
+            if atual and (duracao > max_cue_s or not cabe):
+                fim = t + len(atual) * per_word
+                out.append({"start": round(t, 3), "end": round(fim, 3),
+                            "text": " ".join(atual),
+                            "lines": _break_lines(" ".join(atual), max_chars,
+                                                  max_lines)})
+                t, atual = fim, [word]
             else:
-                cur = cand
-        if cur:
-            chunks.append(cur)
-
-        # 2) reparte o tempo do segmento proporcional às palavras de cada pedaço
-        total_words = sum(len(c) for c in chunks) or 1
-        span = end - start
-        t = start
-        for chunk in chunks:
-            share = span * (len(chunk) / total_words)
-            piece_end = min(end, t + share)
-            # 3) um pedaço que ainda dura demais é dividido pelo tempo
-            parts = max(1, int((piece_end - t) / max_cue_s + 0.999)) \
-                if (piece_end - t) > max_cue_s else 1
-            per = (piece_end - t) / parts
-            words_per = max(1, len(chunk) // parts)
-            for i in range(parts):
-                sub = chunk[i * words_per:] if i == parts - 1 \
-                    else chunk[i * words_per:(i + 1) * words_per]
-                if not sub:
-                    continue
-                a = t + i * per
-                b = a + per
-                out.append({"start": round(a, 3),
-                            "end": round(max(a + MIN_CUE_S * 0.4, b), 3),
-                            "text": " ".join(sub),
-                            "lines": _break_lines(" ".join(sub), max_chars, max_lines)})
-            t = piece_end
+                atual = cand
+        if atual:
+            fim = min(end, t + len(atual) * per_word)
+            out.append({"start": round(t, 3), "end": round(max(t + 0.2, fim), 3),
+                        "text": " ".join(atual),
+                        "lines": _break_lines(" ".join(atual), max_chars,
+                                              max_lines)})
     out.sort(key=lambda r: r["start"])
-    # Cues não se sobrepõem: duas na tela ao mesmo tempo é a legenda dupla que a
-    # definição de pronto proíbe, e aqui ela sairia da nossa própria aritmética.
+    # Duas legendas na tela ao mesmo tempo é o que a definição de pronto proíbe,
+    # e aqui ela sairia da nossa própria aritmética.
     for i in range(len(out) - 1):
         if out[i]["end"] > out[i + 1]["start"]:
             out[i]["end"] = round(out[i + 1]["start"], 3)
     return [c for c in out if c["end"] > c["start"]]
+
+
+def _merge_spans(segments, gap=0.4):
+    """(início, fim, texto) de fala contínua, juntando cues coladas.
+
+    O corte de uma cue na origem não é o fim de uma frase; é onde o legendador
+    automático decidiu fechar o bloco. Juntar o que está colado devolve a frase,
+    e é a frase que se corta bem.
+    """
+    limpos = []
+    for seg in segments or []:
+        texto = " ".join(str(seg.get("text") or "").split())
+        if not texto:
+            continue
+        try:
+            a, b = float(seg.get("start")), float(seg.get("end"))
+        except (TypeError, ValueError):
+            continue
+        if not (b > a >= 0):
+            continue
+        limpos.append((a, b, texto))
+    limpos.sort(key=lambda r: r[0])
+    spans = []
+    for a, b, texto in limpos:
+        if spans and a - spans[-1][1] <= gap:
+            anterior = spans[-1]
+            spans[-1] = (anterior[0], max(anterior[1], b),
+                         anterior[2] + " " + texto)
+        else:
+            spans.append((a, b, texto))
+    return spans
 
 
 def _break_lines(text, max_chars, max_lines):
@@ -1069,10 +1085,15 @@ def check_sidecar(side):
                               "2,5s it is a block parked on the picture"))
     elif cap.get("max_cue_s"):
         out.append(("ok", f"longest cue {cap['max_cue_s']}s"))
-    if side.get("text_layers", 0) > 2 and not side.get("footer_covered"):
-        out.append(("REJECT", f"{side['text_layers']} text layers and the "
-                              "footage's own bottom text was not covered: that "
-                              "is two captions in one frame"))
+    # Duas legendas num quadro só é a NOSSA por cima da do acervo. A pergunta é
+    # essa e só essa: o material tem texto embaixo, nós queimamos legenda, e o
+    # degradê não cobriu? Contar camadas sem perguntar se havia texto do acervo
+    # reprovava clipes cujo material é limpo.
+    tem_texto_do_acervo = (side.get("source_text") or {}).get("bottom")
+    if cap.get("cues") and tem_texto_do_acervo and not side.get("footer_covered"):
+        out.append(("REJECT", "this footage burns its own text along the bottom "
+                              "and it was not covered, so our caption sits on "
+                              "top of it: two captions in one frame"))
     if side.get("motion") is False:
         out.append(("REJECT", "no scale movement at all: this reads as raw footage"))
     return out

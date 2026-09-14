@@ -1529,12 +1529,21 @@ class BurnedText(unittest.TestCase):
 
     def test_a_cue_leaves_the_screen_when_its_window_ends(self):
         """Um texto de 2s que não sai mais da tela é o bloco parado de novo."""
-        self.S.write_approval(self.srt)
+        # Vão de 1s: falas separadas por menos de 0,4s são juntadas de propósito
+        # (é o que impede a legenda de sair picada em cues de duas palavras), e
+        # o que se prova aqui é que a cue SAI, não que o vão sobrevive.
+        pausado = os.path.join(self.dir, "pausado.srt")
+        with open(pausado, "w", encoding="utf-8") as fh:
+            fh.write(self.M.to_srt([{"start": 0.0, "end": 1.5,
+                                     "text": "primeira fala do teste"},
+                                    {"start": 2.5, "end": 4.0,
+                                     "text": "segunda fala do teste"}]))
+        self.S.write_approval(pausado)
         out = os.path.join(self.dir, "sai.mp4")
         self.M.cut(self.black, out, self.r, start=0, end=3, sound="platform",
-                   caption_srt=self.srt)
-        # 2,0-2,2s é o vão entre as duas falas: a tela tem de estar limpa ali.
-        self.assertLess(self._white(out, at=2.1), 500,
+                   caption_srt=pausado)
+        self.assertGreater(self._white(out, at=0.7), 2000, "a cue não apareceu")
+        self.assertLess(self._white(out, at=2.0), 500,
                         "a cue anterior ficou carimbada depois do fim da janela")
 
     def test_the_hook_lands_and_stays_inside_the_frame(self):
@@ -2049,11 +2058,22 @@ class StyleSidecar(unittest.TestCase):
         self.assertTrue(any(lv == "REJECT" and "6 lines" in m
                             for lv, m in achados), achados)
 
-    def test_stacked_text_over_uncovered_source_text_is_rejected(self):
+    def test_our_caption_over_the_archives_uncovered_caption_is_rejected(self):
         achados = self.S.check_sidecar(
-            {"text_layers": 3, "footer_covered": False})
+            {"caption": {"cues": 8, "max_lines": 2, "max_cue_s": 2.0},
+             "source_text": {"bottom": True}, "footer_covered": False})
         self.assertTrue(any(lv == "REJECT" and "two captions" in m
                             for lv, m in achados), achados)
+
+    def test_clean_footage_with_our_caption_is_not_called_two_captions(self):
+        """O material sem texto queimado não tem sobre o que empilhar. Contar
+        camadas sem perguntar isso reprovou dois clipes corretos."""
+        achados = self.S.check_sidecar(
+            {"caption": {"cues": 13, "max_lines": 2, "max_cue_s": 2.2},
+             "hook": {"width_px": 849, "usable_px": 854, "lines": 2,
+                      "complete": True},
+             "source_text": {"bottom": False}, "footer_covered": False})
+        self.assertFalse([m for lv, m in achados if lv == "REJECT"], achados)
 
 
 class DefinitionOfDone(unittest.TestCase):
