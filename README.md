@@ -51,6 +51,10 @@ reaches out, and why:
   published image. Building locally instead reaches `public.ecr.aws`,
   `media.githubusercontent.com` and `raw.githubusercontent.com` — see
   `docs/INSTALL.md`.
+- **Docker Hub**, once per install, for the second image in `compose.yml`: the
+  Proof-of-Origin token provider YouTube now asks for, pinned by digest. It
+  runs beside the agent with no `ports:` key, so nothing outside the compose
+  network can reach it.
 - **Hugging Face**, once per install, for the two transcription models.
 - **The AI Worth Using Agent Index**, hourly, with day and model token counts
   and nothing else — no prompts, no file paths, no costs. It has no switch;
@@ -76,9 +80,18 @@ To build locally instead, for development: `WARDEN_BUILD=1 ./install.sh`. It pri
 runs and stops at the first thing it cannot do. `docs/INSTALL.md` has the same
 path typed out by hand, and the three ordering traps that bite when you do.
 
-Docker Desktop needs at least 4 GiB of RAM in its VM: the agent uses about 2 GiB
-to transcribe and render at once, and a smaller VM turns the first clip into an
-out-of-memory kill. The script measures it and says so.
+Docker Desktop needs at least 4.5 GiB of RAM in its VM: the agent uses about
+2 GiB to transcribe and render at once, `compose.yml` caps it at 3 GiB, and
+since 15/09/2026 a second container sits beside it — the Proof-of-Origin token
+provider, capped at 512 MiB — so the ceilings add up to 3.5 GiB. A smaller VM
+turns the first clip into an out-of-memory kill. The script measures it and
+says so.
+
+`docker compose up` therefore starts two containers, not one. The second exists
+because YouTube refuses logged-out requests that arrive without that token, and
+an address that keeps asking without one gets flagged. It is there to keep that
+from happening, which is not the same as fixing it — see "I can't download
+anything from YouTube" below.
 
 Then text the agent a campaign link. Nothing else to configure: no API keys, no
 OAuth, no accounts. Its first question will be whether clips keep the original
@@ -90,6 +103,45 @@ in the background on first boot, while you are reading the agent's first reply,
 and they stay in the agent's volume. `warden status` reports how far along each
 one is, in megabytes -- and a cut asked for before they land says the same thing
 rather than starting a silent five-minute download.
+
+## I can't download anything from YouTube
+
+Measured 15/09/2026, from this project's own outgoing address: YouTube refused
+every logged-out request with `Sign in to confirm you're not a bot`. Not one
+link — all of them.
+
+The agent now says that, in those words. It had guessed twice before, on two
+different days, with two contradictory stories — "that specific video", then
+"this server's IP" — and neither was something the owner could check.
+
+**What it is not**: not that video, not the archive-authorisation gate (which
+had already passed), and not something that clears up on its own in a few
+minutes. Nobody here can tell you the refusal is temporary.
+
+**What is already in place**, so it is not the fix — `warden status` names all
+three:
+
+- a **JavaScript runtime** (`node`, already in the image). Without one yt-dlp
+  drops the `web` client from its default set and cannot decipher n/sig. Every
+  install before this one was running that way in silence.
+- a **Proof-of-Origin token**, minted by the container beside the agent.
+- a **pace**. One link used to cost four extractions fired back to back; it now
+  costs two, with sleeps between requests and retries capped at three.
+
+The token is **prophylactic**: it keeps an address from being flagged, and it
+does not lift a flag. That was measured, not assumed — a valid token, freshly
+minted, bound to the right visitor data, in the player context, got the
+identical refusal.
+
+So for an address that is already refused there are two options, and the agent
+can do neither on its own:
+
+1. **A different outgoing address** — another network, or a VPN.
+2. **A cookies file from a signed-in YouTube session.** yt-dlp's own warning
+   about this is that it can get the account blocked, so it has to be a
+   throwaway account, never the one you care about.
+
+`docs/INSTALL.md` has both typed out, with where the cookies file goes.
 
 ## The commands under it
 

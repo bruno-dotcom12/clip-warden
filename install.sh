@@ -51,17 +51,24 @@ docker info >/dev/null 2>&1 || pare "o Docker não está rodando. Abra o Docker 
 docker compose version >/dev/null 2>&1 || pare "este Docker não tem 'docker compose'. Atualize o Docker Desktop."
 
 # A RAM da VM do Docker, que não estava em requisito nenhum e derrubava o
-# primeiro corte por OOM. compose.yml fixa mem_limit em 3g e o agente precisa de
-# ~2 GiB para transcrever e renderizar ao mesmo tempo.
+# primeiro corte por OOM. compose.yml fixa mem_limit em 3g no agente e o agente
+# precisa de ~2 GiB para transcrever e renderizar ao mesmo tempo.
+#
+# Desde 15/09/2026 o compose sobe um segundo container ao lado: o `pot`, que
+# emite o PO token que o YouTube exige de quem pede deslogado. São mais 512m de
+# teto, e a soma passou de 3g para 3,5g. Os 4 GiB que este aviso pedia deixavam
+# 1 GiB para o resto da VM; a mesma folga com o sidecar são 4,5 GiB -- por isso
+# a conta virou MiB, que "GiB inteiro" não expressa.
 MEM_BYTES="$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)"
-MEM_GIB=$(( MEM_BYTES / 1073741824 ))
-if [ "$MEM_GIB" -lt 4 ]; then
-    printf '  aviso: a VM do Docker tem %s GiB. O agente precisa de ~2 GiB só\n' "$MEM_GIB"
-    printf '         para transcrever e renderizar junto, e o compose limita em 3g.\n'
-    printf '         Docker Desktop > Settings > Resources > Memory: suba para 4 GiB.\n'
+MEM_MIB=$(( MEM_BYTES / 1048576 ))
+if [ "$MEM_MIB" -lt 4608 ]; then
+    printf '  aviso: a VM do Docker tem %s MiB. O compose limita 3g no agente\n' "$MEM_MIB"
+    printf '         mais 512m no sidecar pot: 3,5 GiB de teto somado, e só o\n'
+    printf '         agente já precisa de ~2 GiB para transcrever e renderizar junto.\n'
+    printf '         Docker Desktop > Settings > Resources > Memory: suba para 4,5 GiB.\n'
     printf '         Seguindo assim mesmo -- o primeiro corte pode morrer por OOM.\n'
 fi
-printf '  ok: git, docker, compose, %s GiB de RAM na VM\n' "$MEM_GIB"
+printf '  ok: git, docker, compose, %s MiB de RAM na VM\n' "$MEM_MIB"
 
 # ---------------------------------------------------------------- 2. plow-agents
 

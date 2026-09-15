@@ -20,10 +20,12 @@ continue past a problem.
 
 ## What you need
 
-- **Docker, running, with Docker Compose**, and its VM set to **at least 4 GiB
-  of RAM**. `compose.yml` caps the container at 3 GiB and the agent needs about
-  2 GiB to transcribe and render at the same time; on a smaller VM the first
-  clip dies as an out-of-memory kill rather than an error. Docker Desktop →
+- **Docker, running, with Docker Compose**, and its VM set to **at least
+  4.5 GiB of RAM**. `compose.yml` caps the agent at 3 GiB and the agent needs
+  about 2 GiB to transcribe and render at the same time; since 15/09/2026 it
+  also runs a second container, the Proof-of-Origin token provider, capped at
+  512 MiB — 3.5 GiB of ceiling between them. On a smaller VM the first clip
+  dies as an out-of-memory kill rather than an error. Docker Desktop →
   Settings → Resources → Memory. `install.sh` measures this and warns you.
 - **Git.**
 - **A Plow account**, for the agent's chat line, and the phone that owns it.
@@ -89,6 +91,22 @@ the middle of someone's first cut.
 Read the `pillow` line as the label the tool prints rather than as the state of
 the renderer: since the caption became ASS, PIL draws the hook and nothing else.
 
+Three more lines come from the downloader, and the script does **not** fail on
+them — they are a warning, not a gate:
+
+```
+yt-dlp JS runtime: node
+PO token provider (http://pot:4416): answering
+yt-dlp cookies file (/var/lib/hermes/warden/cookies.txt): absent (only needed if this address is already refused)
+```
+
+`MISSING` on the first means yt-dlp is running with the `web` client dropped
+and no n/sig deciphering, which fails as a download error rather than as a
+missing dependency. `NOT answering` on the second means the `pot` container is
+not up and this install's address is being spent without the token that keeps
+it from being flagged. `absent` on the third is the ordinary state; the next
+section is what it is for.
+
 `warden status` prints more than those seven lines — where state lives, whether it
 is writable, which campaigns are stored, and how far along the transcription
 models are:
@@ -139,6 +157,98 @@ the link to the authorised footage, or the footage itself. It does not go
 looking — footage the campaign did not publish is what gets a submission thrown
 out after the views.
 
+## I can't download anything from YouTube
+
+Measured 15/09/2026, from this project's own outgoing address: YouTube refused
+every logged-out request with `Sign in to confirm you're not a bot`. Every
+link, not one of them. `yt-dlp -v` printed `JS runtimes: none` and
+`PO Token Providers: none` at the same time.
+
+The agent had already told the owner two different causes on two different days
+— "that specific video", then "this server's IP". Both were invented. It now
+reads the refusal and says what it is, and the tool prints the same three facts
+`warden status` prints, so nothing about it has to be taken on the model's word.
+
+### What it is not
+
+- **Not that video.** Every link gets the same refusal.
+- **Not the archive gate.** `warden authorize` had already passed; this happens
+  afterwards, at the download.
+- **Not temporary.** Nobody here can tell you it clears up on its own, and
+  nothing in this repository will promise it.
+
+### What is already in place, so do not go looking for it
+
+- **A JavaScript runtime.** The image carries `node`, and since yt-dlp enables
+  only `deno` by itself, `warden` passes `--js-runtimes` explicitly. Without a
+  runtime yt-dlp drops the `web` client from its default set and cannot
+  decipher n/sig — a handicap on every link that surfaces as a download
+  failure. The build now fails if the base image has no `node`.
+- **A Proof-of-Origin token.** The `pot` service in `compose.yml`, image
+  `brainicism/bgutil-ytdlp-pot-provider:2.0.0` pinned by digest, with no
+  `ports:` key so it answers only on the compose network. The agent finds it at
+  `WARDEN_POT_URL`, which `compose.yml` sets to `http://pot:4416`.
+- **A pace.** A single link used to cost four separate extractions — channel,
+  title, subtitles, download — fired back to back with no sleep. It now costs
+  two, with `--sleep-requests` between them and retries capped at three.
+
+**The token is prophylactic.** It keeps an address from being flagged; it does
+not lift a flag. Measured here: a valid token, freshly minted, bound to
+matching visitor data, in the player context, got the identical refusal. That
+is why it is a service that runs from the first install rather than a step in
+this section.
+
+### The two things that change the answer
+
+Neither is something the agent can do by itself.
+
+1. **A different outgoing address.** Another network, or a VPN in front of
+   Docker's.
+2. **A cookies file from a signed-in YouTube session.** yt-dlp's own warning is
+   that passing logged-in cookies can get that account blocked, so it has to be
+   a throwaway account — never the one you post from, never your main one.
+
+### Putting the cookies file in
+
+`warden` reads it at `/var/lib/hermes/warden/cookies.txt` inside the container
+and uses it on every yt-dlp call when it is there. That path is inside the
+agent's volume, so the way in is a bind — and it has the same trap as
+`plow-credentials`: a bind whose source does not exist makes a **directory**
+there, and the agent then finds no file. Create it first, with the cookies
+already in it:
+
+```sh
+touch cookies.txt     # export the session into it from the throwaway account
+```
+
+then, under the agent's `volumes:` in `compose.yml`:
+
+```yaml
+      - ./cookies.txt:/var/lib/hermes/warden/cookies.txt:ro
+```
+
+`docker compose up -d`, and
+`docker compose exec -u 10000:10000 agent warden status` should then read
+`present` on the cookies line. That file is a live session: never commit it,
+and `./install.sh --remover` does not know about it, so delete it yourself.
+
+### The knobs
+
+`WARDEN_POT_URL` is the only one `compose.yml` already passes through. The
+others have to be added to the `environment:` block there to reach the
+container — it does not inherit your shell, the same as `WARDEN_DIRECTORIES`.
+
+| | |
+| --- | --- |
+| `WARDEN_POT_URL` | where the token provider answers, `http://pot:4416` |
+| `WARDEN_COOKIES` | the cookies path, `/var/lib/hermes/warden/cookies.txt` |
+| `WARDEN_SLEEP_REQUESTS` | seconds between requests, `1.5` |
+| `WARDEN_SLEEP_INTERVAL` | the minimum wait before a download, `1` |
+| `WARDEN_SLEEP_MAX` | the ceiling on that wait, `5` |
+
+Lowering the sleeps is how an address gets flagged; they are seconds, not a
+preference.
+
 ## By hand
 
 The script is a convenience, not a black box. This is what it does:
@@ -151,7 +261,7 @@ plow-agents login            # prints a phrase; text it to Plow from your phone
 plow-agents lines            # prints your line UIDs, as ln_...
 plow-agents mint ln_xxx      # writes ./plow-credentials
 
-docker compose up -d           # pulls the published image
+docker compose up -d           # pulls the published image and the pot sidecar
 docker compose exec -u 10000:10000 agent warden status
 ```
 
@@ -218,7 +328,8 @@ line and is listening.
 Worth knowing before you run a stranger's agent on your machine.
 
 **While installing**, it downloads the published image from **`ghcr.io`**, and
-nothing else.
+the Proof-of-Origin token provider image from **Docker Hub**, pinned by digest
+in `compose.yml`. Nothing else.
 
 **Only if you build locally** (`WARDEN_BUILD=1`, or `-f compose.build.yml`) it
 reaches three more hosts, all pinned by digest or sha256 in the repository:
