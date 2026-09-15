@@ -422,7 +422,8 @@ def envia(caminho, *, progresso=None, espera=180):
         "POST", URL_INIT,
         corpo=json.dumps(corpo).encode("utf-8"),
         cabecalhos={"Authorization": f"Bearer {tok}",
-                    "Content-Type": "application/json; charset=UTF-8"})
+                    "Content-Type": "application/json; charset=UTF-8"},
+        timeout=TIMEOUT_API)
     dados = _resposta(codigo, bruto, "abrir o envio")
     publish_id = dados.get("publish_id")
     upload_url = dados.get("upload_url")

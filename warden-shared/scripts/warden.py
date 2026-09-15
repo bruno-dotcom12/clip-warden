@@ -897,8 +897,19 @@ def cmd_tiktok(args):
         print("the clip is in the TikTok INBOX -- the notification, NOT the "
               "Drafts tab of the profile. Open it there to publish.")
     else:
-        print(f"uploaded; TikTok last reported {estado}. It usually reaches "
-              f"SEND_TO_USER_INBOX within a minute; check the inbox.")
+        # NÃO se promete quanto tempo falta, e a primeira versão desta linha
+        # prometia: dizia que "usually reaches SEND_TO_USER_INBOX within a
+        # minute". A medição de 14/09 é UMA amostra (~21s), e
+        # CRITERIO-TESTE-TIKTOK-INBOX.md registra que quanto tempo o rascunho
+        # leva para aparecer continua não provado. Uma amostra não é "usually".
+        print(f"the upload finished and TikTok last reported {estado}, which is "
+              f"not the inbox yet. How long it takes from here has not been "
+              f"measured -- ask again with the publish_id rather than guessing:")
+        print(f"  publish_id: {saida.get('publish_id')}")
+    # Os avisos existem para serem lidos. Deixá-los no dicionário é o mesmo que
+    # não os ter: é ali que mora "parei de perguntar ao bater o teto".
+    for aviso in saida.get("avisos") or []:
+        print(f"  note: {aviso}", file=sys.stderr)
     if legenda:
         print("\nPaste this as the caption (the API cannot set it):")
         print("---")

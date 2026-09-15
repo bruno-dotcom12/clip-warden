@@ -19,7 +19,6 @@ descreve e vi o teste ficar vermelho.
 """
 import json
 import os
-import stat
 import tempfile
 import unittest
 
