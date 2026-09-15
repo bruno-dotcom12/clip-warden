@@ -99,6 +99,49 @@ offer `warden trusted add <channel|domain>`. A channel is an `@handle` or a
 `UC…` id; a domain is `youtube.com`. This is the only footage you cut that no
 campaign authorised, and the trusted list is what stands in for the brief.
 
+### When the source refuses to come down at all
+
+Measured 15/09: YouTube refuses this outgoing address for logged-out requests,
+with the bot check "Sign in to confirm you're not a bot". It fires on
+`--text-first` as well, before any window exists, because the refusal is on the
+request and not on the video.
+
+What it is not:
+
+- **not this video** -- every link gets the same refusal;
+- **not "the IP of the server"** -- the same error comes back on the owner's
+  Mac, outside Docker, on their own residential connection;
+- **not a blip of a few minutes** -- and nobody can promise when it passes.
+
+Tried and beaten, all on 15/09: 11 different player clients, `--impersonate
+chrome`, the JS runtime, and a valid PO token freshly generated and tied to the
+right visitor data, in the player context. Every one refused the same. yt-dlp
+files this under "Intractable issues": it moves with a **different outgoing
+address**, or with **cookies from a logged-in session**, and with nothing else.
+
+`archive` detects this refusal and prints the diagnosis itself -- what is
+already standing (JS runtime, PO token provider, pacing, cookie file) and the
+two real options. **Repass what it printed instead of summarising over it**, and
+do not put a cause of your own in front of it.
+
+The two options, and there is no third:
+
+- **another outgoing address** for the download;
+- **a cookies file at `/var/lib/hermes/warden/cookies.txt`**, exported from a
+  logged-in session. yt-dlp's own warning is that using account cookies this way
+  can get the account banned, so this is a throwaway account and never the
+  owner's.
+
+**Asking for another link is not the first answer.** Another YouTube link is
+refused the same way, so the question costs a round trip and comes back here.
+
+**The one case where it IS that video**, and the tool tells the two apart so you
+do not have to: an age-restricted, private, members-only or removed video is
+refused for itself, and every other link keeps working. That refusal comes back
+as an ordinary error with yt-dlp's own words, NOT as the diagnosis above. So the
+rule is not "it is never the video" -- it is that you report whichever of the two
+the tool handed you, and you do not upgrade one into the other.
+
 ## 3. Read the words and choose the windows
 
 What `--text-first` wrote is what you read. When it brought the published
