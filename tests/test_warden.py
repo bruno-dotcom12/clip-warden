@@ -38,6 +38,43 @@ def _temp(caso, prefix):
     caminho = tempfile.mkdtemp(prefix=prefix)
     caso.addCleanup(shutil.rmtree, caminho, ignore_errors=True)
     return caminho
+
+
+def escreve_state_db(caminho, mensagens, colunas=None):
+    """Um state.db do Hermes de mentira, com o schema real.
+
+    `messages(id, session_id, role, content, timestamp, finish_reason)` e
+    `sessions(id, started_at)`, que é o que `warden delivered` lê. `mensagens`
+    é [(role, content, finish_reason)], na ordem em que foram escritas.
+
+    `colunas` existe para o teste que precisa de um schema DIFERENTE do
+    esperado -- é a lista de colunas de `messages` -- porque o schema do Hermes
+    é interno e muda com as atualizações dele, e o que tem de estar coberto é
+    que uma coluna a menos vira "não consegui verificar" e nunca uma exceção.
+    """
+    import sqlite3
+    colunas = colunas or ["id INTEGER PRIMARY KEY", "session_id TEXT",
+                          "role TEXT", "content TEXT", "timestamp REAL",
+                          "finish_reason TEXT"]
+    con = sqlite3.connect(caminho)
+    try:
+        con.execute("CREATE TABLE IF NOT EXISTS sessions "
+                    "(id TEXT PRIMARY KEY, started_at REAL)")
+        con.execute("CREATE TABLE IF NOT EXISTS messages (%s)" % ", ".join(colunas))
+        nomes = [c.split()[0] for c in colunas]
+        con.execute("INSERT OR IGNORE INTO sessions VALUES (?, ?)",
+                    ("sess-1", time.time()))
+        for i, (role, content, finish) in enumerate(mensagens, 1):
+            valores = {"id": i, "session_id": "sess-1", "role": role,
+                       "content": content, "timestamp": time.time(),
+                       "finish_reason": finish}
+            con.execute("INSERT INTO messages (%s) VALUES (%s)"
+                        % (", ".join(nomes), ", ".join("?" for _ in nomes)),
+                        [valores.get(n) for n in nomes])
+        con.commit()
+    finally:
+        con.close()
+    return caminho
 os.environ["WARDEN_DIR"] = WARDEN_DIR
 
 import warden
@@ -202,14 +239,31 @@ class Preferences(unittest.TestCase):
         self.assertTrue(overruled)
 
     def test_sound_has_no_silent_default(self):
-        """A clip must never ship silent by accident: with nobody having chosen
-        and a campaign that does not settle audio, sound stays undecided."""
-        self.assertNotIn("sound", self.P.DEFAULTS)
+        """O padrão de `sound` mudou de "não decidir" para "o som original".
+
+        Este teste provava a ausência de padrão, e o dono decidiu o contrário
+        em 15/09/2026. O medo que o padrão antigo tinha continua atendido, e
+        por isso o teste continua existindo em vez de sumir: um clipe mudo por
+        acidente era o defeito que não se conserta depois. Com `embedded` como
+        padrão, quem não decide nada fica com o áudio que já estava no arquivo,
+        e o ÚNICO jeito de sair mudo é alguém pedir -- a pessoa com `--sound
+        platform`, ou a campanha. O que o padrão antigo custava era uma
+        pergunta antes do primeiro clipe, e a pergunta não impedia nada.
+        """
+        self.assertEqual(self.P.DEFAULTS["sound"], "embedded")
         quiet = rules(video={"audio": None})
         settings, _ = self.P.effective({}, quiet)
-        self.assertIsNone(settings.get("sound"))
-        # And it is asked, since it is not stored.
-        self.assertIn("sound", self.P.missing({}, "edit"))
+        self.assertEqual(settings.get("sound"), "embedded")
+
+    def test_um_clipe_so_sai_mudo_se_alguem_pedir(self):
+        """As duas únicas portas para o silêncio, e nenhuma delas é o descuido."""
+        quiet = rules(video={"audio": None})
+        # a pessoa pede
+        settings, _ = self.P.effective({"sound": "platform"}, quiet)
+        self.assertEqual(settings["sound"], "platform")
+        # a campanha manda
+        settings, _ = self.P.effective({}, rules(video={"audio": "forbidden"}))
+        self.assertEqual(settings["sound"], "platform")
 
     def test_a_campaign_that_settles_audio_decides_sound_unasked(self):
         forbid = rules(video={"audio": "forbidden"})
@@ -233,13 +287,50 @@ class Preferences(unittest.TestCase):
         self.P.save(self.dir, {"delivery": "cuts", "batch": 5})
         self.assertEqual(self.P.load(self.dir)["batch"], 5)
 
-    def test_every_default_is_a_question_and_only_sound_has_none(self):
-        # Every default must belong to a real question.
+    def test_every_question_has_a_default_so_nothing_is_asked_before_a_clip(self):
+        """Era "todo padrão é uma pergunta, e só `sound` não tem padrão".
+
+        A segunda metade virou o contrário em 15/09/2026, por decisão do dono:
+        TODA pergunta tem padrão agora, e é isso que faz `prefs ask --group
+        edit` não ter o que perguntar. A primeira metade continua igual -- um
+        padrão para uma chave que não é pergunta de ninguém seria um valor que
+        o dono não consegue mudar.
+        """
         self.assertTrue(set(self.P.DEFAULTS).issubset(set(self.P.KEYS)))
-        # And every question has a default except `sound`, which is deliberately
-        # left without one so a clip cannot ship silent unasked.
-        without_default = set(self.P.KEYS) - set(self.P.DEFAULTS)
-        self.assertEqual(without_default, {"sound"})
+        self.assertEqual(set(self.P.KEYS) - set(self.P.DEFAULTS), set())
+
+    def test_a_campanha_vence_o_padrao_de_duracao_e_o_de_som(self):
+        """Padrão não é permissão para ignorar a campanha: ela continua ganhando.
+
+        Este é o teste que o padrão novo tinha de trazer junto. Um padrão de
+        20s numa campanha de mínimo 25 sai 25; um padrão de som original numa
+        campanha de áudio proibido sai mudo. Se qualquer um dos dois falhar, o
+        padrão deixou de ser taste e virou regra, e a regra é de quem paga.
+        """
+        apertada = rules(video={"duration_min_s": 25, "duration_max_s": 40,
+                                "audio": "forbidden"})
+        settings, _ = self.P.effective({}, apertada)
+        self.assertEqual(settings["target_s"], 25)
+        self.assertEqual(settings["sound"], "platform")
+        curta = rules(video={"duration_min_s": 5, "duration_max_s": 10,
+                             "audio": "required"})
+        settings, _ = self.P.effective({}, curta)
+        self.assertEqual(settings["target_s"], 10)
+        self.assertEqual(settings["sound"], "embedded")
+
+    def test_o_padrao_vencido_nao_e_reportado_como_gosto_atropelado(self):
+        """`overruled` é o que a campanha tirou do DONO, e um padrão não é dele.
+
+        Desde que `sound` ganhou padrão, comparar o efetivo em vez do guardado
+        fazia toda campanha de áudio proibido dizer "sua escolha foi vencida"
+        a quem nunca escolheu nada -- e essa lista é justamente a que o agente
+        lê para contar ao dono o que não pôde honrar.
+        """
+        forbid = rules(video={"audio": "forbidden"})
+        _s, sem_escolha = self.P.effective({}, forbid)
+        self.assertEqual([r for r in sem_escolha if "sound" in r or "silent" in r], [])
+        _s, escolheu = self.P.effective({"sound": "embedded"}, forbid)
+        self.assertTrue(any("silent" in r for r in escolheu))
 
 
 class Beat(unittest.TestCase):
@@ -529,11 +620,18 @@ class RealRender(unittest.TestCase):
         self.assertFalse(any("audio track" in m for lv, m in findings
                              if lv == warden.REPROVA))
 
-    def test_cut_refuses_to_render_without_a_sound_decision(self):
-        """warden cut, through main, must stop rather than silence a clip when
-        neither the campaign nor the owner has chosen the sound."""
+    def test_cut_sem_decisao_de_som_usa_o_original_e_diz_em_voz_alta(self):
+        """Era `test_cut_refuses_to_render_without_a_sound_decision`.
+
+        O `die` foi trocado por um padrão anunciado, por decisão do dono de
+        15/09/2026: a recusa não impedia o clipe mudo, ela só obrigava uma
+        pergunta -- e medir o pedido daquele dia deu 10min34s de perguntas de
+        26min22s até o único clipe. O que este teste cobra agora é o que o
+        `die` cobrava de verdade: que o som não seja escolhido em silêncio.
+        Ele é escolhido, é o original, e a linha aparece.
+        """
         import io
-        from contextlib import redirect_stdout
+        from contextlib import redirect_stdout, redirect_stderr
         cid = "sound-undecided"
         r = rules(id=cid, video={"audio": None, "duration_max_s": 30,
                                  "width": 1080, "height": 1920})
@@ -544,13 +642,20 @@ class RealRender(unittest.TestCase):
         import warden_prefs as P
         if os.path.exists(P.path(WARDEN_DIR)):
             os.remove(P.path(WARDEN_DIR))
-        out = io.StringIO()
-        with self.assertRaises(SystemExit):
-            with redirect_stdout(out):
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with redirect_stdout(out), redirect_stderr(err):
                 warden.main(["cut", self.src, "--campaign", cid, "--any-length",
-                            "--crop", "center",
+                             "--crop", "center",
                              "--start", "0", "--end", "3", "--out", "s.mp4"])
-        self.assertNotIn("MEDIA:", out.getvalue())
+        except SystemExit:
+            pass
+        self.assertIn("som: original (padrão; a campanha não decide isso)",
+                      err.getvalue())
+        # E o padrão é uma decisão, não um descuido: o render recebeu `embedded`.
+        som, linha = warden._som_decidido(r, {})
+        self.assertEqual(som, "embedded")
+        self.assertIn("padrão", linha)
 
     def test_cut_clamps_a_long_window_to_the_campaign_maximum(self):
         r = rules(video={"duration_min_s": 1, "duration_max_s": 3,
@@ -1282,12 +1387,24 @@ class BatchContract(unittest.TestCase):
         self.assertIn("NONE of them has been sent by this command",
                       erro.getvalue())
         # E o que fazer a seguir, dito como tarefa e não como fato consumado.
-        # A linha mudou de lugar de propósito: ela agora sai SEMPRE que algum
-        # clipe passou, inclusive num lote curto, porque clipe pronto que
-        # ninguém manda é clipe perdido. O que ela tem de continuar dizendo é
-        # quantos e com que ferramenta.
-        self.assertIn("deliver the 2 that cleared, one per turn",
-                      erro.getvalue())
+        #
+        # "one per turn" saiu daqui em 15/09/2026 porque foi MEDIDO e é falso:
+        # a mensagem final de um turno leva quantos `MEDIA:` tiver -- 8 de 8,
+        # com duas linhas juntas inclusive -- e o que perde anexo é escrever a
+        # linha antes do fim do turno, 0 de 5. A instrução antiga mandava
+        # fazer, em N turnos, o que cabia em um; e o lote de dois que chegou
+        # como um tinha essa instrução na tela.
+        #
+        # O que sai agora é o texto exato da mensagem final, para copiar.
+        self.assertIn("2 clip(s) cleared", erro.getvalue())
+        self.assertIn("END YOUR TURN NOW", erro.getvalue())
+        self.assertIn("no tool call after it", erro.getvalue())
+        self.assertIn("Corte 1: <caption>", erro.getvalue())
+        self.assertIn("Corte 2: <caption>", erro.getvalue())
+        # e os DOIS caminhos estão no mesmo bloco, um debaixo do outro
+        bloco = erro.getvalue().split("END YOUR TURN NOW", 1)[1]
+        self.assertEqual(bloco.count("MEDIA:"), 2, bloco)
+        self.assertNotIn("one per turn", erro.getvalue())
         self._nunca_afirma_entrega(erro.getvalue() + saida.getvalue())
 
     def test_a_batch_that_comes_up_short_exits_non_zero_and_names_the_clip(self):
@@ -4390,6 +4507,14 @@ class ADuracaoPedidaPrecisaSerDecidida(unittest.TestCase):
     cobra a diferença. O que não existia era qualquer coisa que notasse a
     AUSÊNCIA dele -- sem `asked_s` no sidecar não há o que comparar, então o
     silêncio passava por aprovação. Aqui a ausência vira uma decisão explícita.
+
+    Em 15/09/2026 a decisão deixou de ser um `die` e passou a ser um PADRÃO
+    ANUNCIADO, por ordem do dono. O defeito que esta classe vigia é o mesmo e
+    ela continua vigiando-o: o que não pode acontecer é a duração chegar ao
+    render sem que alguém a tenha decidido em voz alta. O `die` garantia isso
+    ao custo de uma pergunta antes do primeiro clipe -- 10min34s de 26min22s,
+    medidos; o padrão garante a mesma coisa imprimindo qual número foi usado e
+    de onde veio, e `asked_s` continua chegando ao renderizador sempre.
     """
 
     def setUp(self):
@@ -4409,31 +4534,55 @@ class ADuracaoPedidaPrecisaSerDecidida(unittest.TestCase):
             json.dump(corpo, fh)
         return self.plan
 
-    def test_cut_without_a_duration_decision_does_not_render(self):
+    def test_cut_sem_duracao_pedida_usa_o_padrao_e_o_anuncia(self):
+        """Era `test_cut_without_a_duration_decision_does_not_render`.
+
+        O que mudou é o remédio, não o defeito: o número continua tendo de sair
+        da ferramenta e ser dito. Aqui ele sai do padrão de 20s do dono, dentro
+        dos limites da campanha, e a linha diz qual foi e de onde veio.
+        """
         import io
         from contextlib import redirect_stderr
         erro = io.StringIO()
-        with redirect_stderr(erro), self.assertRaises(SystemExit) as saiu:
-            warden.main(["cut", os.path.join(self.dir, "x.mp4"),
-                         "--campaign", self.cid, "--start", "0", "--end", "3",
-                         "--out", "d.mp4"])
-        self.assertEqual(saiu.exception.code, 1)
-        self.assertIn("no duration decision", erro.getvalue())
-        # e a mensagem dá as duas saídas, em vez de só reclamar
-        self.assertIn("--seconds", erro.getvalue())
-        self.assertIn("--any-length", erro.getvalue())
+        try:
+            with redirect_stderr(erro):
+                warden.main(["cut", os.path.join(self.dir, "x.mp4"),
+                             "--campaign", self.cid, "--start", "0", "--end", "3",
+                             "--out", "d.mp4"])
+        except SystemExit:
+            pass                       # a fonte não existe; o portão é o que importa
+        self.assertNotIn("no duration decision", erro.getvalue())
+        self.assertIn("duração:", erro.getvalue())
+        # o número e a sua procedência, na mesma linha
+        self.assertIn("padrão de 20s", erro.getvalue())
+        self.assertIn("limites da campanha", erro.getvalue())
 
-    def test_a_plan_whose_clips_say_nothing_about_length_does_not_render(self):
+    def test_o_padrao_de_duracao_cabe_nos_limites_da_campanha(self):
+        """A campanha continua vencendo o padrão, que é a metade que não pode cair."""
+        cid = "duracao-apertada"
+        r = rules(id=cid, video={"duration_min_s": 25, "duration_max_s": 40})
+        with open(warden.campaign_path(cid), "w") as fh:
+            json.dump(r, fh)
+        segundos, linha = warden._duracao_decidida(r, {})
+        self.assertEqual(segundos, 25)
+        self.assertIn("25s", linha)
+        self.assertIn("campanha", linha)
+
+    def test_um_plano_sem_duracao_nenhuma_usa_o_padrao_e_o_anuncia(self):
         import io
         from contextlib import redirect_stderr
         plano = self._plano([{"out": "a.mp4", "start": 0, "end": 3},
                              {"out": "b.mp4", "start": 4, "end": 7}])
         erro = io.StringIO()
-        with redirect_stderr(erro), self.assertRaises(SystemExit) as saiu:
-            warden.main(["cut", "--plan", plano])
-        self.assertEqual(saiu.exception.code, 1)
-        self.assertIn("no duration decision for this batch", erro.getvalue())
-        self.assertIn("2 of 2 clips", erro.getvalue())
+        try:
+            with redirect_stderr(erro):
+                warden.main(["cut", "--plan", plano])
+        except SystemExit:
+            pass
+        self.assertNotIn("no duration decision", erro.getvalue())
+        self.assertIn("duração:", erro.getvalue())
+        # e diz para QUANTOS clipes o padrão valeu, que é o que o `die` dizia
+        self.assertIn("2 of 2", erro.getvalue())
 
     def test_seconds_at_the_top_of_the_plan_settles_the_whole_batch(self):
         """O número dito uma vez vale para o lote inteiro, que é como a pessoa fala."""
@@ -4464,17 +4613,28 @@ class ADuracaoPedidaPrecisaSerDecidida(unittest.TestCase):
             pass
         self.assertNotIn("no duration decision", erro.getvalue())
 
-    def test_one_clip_missing_its_number_is_still_the_whole_batch_stopping(self):
-        """Um clipe mudo sobre duração num lote de três é o defeito inteiro."""
+    def test_um_clipe_mudo_sobre_duracao_num_lote_de_tres_e_nomeado(self):
+        """Era `..._is_still_the_whole_batch_stopping`.
+
+        O lote não para mais -- o clipe sem número recebe o padrão, como os
+        outros dois recebem o número que trazem. O que não pode cair é a
+        CONTAGEM: o lote tem de dizer que um dos três não disse nada sobre
+        duração, senão o padrão entra em silêncio e volta a ser o silêncio que
+        passava por aprovação.
+        """
         import io
         from contextlib import redirect_stderr
         plano = self._plano([{"out": "a.mp4", "start": 0, "end": 3, "seconds": 20},
                              {"out": "b.mp4", "start": 4, "end": 7},
                              {"out": "c.mp4", "start": 8, "end": 11, "seconds": 20}])
         erro = io.StringIO()
-        with redirect_stderr(erro), self.assertRaises(SystemExit):
-            warden.main(["cut", "--plan", plano])
-        self.assertIn("1 of 3 clips", erro.getvalue())
+        try:
+            with redirect_stderr(erro):
+                warden.main(["cut", "--plan", plano])
+        except SystemExit:
+            pass
+        self.assertIn("1 of 3", erro.getvalue())
+        self.assertIn("duração:", erro.getvalue())
 
 
 class AsTresMargensDaInterface(unittest.TestCase):
@@ -4699,10 +4859,21 @@ class OCaminhoBaratoExisteSemCampanha(unittest.TestCase):
     era a única porta aberta, e pagava 3min46s de transcrição por um texto que a
     legenda publicada entrega em 5s.
 
-    Abrir essa porta sem abrir uma porta LATERAL é o que estes testes guardam: o
-    portão continua existindo, só muda quem responde. Uma fonte que o dono não
-    avalizou é recusada antes de um byte de mídia descer, exatamente como uma
-    fonte fora do acervo é.
+    O que estes testes guardam MUDOU em 15/09/2026, por decisão do dono, e a
+    versão anterior desta classe está logo abaixo em espírito: ela exigia que
+    uma fonte fora da lista de confiança fosse recusada antes de um byte descer.
+
+    A decisão: quem manda o link já afirmou que pode usar o material. O agente
+    nunca pede licença. Então o portão de LICENÇA do caminho sem campanha deixou
+    de existir -- e com ele foi embora uma chamada de rede (`_channel_facts`),
+    que sofria o mesmo bloqueio de bot do YouTube e transformava uma recusa de
+    rede em "esta fonte não é de confiança".
+
+    O que estes testes guardam AGORA é a outra metade, que não mudou e não pode
+    mudar: a decisão foi sobre licença, NÃO sobre segurança. `safe_url` continua
+    de pé antes de qualquer sim, e um link que aponta para dentro da máquina, ou
+    que nem é http, continua recusado. Com campanha, o acervo continua
+    respondendo como sempre respondeu.
     """
 
     def setUp(self):
@@ -4720,34 +4891,52 @@ class OCaminhoBaratoExisteSemCampanha(unittest.TestCase):
                        or str(x) == "--skip-download" or str(x) == "-f"
                        for x in (c[0] or []))]
 
-    def test_lista_de_confianca_vazia_nao_avaliza_nada(self):
-        with self.assertRaises(RuntimeError) as erro:
-            self.M.archive_trusted(
-                "https://www.youtube.com/watch?v=QualquerUm1", self.dir, [])
-        self.assertIn("refusing to pull", str(erro.exception))
+    def test_lista_de_confianca_vazia_nao_impede_o_link_que_o_dono_mandou(self):
+        """Era o contrário até 15/09/2026, e era o contrário com um custo: uma
+        lista vazia -- que é o estado de TODA instalação nova -- recusava o
+        primeiro link que o dono mandasse, e o mandava rodar `warden trusted
+        add` para avalizar a si mesmo. Quem manda o link já afirmou que pode
+        usar o material."""
+        ok, porque, _ = self.M.fiscal(
+            "https://www.youtube.com/watch?v=QualquerUm1", trusted=[])
+        self.assertTrue(ok, porque)
+        self.assertIn("sent by the person", porque)
+
+    def test_a_licenca_deixou_de_perguntar_mas_a_seguranca_nao(self):
+        """A metade que não mudou, e a que não pode mudar: a decisão do dono foi
+        sobre LICENÇA. Um link que aponta para dentro da máquina continua
+        recusado, e a recusa continua sendo a de `safe_url` -- porque isso nunca
+        foi uma pergunta sobre direitos autorais."""
+        for url in ("http://127.0.0.1/interno.mp4",
+                    "http://169.254.169.254/latest/meta-data",
+                    "file:///etc/passwd"):
+            with self.assertRaises(RuntimeError, msg=url) as erro:
+                self.M.fiscal(url, trusted=[])
+            self.assertIn("refusing", str(erro.exception))
         self.assertEqual(self._baixou(), [], "baixou mídia apesar da recusa")
 
-    def test_fonte_fora_da_lista_do_dono_e_recusada_antes_de_baixar(self):
-        with self.assertRaises(RuntimeError) as erro:
-            self.M.archive_trusted(
-                "https://exemplo-qualquer.invalid/v.mp4", self.dir,
-                ["youtube.com"])
-        self.assertIn("refusing to pull", str(erro.exception))
-        self.assertEqual(self._baixou(), [])
-
-    def test_a_recusa_diz_como_o_dono_avaliza_a_fonte(self):
-        with self.assertRaises(RuntimeError) as erro:
-            self.M.archive_trusted(
-                "https://exemplo-qualquer.invalid/v.mp4", self.dir,
-                ["youtube.com"])
-        self.assertIn("warden trusted add", str(erro.exception))
+    def test_o_link_confiavel_nao_custa_uma_consulta_de_rede(self):
+        """O ganho medido junto com a decisão. O caminho antigo passava por
+        `trusted_check`, que para um link do YouTube com entrada de canal
+        chamava `_channel_facts` -> `_facts` -> yt-dlp: o portão de licença
+        sofria o mesmo bloqueio de bot que o download, e um link autorizado
+        virava "não consegui checar a fonte" por uma recusa de rede."""
+        def _explode(*a, **k):
+            raise AssertionError("o fiscal não pode tocar a rede")
+        self.M.run = _explode
+        ok, _porque, _ = self.M.fiscal(
+            "https://www.youtube.com/watch?v=AAAAAAAAAAA", trusted=["@umcanal"])
+        self.assertTrue(ok)
 
     def test_o_mesmo_fiscal_vale_para_a_janela_sem_campanha(self):
+        """A janela passa pelo MESMO fiscal, e portanto pela mesma decisão: um
+        link do dono não é recusado por licença, e um link para dentro da
+        máquina continua recusado por `safe_url`."""
         with self.assertRaises(RuntimeError) as erro:
             self.M.archive_windows(
-                None, self.dir, "https://exemplo-qualquer.invalid/v.mp4",
+                None, self.dir, "http://127.0.0.1/v.mp4",
                 [(100.0, 120.0)], trusted=["youtube.com"])
-        self.assertIn("refusing to pull windows", str(erro.exception))
+        self.assertIn("refusing", str(erro.exception))
         self.assertEqual(self._baixou(), [])
 
     def test_o_fiscal_e_um_so_e_atende_pelos_dois_portoes(self):
@@ -4959,8 +5148,15 @@ class AConfirmacaoDeEntregaEUmaLeituraNaoUmaPromessa(unittest.TestCase):
     nada em lugar nenhum acusando.
 
     Não existe ferramenta `send_message` neste runtime, então não há resultado
-    de envio para ler. O único registro independente de que um anexo saiu é o
-    log do gateway. Então a confirmação passou a ser uma leitura dele.
+    de envio para ler. Dois registros independentes respondem no lugar dele: o
+    state.db do Hermes, que sabe em QUAL mensagem aquele caminho foi escrito e
+    com que `finish_reason`, e o log do gateway, que sabe se um anexo subiu.
+
+    A primeira metade é nova em 15/09/2026 e é o conserto do defeito: antes, a
+    confirmação só contava anexos no gateway.log, sem olhar o caminho, então
+    num lote de dois o anexo do clipe 1 riscava o clipe 2 -- o comando
+    confirmava como entregue exatamente o clipe que se perdeu. Por isso cada
+    teste aqui escreve as DUAS pontas.
     """
 
     def setUp(self):
@@ -4976,9 +5172,19 @@ class AConfirmacaoDeEntregaEUmaLeituraNaoUmaPromessa(unittest.TestCase):
         self._log_antigo = W.GATEWAY_LOG
         W.GATEWAY_LOG = self.log
         self.addCleanup(setattr, W, "GATEWAY_LOG", self._log_antigo)
+        self.db = os.path.join(self.dir, "state.db")
+        self._db_antigo = W.STATE_DB
+        W.STATE_DB = self.db
+        self.addCleanup(setattr, W, "STATE_DB", self._db_antigo)
         self.clipe = os.path.join(self.dir, "corte-01.mp4")
         with open(self.clipe, "wb") as fh:
             fh.write(b"x")
+        # A mensagem FINAL que citou este clipe. Sem ela nada abaixo está
+        # perguntando o que diz perguntar: a confirmação começa por "em qual
+        # mensagem sua este caminho apareceu?", e só depois vai ao gateway.
+        escreve_state_db(self.db, [
+            ("assistant", f"aqui está\n\nMEDIA:{os.path.abspath(self.clipe)}",
+             "stop")])
 
     def _repoe_env(self):
         if self._env is None:
@@ -5037,12 +5243,17 @@ class AConfirmacaoDeEntregaEUmaLeituraNaoUmaPromessa(unittest.TestCase):
         self.assertEqual(self.W.entregas_pendentes(), [])
 
     def test_sem_anexo_nenhum_no_log_recusa_e_diz_onde_a_linha_tem_que_estar(self):
-        # Este é o defeito de 15/09: `MEDIA:` no meio do turno não anexa nada.
+        """A mensagem final existiu e mesmo assim nada subiu.
+
+        As duas pontas discordando é o caso que só a leitura das duas pega: o
+        state.db diz que a linha estava no lugar certo, e o gateway não
+        registra anexo nenhum saindo depois dela. Não dá para riscar.
+        """
         self.W.entregas_registra(self.clipe)
         self._escreve_log(["[Plow_Chat] nothing to do with media"])
         code, err = self._confirma()
         self.assertEqual(code, 1, err)
-        self.assertIn("no attachment", err)
+        self.assertIn("no video attachment", err)
         self.assertIn("LAST message", err)
 
     def test_anexo_anterior_ao_clipe_nao_conta_como_entrega_dele(self):
@@ -5053,7 +5264,7 @@ class AConfirmacaoDeEntregaEUmaLeituraNaoUmaPromessa(unittest.TestCase):
         self.W.entregas_registra(self.clipe)
         code, err = self._confirma()
         self.assertEqual(code, 1, err)
-        self.assertIn("no attachment", err)
+        self.assertIn("no video attachment", err)
 
     def test_log_ilegivel_risca_mas_diz_em_voz_alta_que_nao_verificou(self):
         # "Não consegui olhar" não é "está tudo certo", e também não pode
