@@ -1,0 +1,20 @@
+# The Proof-of-Origin token plugin for yt-dlp, pinned.
+#
+# Fetched as a file rather than resolved from the index, and that is a finding
+# rather than a preference. Measured 15/09/2026: the `uv` in this base (0.11.6)
+# silently resolves this package to 1.3.2 and reports that "only
+# bgutil-ytdlp-pot-provider<=1.3.2 is available" -- while the PyPI simple index
+# serves 2.0.0, unyanked, requires-python >=3.8. The 2.0.0 wheel declares
+# `Metadata-Version: 2.5`, which that resolver does not accept, so it drops the
+# file and then describes the gap as the index's.
+#
+# Taking 1.3.2 instead was not an option: 1.3.x binds its server to 0.0.0.0 and
+# that was a remote code execution hole (GHSA-qpv9-8xfj-xx9m). A silent
+# downgrade into a known RCE is exactly the failure this pin exists to stop.
+#
+# The checksum is the second half of that guard, the same rule the model and the
+# agent-index client follow: this file is code that runs inside an agent holding
+# a live credential, and a URL is only as good as the host serving it.
+version=2.0.0
+url=https://files.pythonhosted.org/packages/29/38/fd54194c03f6636488343d4c49e96ce2fe8ecd228c0cf7ce4d024ab7d52b/bgutil_ytdlp_pot_provider-2.0.0-py3-none-any.whl
+sha256=22884c399802771ddfd9275bb05b178d67c89db67a1d5d1e17ed7f681956628e

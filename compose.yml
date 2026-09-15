@@ -16,6 +16,12 @@ services:
       # the publisher; every installer reports to the same id. The reporter
       # stands down without it, so an install that never sets it never counts.
       AGENT_ID: ${AGENT_ID:-clip-warden}
+      # Where the Proof-of-Origin token provider answers. The service name
+      # below, not localhost: the provider is a sibling container, and the
+      # tool's own default (127.0.0.1) is for someone running it on the host.
+      WARDEN_POT_URL: ${WARDEN_POT_URL:-http://pot:4416}
+    depends_on:
+      - pot
     volumes:
       # `.host`, not the path the agent reads: a bind carries this machine's
       # ownership in, and the image copies the file into place as root itself.
@@ -62,6 +68,41 @@ services:
     # gdown/yt-dlp paths. Those belong in the downloader, where they can be
     # enforced, and are tracked in the security pass rather than papered over
     # with a compose key that does nothing.
+
+  # The Proof-of-Origin token provider.
+  #
+  # YouTube now wants a PO token on requests from a logged-out client. Without
+  # one an install looks like a bot, and the address it is calling from gets
+  # flagged -- at which point NOTHING in this project can pull a YouTube link
+  # any more. That is not a hypothesis: it is the state the owner's own address
+  # was measured in on 15/09/2026, and a valid token minted afterwards did not
+  # lift it. The token has to be there BEFORE the flag, which is why this is a
+  # service and not a troubleshooting step.
+  #
+  # A sidecar rather than something baked into the agent image, on purpose:
+  # this is a Node service with native dependencies that tracks YouTube's
+  # BotGuard, it will need updating on YouTube's schedule rather than ours, and
+  # 2.0.0 exists because 1.3.x had a remote code execution hole
+  # (GHSA-qpv9-8xfj-xx9m). Keeping it separate means updating it never means
+  # rebuilding the agent.
+  #
+  # NO `ports:` KEY, and that is the security control. The published advice is
+  # `-p 127.0.0.1:4416:4416`; not publishing at all is strictly safer, because
+  # then the provider is reachable only on this compose network -- by the agent
+  # and by nothing else on the machine.
+  pot:
+    # Pinned by digest as well as tag, the same rule the agent's own base
+    # follows: this service answers a request the agent makes on every
+    # YouTube link, and a moving tag would substitute code underneath an
+    # install without anybody reviewing it.
+    image: brainicism/bgutil-ytdlp-pot-provider:2.0.0@sha256:ed86b6fdd5e430ddd7c8ce1adb55e1ab54db7c7dbc1bcbf3a82454a85b971164
+    init: true
+    restart: unless-stopped
+    # It is a token minter, not a workload. Measured elsewhere it sits idle;
+    # the limit is here so a leak in a third-party service cannot take the
+    # host's Docker VM down with it, the same reason the agent has one.
+    mem_limit: 512m
+    pids_limit: 128
 
 volumes:
   agent-home:
