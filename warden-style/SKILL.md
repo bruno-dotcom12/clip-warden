@@ -135,7 +135,24 @@ forgetting what it was already given.
 
 - If the footage already carries burned text along the bottom — an archive's own
   subtitles, a disclaimer — `cut` detects it and covers it with the gradient
-  footer so there is one caption in frame instead of two. It says so every time.
+  footer so there is one caption in frame instead of two.
+- The detection has three states. Certain (a fixed band, 1.9x the middle's edge
+  density in most frames) and **suspect** — signs of text that do not reach that
+  bar: one frame over the line, or an average over 1.35x, or a dense band running
+  to the 22% cap. A vlog's own captions are thin, centred and intermittent, and
+  they land in *suspect*: measured on the clip that shipped with two captions,
+  1 frame in 8 and 1.7x on average. Suspect covers the footer too. The trade is
+  deliberate and one-sided: a gradient over clean footage costs a gradient, and
+  an uncovered caption under ours costs the clip.
+- `cut` prints what the detection found and what it decided **every time it burns
+  a caption**, including when it found nothing. Without that line, "clean" and
+  "nobody looked" read the same.
+- `style check` gives a second opinion on the finished file: it counts bands of
+  text per frame and compares them with the lines the sidecar says we drew. More
+  bands than we drew, in most frames, with two to spare, is a reject. Two to
+  spare because the band count invents a band of its own on real footage — the
+  approved corpus measured up to 2.1 bands on average for a single two-line
+  phrase.
 - Covering **another clipper's watermark** is against most campaign rules. The
   archive's own captions are not that. If the bottom text is somebody's mark,
   re-cut with `cover_footer: false` in the plan and do not pass `--subtitles`.

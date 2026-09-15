@@ -8,8 +8,16 @@ description: Go from a campaign's authorised archive to finished vertical clips.
 The order is fixed and it is not a preference.
 
 ```
-rule set -> archive -> text -> chosen windows -> render -> sheet -> send_message
+rule set -> WORDS (--text-first) -> chosen windows -> --window -> render -> sheet -> send_message
 ```
+
+**The video is the last thing you pull, and you pull only the seconds you
+chose.** Any instruction anywhere that reads "pull the footage, then find the
+moment" is the old order and it is wrong. Measured on the same 18-minute
+source: this order reaches the first clip in **62s**; pulling the video first
+took **12min26s**. If you are about to run `warden archive` with neither
+`--text-first` nor `--window`, stop -- section 4c is the only place that is
+right, and it is an exception you have to be able to justify.
 
 ## 1. The rule set first
 
@@ -17,20 +25,30 @@ No clip is rendered before the campaign is stored, because the renderer takes
 its duration and its resolution from the rule set. Run `warden-campaign` first
 if `warden campaign show <id>` comes back empty.
 
-## 2. Pull only what the brief published
+## 2. Pull the words. Never the video.
+
+```
+warden archive --campaign <id> --text-first     subtitles, or audio if none
+```
+
+This is the first command you run after the rule set exists. It pulls what
+gives you the WORDS and no video at all: the published subtitle if the source
+has one, the audio track if it does not.
+
+Measured on the 18-minute source of 14/09: the published subtitle comes down in
+**4s and 73 KB**; the audio in **4s and 15 MB**; the whole video is **16s and
+361 MB**, and transcribing it costs **195s**. Choosing a window is work on
+TEXT. Pulling 361 MB to find out where to cut is paying for the video before
+knowing whether you want it.
 
 `warden archive --campaign <id>` downloads from `sources.archive_urls` and from
-nowhere else. If it says the rule set publishes no archive, stop and ask for the
-link. Do not go looking for the footage. A clip built from material the campaign
-did not authorise is rejected after the views, which is the loss this agent
-exists to prevent.
-
-Each file it prints is a path you pass straight to `warden cut`. It names them
-itself and pulls one video per playlist link, so there is nothing to rename and
-no stray file to sort through. If a download fails, `archive` says which link
-and why on its own line; pulling footage by hand from outside the archive
-rebuilds the exact failure this skill exists to prevent. Send the owner the
-failing link instead.
+nowhere else, with or without the flag. If it says the rule set publishes no
+archive, stop and ask for the link. Do not go looking for the footage. A clip
+built from material the campaign did not authorise is rejected after the views,
+which is the loss this agent exists to prevent. If a download fails, `archive`
+says which link and why on its own line; pulling footage by hand from outside
+the archive rebuilds the exact failure this skill exists to prevent. Send the
+owner the failing link instead.
 
 ### A specific link the owner sends
 
@@ -49,19 +67,22 @@ offer `warden trusted add <channel|domain>`. A channel is an `@handle` or a
 `UC…` id; a domain is `youtube.com`. This is the only footage you cut that no
 campaign authorised, and the trusted list is what stands in for the brief.
 
-## 3. Choose on the text, never on the video
+## 3. Read the words and choose the windows
 
-`warden transcribe <file>` writes words with timing, preferring subtitles the
-archive published over transcribing. Then `warden digest <transcript>` gives you
-a version you can afford to read.
+What `--text-first` wrote is what you read. When it brought the published
+subtitle, the words are already there. When it brought the audio instead,
+`warden transcribe <audio>` writes words with timing from it -- the audio file,
+never a video, because there is no video yet. Then `warden digest <transcript>`
+gives you a version you can afford to read.
 
 Never read the raw transcript JSON. Word-level timing is for the renderer, and
 on a long source the raw artefact does not fit in a window worth paying for.
 
-## Finding the moments that travel
+### Finding the moments that travel
 
-`warden signals <transcript> --source <file>` is where you start on a long
-source -- a podcast, a live, an interview. It reads the words and the sound and
+`warden signals <transcript> --source <audio>` is where you start on a long
+source -- a podcast, a live, an interview. `--source` is the audio `--text-first`
+brought down; it reads loudness, and audio is all it needs. It reads the words and the sound and
 returns, in time order, only the moments that carry a signal: a question, an
 absolute claim, a named fight, a burst of laughter, a spike in loudness where
 the room reacted. It does not rank them and it cannot: what is funny or damning
@@ -87,82 +108,7 @@ window that reads on the picture: an expression, an action, a piece of on-screen
 text. `warden prefs show --campaign <id>` tells you whether this campaign is one
 of those before you pick, not after you render.
 
-## 4. Render inside the rules
-
-`warden cut <source> --campaign <id> --start <s> --end <s> --out <file>`,
-adding `--subtitles <srt>` to burn the words and `--hook "<line>"` for the
-overlay at the top.
-
-`warden transcribe` writes an `.srt` beside the transcript JSON, and that is
-what `--subtitles` takes -- so the words the tool heard can go on the screen even
-when the archive shipped no subtitles of its own. Two things it cannot decide for
-you. First, whisper mishears, and a wrong word burned on the screen is worse than
-no caption: read the transcript before you burn, and if a line is wrong, fix the
-srt or leave captions off. The srt does not burn on its own, and that is the same
-rule enforced: `warden captions review <srt> --start <s> --end <s>` prints the
-lines inside the window and `--approve` signs them, and with no signature `cut`
-renders the clip with **no caption at all** rather than burning words nobody
-read. So sign after reading, never before, and editing the srt voids it. Second, the tool measures pixels, not meaning, so it
-cannot see text the footage already carries -- a lower-third, a channel's own
-burned captions, the Prime archive's own subtitles. Burn over those and you have
-two. The cut says so every time it burns; look at the first clip, and if the
-source already shows text, do not pass `--subtitles`.
-
-A landscape source does not fit 9:16, so a vertical band of it is kept and the
-rest is dropped. `--crop` chooses the band, and a side name follows the subject's
-face rather than a fixed fraction: `--crop left` centres on the face in the left
-half, `right` on the right, `auto` on the most prominent face anywhere. A
-percentage (0 far left to 100 far right) overrides detection and places the band
-exactly. `cut` prints which pixels it kept and whether a face chose them or it
-fell back to the centre; read that line.
-
-Detection is not sight. It follows a face, so a shot with no clear face -- a wide
-plate, a creature, an object -- falls back to the centre and says so, and there
-`--crop <percentage>` is how you place the band by hand. Look at the first clip
-before a batch: a comparison video with the subject off to one side is exactly
-what a fixed centre crop gets wrong.
-
-For an edit, add `--track <name|file>` -- a track already kept by
-`warden tracks add` is found by its name. `warden beat <track>` shows what it found:
-tempo, where the grid starts, how long a bar is, and where the track gains body.
-The cut is then a whole number of bars, and the track enters at its drop rather
-than at its intro.
-
-An edit is cut to the bar **even when the file ships silent**. A campaign that
-requires the sound to be added on the platform still gets an edit, because a
-clip that is a whole number of bars long lands on the beat once the owner picks
-the track in the app. Tell them which second to start the sound at, which is the
-`drop_s` from `warden beat`.
-
-It clamps the length to the campaign's window and tells you when it did. It
-strips the audio when the campaign adds its own sound on the platform. It keeps
-burned text inside the safe area, because the platform's own furniture covers
-the bottom and the right rail and no brief mentions that.
-
-It runs the check on its own output and exits non-zero if the render still does
-not clear the campaign. Do not send a clip whose cut exited non-zero.
-
-## 4b. Text before pixels, and the duration the person said
-
-### Pull the words first. Never the video.
-
-```
-warden archive --campaign <id> --text-first     subtitles, or audio if none
-```
-
-Measured on the 18-minute source of 14/09: the published subtitle comes down in
-**5s and 76 KB**; the whole video is **25s and 345 MB**; transcribing it costs
-**195s**. Choosing a window is work on TEXT. Pulling 345 MB to find out where to
-cut is paying for the video before knowing whether you want it.
-
-So the order is: `--text-first`, read, choose the windows, then
-`warden archive` without the flag to pull the video, then cut. That took the
-time-to-first-window from **211s to 30s** on the same source.
-
-When the source publishes no subtitle, `--text-first` pulls the **audio** — 15 MB
-against 345 MB for the same words — and you transcribe that.
-
-### Then pull only the windows you chose
+## 4. Pull ONLY the windows you chose
 
 ```
 warden archive --campaign <id> --window 181-201.6
@@ -206,6 +152,99 @@ yt-dlp picks the HLS stream, and `--download-sections` over HLS writes an mp4
 **with no video track, silently**. The tool probes the file and deletes it
 rather than handing it on.
 
+### 4c. The whole video is the exception, and you say why
+
+```
+warden archive --campaign <id>                  the WHOLE file. 361 MB. 16s.
+```
+
+There are three reasons to run this, and "it is simpler" is not one of them:
+
+- the source publishes no subtitle **and** `--text-first` could not get the
+  audio either;
+- the owner asked for the whole thing;
+- you need more of the source than the windows -- a montage across the hour,
+  a search for a shot you cannot place on the text.
+
+Outside those, pulling the whole file is the 12min26s path. When you do take
+it, say so in one line and say which of the three it was. Each file it prints
+is a path you pass straight to `warden cut`, on the SOURCE's own clock -- it
+names them itself and pulls one video per playlist link, so there is nothing to
+rename and no stray file to sort through.
+
+## 5. Render inside the rules
+
+`warden cut <source> --campaign <id> --start <s> --end <s> --out <file>`,
+adding `--subtitles <srt>` to burn the words and `--hook "<line>"` for the
+overlay at the top.
+
+`warden transcribe` writes an `.srt` beside the transcript JSON, and that is
+what `--subtitles` takes -- so the words the tool heard can go on the screen even
+when the archive shipped no subtitles of its own. Two things it cannot decide for
+you. First, whisper mishears, and a wrong word burned on the screen is worse than
+no caption: read the transcript before you burn, and if a line is wrong, fix the
+srt or leave captions off. The srt does not burn on its own, and that is the same
+rule enforced: `warden captions review <srt> --start <s> --end <s>` prints the
+lines inside the window and `--approve` signs them, and with no signature `cut`
+renders the clip with **no caption at all** rather than burning words nobody
+read. So sign after reading, never before, and editing the srt voids it. Second, the tool opens eight frames of the window
+before it renders and measures the edge density of the bottom band, which finds
+text the footage already carries -- a lower-third, a channel's own burned
+captions, the Prime archive's own subtitles. Burn over those and you have two.
+
+It finds them in three states, not two. A fixed band (a permanent disclaimer)
+trips the hard boolean and `cut` covers it with the gradient footer. A thin,
+centred, intermittent caption -- a vlog's own subtitles, which vanish between
+sentences -- often does not trip it: measured on the cut that shipped two
+captions, one frame in eight voted and the average was 1.7x the middle of the
+frame, under the 1.9x the boolean asks for. That is now a third state, **suspect**,
+and `cut` treats it like the first one: it covers the footer anyway, because a
+gradient over clean footage costs a gradient and a second caption costs the clip.
+Then `warden style check` reads the sidecar and rejects the file if a suspect
+bottom was left uncovered under our caption.
+
+`cut` prints a line about the footage **every time it burns a caption**, with the
+numbers, including when it found nothing -- before this, "clean" and "nobody
+looked" were the same empty output. Read that line, look at the first clip, and
+if the source shows text and you do not want it covered, do not pass
+`--subtitles`.
+
+A landscape source does not fit 9:16, so a vertical band of it is kept and the
+rest is dropped. `--crop` chooses the band, and a side name follows the subject's
+face rather than a fixed fraction: `--crop left` centres on the face in the left
+half, `right` on the right, `auto` on the most prominent face anywhere. A
+percentage (0 far left to 100 far right) overrides detection and places the band
+exactly. `cut` prints which pixels it kept and whether a face chose them or it
+fell back to the centre; read that line.
+
+Detection is not sight. It follows a face, so a shot with no clear face -- a wide
+plate, a creature, an object -- falls back to the centre and says so, and there
+`--crop <percentage>` is how you place the band by hand. Look at the first clip
+before a batch: a comparison video with the subject off to one side is exactly
+what a fixed centre crop gets wrong.
+
+For an edit, add `--track <name|file>` -- a track already kept by
+`warden tracks add` is found by its name. `warden beat <track>` shows what it found:
+tempo, where the grid starts, how long a bar is, and where the track gains body.
+The cut is then a whole number of bars, and the track enters at its drop rather
+than at its intro.
+
+An edit is cut to the bar **even when the file ships silent**. A campaign that
+requires the sound to be added on the platform still gets an edit, because a
+clip that is a whole number of bars long lands on the beat once the owner picks
+the track in the app. Tell them which second to start the sound at, which is the
+`drop_s` from `warden beat`.
+
+It clamps the length to the campaign's window and tells you when it did. It
+strips the audio when the campaign adds its own sound on the platform. It keeps
+burned text inside the safe area, because the platform's own furniture covers
+the bottom and the right rail and no brief mentions that.
+
+It runs the check on its own output and exits non-zero if the render still does
+not clear the campaign. Do not send a clip whose cut exited non-zero.
+
+## 5b. The duration the person said, and the batch
+
 ### The number the person said is the request
 
 ```
@@ -242,7 +281,7 @@ then 178.3-201.6, then 181-201.6 — at ~30s a render. Two minutes went into
 changing your mind with the video open. Choose the window on the text, in
 `--text-first`, where changing your mind is free.
 
-## 5. Look at the clip before you send it
+## 6. Look at the clip before you send it
 
 **This is not optional and it is not a review step you may skip when the checks
 are green.** A clip was once delivered with the hook cropped off at both edges,
@@ -259,8 +298,10 @@ MEDIA:/var/lib/hermes/cache/videos/clip-01.mp4
 ```
 
 **Open that image with the Read tool before you call `send_message` for that
-clip** -- the sheet is what stands between a render and a delivery, and section 6
-is where the delivery happens. Then say, in your own words, what you saw. Eight
+clip** -- the sheet is what stands between a render and a delivery, and section 7
+is where the delivery happens. Then say, in your own words, what you saw -- in
+your working notes, between tool calls, where nothing is delivered. It is never
+a message to the person: looking is a condition of sending, not news. Eight
 things, and every one of them rejects the clip on its own:
 
 - [ ] the hook fits inside the frame, uncropped, in at most two lines
@@ -282,7 +323,7 @@ mention in passing: nothing has looked at that clip, so it does not ship. It
 withholds the `MEDIA:` path itself in that case, so there is no path to put in a
 `send_message` and that clip is not one of the ones you deliver.
 
-## 6. Send, and deliver the number that was asked for
+## 7. Send, and deliver the number that was asked for
 
 ### Deliver each clip with `send_message`. Writing MEDIA: in your narration does nothing.
 
@@ -317,7 +358,7 @@ deliver it as a native media attachment." One call per clip, and the call
 happens **immediately after you looked at that clip's contact sheet**, not at
 the end of the batch. `--plan` batches the renders; it does not batch the sends.
 
-### Read the result. A send you did not confirm is not a delivery.
+### Read the result, then tell the tool. A send you did not confirm is not a delivery.
 
 `send_message` returns a result. Read it. If it did not succeed, say so in the
 conversation, in words, and call it again:
@@ -326,6 +367,21 @@ conversation, in words, and call it again:
 
 Going on to the next clip without looking at the result is how the first one
 disappeared with nobody — not even the agent — noticing.
+
+When the result came back successful, and only then:
+
+```
+warden delivered /var/lib/hermes/cache/videos/clip-01.mp4
+```
+
+`cut` wrote that clip down as OWED at the moment it printed the path; this is
+what strikes it off. And `warden delivered` with no path is the question — "is
+anything still owing?" — which **exits 1 while anything is**, and names the
+files. Run it before you end your turn.
+
+Until now that count lived only in your memory of the turn, which is precisely
+the thing that failed: twice, two clips were asked for, one arrived, and no
+component anywhere knew the difference. Now one does.
 
 ### "Os N clipes estão prontos" is a forbidden sentence until every file is confirmed
 
@@ -351,6 +407,10 @@ and if one did not make it, that is the sentence instead:
 than the number you were asked for.** "One good clip" is not a batch of two, and
 stopping at the first is the exact failure this rule exists for: two cuts were
 asked for, one arrived, and nothing accused the shortfall.
+
+Something accuses it now. `warden delivered` exits 1 while a cleared clip has
+not been confirmed, and it prints which one. That is the last command you run
+before your turn ends, so the person is never the one who has to count.
 
 For more than one clip, write a plan. The tool holds the count of renders; you
 hold the count of sends, and only the second one is the count you report:

@@ -8,10 +8,16 @@ from a house default. A pipeline that picks its own footage or its own duration
 produces a file that looks finished and gets the submission thrown out.
 
   warden fetch <url>                       a page as text, for reading a brief
-  warden archive --campaign <id>           pull the authorised footage
+  warden archive --campaign <id> --text-first   the WORDS: subs, or audio. First.
   warden transcribe <file>                 words with timing, subs if published
   warden digest --source <file>            the transcript a model can afford
+  warden archive --campaign <id> --window <a>-<b>   only the seconds chosen
   warden cut <file> --start --end          one clip, inside the campaign's rules
+
+The two downloads are in that order on purpose, and the order is the whole
+point: `--text-first` costs 73 KB, `--window` a few MB, the whole file 361 MB
+and 195s of transcription on top. Pulling the file first took 12min26s to the
+first clip against 62s. `warden archive` with neither flag is the exception.
 """
 import hashlib
 import html
@@ -1311,7 +1317,15 @@ def ass_from_cues(cues, width, height, safe=None, offset=0.0, length=None,
     outline = 3
     margin_l = max(10, x0)
     margin_r = max(10, width - x1)
-    margin_v = max(10, height - y1)
+    # O piso da legenda não pode depender só do `y1` das regras. Ele vem em
+    # pixels da resolução DECLARADA, e num render 720x1280 com o padrão de
+    # 1586 a conta dá negativa: o `max(10, ...)` então punha a legenda a 10px
+    # do fundo, dentro da interface do app, e nada acusava. E mesmo em
+    # 1080x1920 o padrão deixava a legenda terminando a ~60px do começo da
+    # interface de baixo -- dentro da regra, encostada nela. O piso passa a
+    # ser a margem MAIS a folga, escalado por este quadro; `y1` só pode subir
+    # a legenda, nunca baixá-la para dentro da faixa do app.
+    margin_v = max(S.caption_piso(height), height - y1)
     header = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
@@ -1986,6 +2000,18 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         notes.append(f"scale moves {zoom_from:.2f} to {zoom_to:.2f} across the "
                      f"clip. A cut with no scale move reads as raw footage.")
 
+    # A legenda do acervo não fica na borda: no vlog de 14/09 ela está a 69% da
+    # altura da fonte, que é o meio do quadro e é exatamente onde a nossa cai
+    # depois do recorte. `burned_text_bands` olha os 16% de cima e os 16% de
+    # baixo e por construção não podia vê-la -- a conclusão de que o limiar
+    # estava alto demais era falsa. Esta varredura olha a faixa inteira que o
+    # corte vai manter.
+    if kept and sw:
+        _e = fx * (1 - kept)
+        acervo_faixas = S.legenda_do_acervo(
+            looked, recorte=(int(_e * sw), int((_e + kept) * sw)))
+    else:
+        acervo_faixas = S.legenda_do_acervo(looked)
     if kept:
         left_edge = fx * (1 - kept)
         note_band = f"{int(left_edge * sw)}–{int((left_edge + kept) * sw)} of {sw}px"
@@ -2022,7 +2048,13 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     # lê daqui em vez de tentar recuperar dos pixels: a largura do hook aqui é a
     # que o PIL mediu com a fonte real, e não uma estimativa que confunde letra
     # com letreiro de neon.
-    style_facts = {"hook": None, "caption": None, "footer_covered": False,
+    style_facts = {"frame": {"w": width, "h": height},
+                   "margins": S.margens(width, height),
+                   "source_caption_bands": [
+                       {"y0": round(f["y0"], 3), "y1": round(f["y1"], 3),
+                        "span": round(f["span"], 3), "frames": f["frames"]}
+                       for f in acervo_faixas],
+                   "hook": None, "caption": None, "footer_covered": False,
                    "motion": bool(motion), "source_text": source_text,
                    "duration_s": round(float(length), 2),
                    "asked_s": None if pedido is None else round(pedido, 2),
@@ -2052,6 +2084,21 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         notes.append("this footage carries burned text along the TOP "
                      f"({source_text['evidence']}). No hook was asked for, so "
                      "nothing of ours lands on it.")
+    elif source_text.get("top_suspect"):
+        # Em cima não existe o lado barato que existe embaixo. O degradê do
+        # rodapé cobre a faixa de baixo por quase nada; no topo não há degradê
+        # nenhum, e parar o corte por uma SUSPEITA seria matar o clipe para
+        # resolver um talvez. Então aqui a suspeita vira o que ela é -- uma
+        # linha que manda olhar o mosaico -- e não um portão.
+        notes.append(
+            "this footage MAY carry burned text along the TOP (suspect, not "
+            f"the hard boolean: {', '.join(source_text.get('top_why') or ['-'])}"
+            f"; {source_text['evidence']})."
+            + (" The hook goes there too: look at the top band on the contact "
+               "sheet before delivering, and re-cut without --hook or on "
+               "another window if there are two texts in it."
+               if hook else
+               " No hook was asked for, so nothing of ours lands on it."))
 
     # ------------------------------------------------- de que relógio é este arquivo
     #
@@ -2080,9 +2127,41 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
             f"{fonte_zero + float(start) + length:.1f}s of it.")
 
     burn_reason = None
+    # A faixa onde a NOSSA legenda vai cair, em fração da altura: do piso para
+    # cima, duas linhas de entrelinha. Se o acervo já escreve ali, queimar por
+    # cima é a legenda dupla -- e aqui o degradê do rodapé não salva, porque
+    # cobrir 70% da altura cobriria o assunto do clipe.
+    _piso = S.caption_piso(height)
+    _linha = int(S.caption_size(height) * S.LEADING)
+    nossa_faixa = ((height - _piso - 2 * _linha) / height,
+                   (height - _piso) / height)
+    acervo_na_nossa_faixa = [
+        f for f in acervo_faixas
+        if f["y1"] >= nossa_faixa[0] - 0.03 and f["y0"] <= nossa_faixa[1] + 0.03]
+    style_facts["source_caption_clash"] = bool(acervo_na_nossa_faixa)
+
     cues = []
     fala_apos_o_corte = False
-    if caption_srt and os.path.exists(caption_srt):
+    # Onde a frase que o corte parte realmente fecha, em segundos do clipe.
+    # É o número que faltava: quando alguém pede 20 segundos e a fala não cabe
+    # em 20, a única saída que a ferramenta oferecia era "mova o --end", que é
+    # mandar adivinhar. Com este número a escolha é entre dois valores, e a
+    # pessoa pode ouvir a frase inteira em uma linha sem jargão nenhum.
+    frase_fecha_em = None
+    if caption_srt and os.path.exists(caption_srt) and acervo_na_nossa_faixa:
+        f = acervo_na_nossa_faixa[0]
+        burn_reason = (
+            f"not burning captions: this footage already burns its own, at "
+            f"{f['y0']:.0%}-{f['y1']:.0%} of the frame height, which is where "
+            f"ours would go ({f['frames']} of {len(looked)} sampled frames, "
+            f"{f['span']:.0%} of the kept width). Two captions in one frame is "
+            f"the reject; the gradient footer cannot help this one, because "
+            f"that band is the middle of the picture and covering it would "
+            f"cover the subject. The speech is already on screen, so this clip "
+            f"ships with the footage's own captions and no second set. Say that "
+            f"to the person in one line -- \"esse vídeo já vem legendado, então "
+            f"não pus legenda em cima\" -- and nothing about bands or frames.")
+    elif caption_srt and os.path.exists(caption_srt):
         if R.get(rules, "sources.archive_has_captions") is True:
             # The campaign says this archive already burns its own captions.
             # Burning ours over them is the doubling the owner set this flag to
@@ -2120,6 +2199,10 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                     fim_janela = queima_ate
                     fala_apos_o_corte = any(r["end"] > fim_janela + 0.05
                                             for r in rows)
+                    partida = [r for r in rows
+                               if r["start"] < fim_janela < r["end"]]
+                    if partida:
+                        frase_fecha_em = round(partida[0]["end"] - queima_de, 2)
                     descartes = []
                     cues = S.reflow_cues(window, descartes=descartes)
                     # ---- encaixar o destaque na fala de verdade ----
@@ -2236,6 +2319,12 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
             pendurados = S.finais_pendurados(
                 cues, continua_depois=fala_apos_o_corte)
             style_facts["caption"] = {
+                # Onde a última linha da legenda termina, e até onde ela pode
+                # ir para a direita. Os dois saem das margens que o ASS
+                # recebeu, que é o mesmo lugar onde o libass as aplica.
+                "bottom_px": height - max(S.caption_piso(height),
+                                          height - int(safe.get("y1", 0))),
+                "right_px": width - max(10, width - int(safe.get("x1", width - 140))),
                 "cues": escritas, "max_lines": most,
                 "max_cue_s": round(longest, 2),
                 "renderer": "ass",
@@ -2250,6 +2339,9 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                 # vez de mandar mexer na legenda.
                 "ends_mid_sentence": bool(
                     cues and pendurados and cues[-1]["text"] in pendurados),
+                # Onde a frase partida fecha. Sem isto, "mova o --end" é um
+                # conselho sem destino.
+                "sentence_closes_at_s": frase_fecha_em,
                 # O corpo e a altura de letra que ele produz. A altura é o que
                 # se vê e é o que encolheu 45% sem ninguém notar quando a
                 # legenda virou ASS -- registrada aqui, ela vira aritmética.
@@ -2290,7 +2382,25 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     #    a de baixo e a nossa fica sozinha.
     #  - `cover_footer=False` é a outra saída legítima: não cobre e não queima.
     queimamos = bool(cues and ass_path)
-    if source_text.get("bottom"):
+    # O terceiro estado, e o que ele provoca. `bottom` é o booleano duro,
+    # calibrado para tarja fixa; `bottom_suspect` é o material que mostra sinal
+    # de texto sem alcançá-lo -- ver os gatilhos em `warden_style`. Os dois
+    # ligam o degradê, e essa escolha é assimétrica de propósito: cobrir a faixa
+    # de baixo de um material limpo custa um degradê discreto num quinto do
+    # quadro; NÃO cobrir um material com legenda custa o clipe, porque saem duas
+    # legendas de origens diferentes no mesmo quadro e isso não se conserta
+    # depois de publicado. Em 14/09 esse `False` desligou em cascata o degradê,
+    # o REJECT do `check_sidecar` e todas as notas, e o clipe saiu.
+    tem_texto = bool(source_text.get("bottom"))
+    suspeito = bool(source_text.get("bottom_suspect"))
+    # Como a nota chama o que foi visto. "Já carrega" e "pode carregar" são
+    # coisas diferentes e a nota não pode dizer a primeira quando mediu a
+    # segunda -- é o mesmo defeito de "limpo" e "nem olhei" serem a mesma frase.
+    como = ("this footage already carries burned text along the bottom"
+            if tem_texto else
+            "this footage MAY already carry burned text along the bottom "
+            "(SUSPECT, not the hard boolean)")
+    if tem_texto or suspeito:
         cover = cover_footer
         if cover is None:
             # Cobre quando a nossa legenda vai disputar a mesma faixa. Se não
@@ -2324,10 +2434,9 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                 "-- re-cut with cover_footer=False and drop --subtitles.")
             if queimamos:
                 notes.append(
-                    "this footage already carries burned text along the bottom "
-                    f"({source_text['evidence']}). Covered it with the gradient "
-                    "footer so there is one caption in frame and not two."
-                    + aviso_marca_dagua)
+                    f"{como} ({source_text['evidence']}). Covered it with the "
+                    "gradient footer so there is one caption in frame and not "
+                    "two." + aviso_marca_dagua)
             else:
                 # A nota afirmava a disputa "uma legenda em quadro e não duas"
                 # mesmo quando legenda nenhuma nossa foi queimada. Chegar aqui
@@ -2335,10 +2444,9 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                 # degradê apagou a legenda do acervo em troca de nada -- o que a
                 # nota tem de dizer, com o motivo de a nossa não ter saído.
                 notes.append(
-                    "this footage already carries burned text along the bottom "
-                    f"({source_text['evidence']}). Covered it with the gradient "
-                    "footer because cover_footer=True was asked for -- but NO "
-                    "caption of ours was burned in the end"
+                    f"{como} ({source_text['evidence']}). Covered it with the "
+                    "gradient footer because cover_footer=True was asked for "
+                    "-- but NO caption of ours was burned in the end"
                     # Só a primeira frase do motivo: o texto inteiro do
                     # portão já saiu numa nota própria logo acima, e repeti-lo
                     # aqui enterra a frase que importa.
@@ -2348,10 +2456,42 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                     "get that text back, or fix what stopped our captions."
                     + aviso_marca_dagua)
         else:
+            # Suspeito sem cobertura é tratado como o ramo duro, e o ramo
+            # duro não derruba a legenda aqui: ele diz para não queimar por
+            # cima, e o `check_sidecar` lá embaixo REPROVA o arquivo que saiu
+            # assim mesmo. Não derruba porque chegar aqui exige um
+            # `cover_footer=False` explícito -- o dono já disse que não quer o
+            # degradê, e jogar a legenda dele fora em silêncio seria o mesmo
+            # defeito pelo avesso. O que não pode é a saída ficar muda, e não
+            # fica: a nota aqui, o REJECT no sidecar.
             notes.append(
-                "this footage already carries burned text along the bottom "
-                f"({source_text['evidence']}). Not covering it, so do not burn "
-                "captions over it -- two captions in one frame is a reject.")
+                f"{como} ({source_text['evidence']}). Not covering it, so do "
+                "not burn captions over it -- two captions in one frame is a "
+                "reject.")
+
+    # A decisão dita em voz alta, TODA VEZ QUE QUEIMA LEGENDA -- inclusive
+    # quando a detecção não achou nada. Antes deste bloco a nota sobre o texto
+    # do acervo só existia dentro do `if` acima, então um material limpo e um
+    # material que ninguém olhou saíam idênticos para quem lê a saída: nada. E
+    # "nada" era a saída do clipe de 14/09, onde a detecção tinha rodado, tinha
+    # números, e eles não chegaram a lugar nenhum. Uma linha, com os números.
+    if queimamos:
+        if tem_texto and style_facts.get("footer_covered"):
+            decidiu = ("covered the bottom with the gradient footer before "
+                       "burning ours")
+        elif suspeito and style_facts.get("footer_covered"):
+            decidiu = ("covered the bottom with the gradient footer anyway -- a "
+                       "gradient on clean footage is cheap, a second caption in "
+                       "frame is not")
+        elif tem_texto or suspeito:
+            decidiu = ("did NOT cover it (cover_footer=False), so our caption "
+                       "was burned over whatever is down there -- check the "
+                       "contact sheet before delivering")
+        else:
+            decidiu = ("found nothing down there, so our caption was burned "
+                       "straight onto the picture")
+        notes.append(f"footage checked before burning captions "
+                     f"({source_text['evidence']}): {decidiu}.")
 
     if hook:
         # O hook é medido contra a largura útil e quebrado em até duas linhas
@@ -2365,7 +2505,19 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         # do que vai para a tela, e a conta de "o hook cabe" é exata de propósito.
         hook, acento = S.split_acento(hook)
         lines, fitted, whole = S.fit_lines(hook, usable, size, floor)
-        hook_y = max(int(height * 0.14), int(safe.get("y0", 200)) + fitted)
+        # O que a margem governa é o TOPO do bloco, não o centro dele, e essa
+        # confusão é o defeito inteiro. `hook_y` sempre foi o centro que
+        # `text_png` recebe: com `y0` 200 mais corpo 76 dando 276, e duas
+        # linhas de entrelinha 101, metade do bloco subia -- topo em 175 e a
+        # primeira linha de tinta medida em 184 no arquivo entregue (199 no
+        # segundo corte, que abre sem acento). As abas e a lupa do TikTok
+        # cobrem os primeiros ~200px, então o hook estava dentro da faixa de
+        # risco desde sempre, e a conta que dizia "o hook cabe" só olhava a
+        # LARGURA. Agora o topo do bloco é a margem e o centro é derivado dele.
+        marge = S.margens(width, height)
+        leading = int(fitted * S.LEADING)
+        hook_top = max(marge["top"], int(safe.get("y0", 0)))
+        hook_y = hook_top + (len(lines) * leading) // 2
         png = os.path.join(art_dir, f"{stem}-hook.png")
         png, oy = S.text_png(lines, png, width, height, hook_y, fitted,
                              scrim=True, acento=acento)
@@ -2383,6 +2535,13 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         _f = S._font(fitted)
         drawn = int(max(_probe.textlength(l, font=_f) for l in lines)) if lines else 0
         style_facts["hook"] = {"width_px": drawn, "usable_px": usable,
+                               # Onde a primeira linha começa e onde a última
+                               # coluna de tinta termina. Vem de quem DESENHOU,
+                               # não de uma estimativa: é o mesmo número que o
+                               # `text_png` usou. Sem ele o portão de margem
+                               # teria de adivinhar.
+                               "top_px": hook_top,
+                               "right_px": (width + drawn) // 2,
                                "lines": len(lines), "size_px": fitted,
                                "chars": len(str(hook)), "complete": bool(whole),
                                "seconds_on_screen": round(hook_s, 2),
@@ -2552,6 +2711,13 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     # sobrepõem (o reflow garante), então o que divide um quadro é no máximo:
     # o degradê do rodapé, uma cue, e o hook. Contar os 14 inputs como 14
     # camadas foi o que fez o portão reprovar dois clipes corretos.
+    #
+    # E ele fica sendo o que é: um número no relatório, não o orçamento contra
+    # o qual `style check` conta faixas de texto no render pronto. Quem faz essa
+    # conta é `_linhas_demais`, e ela usa LINHAS (`hook.lines`,
+    # `caption.max_lines`) e não camadas, porque uma cue de duas linhas lê como
+    # duas faixas -- entre uma linha e outra passa imagem limpa. Cruzar com
+    # `text_layers`, que diria 1, reprovaria todo corte de fala do projeto.
     style_facts["text_layers"] = (
         (1 if footer else 0)
         + (1 if style_facts.get("caption") else 0)

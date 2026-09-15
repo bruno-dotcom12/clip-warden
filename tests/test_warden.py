@@ -7,6 +7,7 @@ in a payout.
 """
 import json
 import os
+from datetime import datetime, timedelta, timezone
 import re
 import shutil
 import sys
@@ -535,7 +536,8 @@ class RealRender(unittest.TestCase):
         out = io.StringIO()
         with self.assertRaises(SystemExit):
             with redirect_stdout(out):
-                warden.main(["cut", self.src, "--campaign", cid, "--crop", "center",
+                warden.main(["cut", self.src, "--campaign", cid, "--any-length",
+                            "--crop", "center",
                              "--start", "0", "--end", "3", "--out", "s.mp4"])
         self.assertNotIn("MEDIA:", out.getvalue())
 
@@ -768,7 +770,8 @@ class DeliveryLine(unittest.TestCase):
         fires on a clean render and points into the deliverable directory."""
         self._store("line-ok", duration_min_s=3, duration_max_s=5,
                     width=1080, height=1920, aspect="9:16", audio="forbidden")
-        code, out = self._run_cut(["cut", self.src, "--campaign", "line-ok", "--crop", "center",
+        code, out = self._run_cut(["cut", self.src, "--campaign", "line-ok", "--any-length",
+                                "--crop", "center",
                                    "--start", "1", "--end", "4", "--out", "c.mp4"])
         media_lines = [l for l in out.splitlines() if l.startswith("MEDIA:")]
         self.assertEqual(code, 0)
@@ -787,7 +790,8 @@ class DeliveryLine(unittest.TestCase):
         # A tiny file cap the render cannot meet, so check rejects after cut.
         self._store("line-reject", duration_max_s=5, width=1080, height=1920,
                     audio="forbidden", max_file_mb=0.001)
-        code, out = self._run_cut(["cut", self.src, "--campaign", "line-reject", "--crop", "center",
+        code, out = self._run_cut(["cut", self.src, "--campaign", "line-reject", "--any-length",
+                                "--crop", "center",
                                    "--start", "0", "--end", "4", "--out", "r.mp4"])
         self.assertEqual(code, 1)
         self.assertFalse(any(l.startswith("MEDIA:") for l in out.splitlines()),
@@ -1211,6 +1215,13 @@ class BatchContract(unittest.TestCase):
         for m in self.ENTREGUE.finditer(texto):
             comeco = texto.rfind("\n", 0, m.start()) + 1
             antes = texto[comeco:m.start()].lower()
+            # `warden delivered` é o NOME do comando que cobra o envio, não uma
+            # afirmação de que ele aconteceu. Uma instrução para ir confirmar é
+            # o contrário de dizer que já foi confirmado, e sem esta exceção o
+            # guarda proibiria justamente a linha que fecha o buraco que ele
+            # existe para vigiar.
+            if antes.rstrip().endswith("`warden") or antes.rstrip().endswith("warden"):
+                continue
             self.assertTrue(antes.rstrip().endswith("not"),
                             "a saída afirma entrega que este comando não fez: "
                             + texto[comeco:m.end() + 20])
@@ -1249,7 +1260,7 @@ class BatchContract(unittest.TestCase):
              "_": "gancho: a reacao"}])
         saida, erro = io.StringIO(), io.StringIO()
         with redirect_stdout(saida), redirect_stderr(erro):
-            code = warden.main(["cut", "--plan", plan])
+            code = warden.main(["cut", "--plan", plan, "--any-length"])
         self.assertEqual(code, 0, erro.getvalue())
         # Dois pedidos, dois arquivos: a quantidade continua sendo provada.
         self.assertEqual(saida.getvalue().count("MEDIA:"), 2)
@@ -1278,7 +1289,7 @@ class BatchContract(unittest.TestCase):
             {"out": "lote-ruim.mp4"}])        # sem start/end
         saida, erro = io.StringIO(), io.StringIO()
         with redirect_stdout(saida), redirect_stderr(erro):
-            code = warden.main(["cut", "--plan", plan])
+            code = warden.main(["cut", "--plan", plan, "--any-length"])
         self.assertEqual(code, 1)
         self.assertEqual(saida.getvalue().count("MEDIA:"), 1)
         self.assertFalse(os.path.exists(warden.clip_out("lote-ruim.mp4")))
@@ -1301,7 +1312,7 @@ class BatchContract(unittest.TestCase):
             {"out": "lote-p2.mp4", "start": 5, "end": 8}])
         saida, erro = io.StringIO(), io.StringIO()
         with redirect_stdout(saida), redirect_stderr(erro):
-            warden.main(["cut", "--plan", plan])
+            warden.main(["cut", "--plan", plan, "--any-length"])
         linhas = [l for l in saida.getvalue().splitlines() if l.startswith("MEDIA:")]
         self.assertEqual(len(linhas), 2)
         self.assertIn("lote-p1.mp4", linhas[0])
@@ -3688,7 +3699,7 @@ class _LoteEmParalelo:
             json.dump(plano, fh)
         saida, erro = io.StringIO(), io.StringIO()
         with redirect_stdout(saida), redirect_stderr(erro):
-            code = warden.main(["cut", "--plan", caminho])
+            code = warden.main(["cut", "--plan", caminho, "--any-length"])
         return code, saida.getvalue(), erro.getvalue()
 
     @staticmethod
@@ -4263,3 +4274,392 @@ class JanelaMalFormadaEUmaInstrucaoNaoUmTraceback(unittest.TestCase):
                 code = saiu.code
         self.assertEqual(code, 1)
         self.assertIn("publishes no archive", erro.getvalue())
+
+
+class ContagemDeEntregas(unittest.TestCase):
+    """A dívida de envio, em disco.
+
+    Até 14/09 "renderizado não é entregue" era só uma frase: nada no repo sabia
+    quantos envios estavam devendo, e quando dois cortes saíram e um chegou,
+    quem contou foi o dono. Estes testes são a contagem existindo.
+    """
+
+    def setUp(self):
+        self.dir = _temp(self, "warden-entregas-")
+        self._antigo = os.environ.get("WARDEN_DIR")
+        os.environ["WARDEN_DIR"] = self.dir
+        self.addCleanup(self._restaura)
+
+    def _restaura(self):
+        if self._antigo is None:
+            os.environ.pop("WARDEN_DIR", None)
+        else:
+            os.environ["WARDEN_DIR"] = self._antigo
+
+    def _clipe(self, nome):
+        caminho = os.path.join(self.dir, nome)
+        open(caminho, "wb").write(b"x")
+        return caminho
+
+    def test_nothing_owed_exits_zero(self):
+        self.assertEqual(warden.main(["delivered"]), 0)
+
+    def test_a_cleared_clip_is_owed_until_it_is_confirmed(self):
+        clipe = self._clipe("corte-01.mp4")
+        warden.entregas_registra(clipe)
+        self.assertEqual(warden.main(["delivered"]), 1)
+        self.assertEqual(warden.main(["delivered", clipe]), 0)
+        self.assertEqual(warden.main(["delivered"]), 0)
+
+    def test_confirming_one_of_two_still_exits_one(self):
+        """O defeito exato: dois pedidos, um enviado, e o turno acabando.
+
+        Confirmar o corte 1 não pode dizer "pronto" enquanto o corte 2 é um
+        arquivo que a pessoa não tem.
+        """
+        import io
+        from contextlib import redirect_stderr
+        um, dois = self._clipe("corte-01.mp4"), self._clipe("corte-02.mp4")
+        warden.entregas_registra(um)
+        warden.entregas_registra(dois)
+        erro = io.StringIO()
+        with redirect_stderr(erro):
+            code = warden.main(["delivered", um])
+        self.assertEqual(code, 1)
+        self.assertIn("corte-02.mp4", erro.getvalue())
+        self.assertEqual(warden.main(["delivered", dois]), 0)
+
+    def test_a_clip_whose_file_is_gone_is_not_a_debt(self):
+        clipe = self._clipe("corte-01.mp4")
+        warden.entregas_registra(clipe)
+        os.remove(clipe)
+        self.assertEqual(warden.main(["delivered"]), 0)
+
+    def test_a_stale_debt_from_another_session_does_not_block_forever(self):
+        """Seis horas depois, uma pendência é lixo de outra conversa."""
+        clipe = self._clipe("corte-01.mp4")
+        warden.entregas_registra(clipe)
+        linhas = warden.entregas_all()
+        velho = datetime.now(timezone.utc) - timedelta(hours=warden.PRAZO_ENTREGA_H + 1)
+        linhas[0]["at"] = velho.isoformat()
+        warden._entregas_grava(linhas)
+        self.assertEqual(warden.main(["delivered"]), 0)
+
+    def test_registering_the_same_path_twice_is_one_debt(self):
+        clipe = self._clipe("corte-01.mp4")
+        warden.entregas_registra(clipe)
+        warden.entregas_registra(clipe)
+        self.assertEqual(len(warden.entregas_pendentes()), 1)
+
+    def test_a_corrupt_ledger_does_not_stop_a_render(self):
+        open(warden.entregas_path(), "w").write("{isto não é json")
+        self.assertEqual(warden.entregas_all(), [])
+        self.assertEqual(warden.main(["delivered"]), 0)
+
+
+class ADuracaoPedidaPrecisaSerDecidida(unittest.TestCase):
+    """20 segundos pedidos, 24,5s e 15,4s entregues.
+
+    22% acima e 23% abaixo, no mesmo lote. O `--seconds` existia e funcionava:
+    quando ele chega, a janela é movida para o número e o portão de entrega
+    cobra a diferença. O que não existia era qualquer coisa que notasse a
+    AUSÊNCIA dele -- sem `asked_s` no sidecar não há o que comparar, então o
+    silêncio passava por aprovação. Aqui a ausência vira uma decisão explícita.
+    """
+
+    def setUp(self):
+        self.dir = _temp(self, "warden-duracao-")
+        self.cid = "duracao-teste"
+        r = rules(id=self.cid)
+        os.makedirs(os.path.dirname(warden.campaign_path(self.cid)), exist_ok=True)
+        with open(warden.campaign_path(self.cid), "w") as fh:
+            json.dump(r, fh)
+        self.plan = os.path.join(self.dir, "plano.json")
+
+    def _plano(self, clips, **topo):
+        corpo = {"campaign": self.cid, "source": os.path.join(self.dir, "x.mp4"),
+                 "sound": "platform", "clips": clips}
+        corpo.update(topo)
+        with open(self.plan, "w") as fh:
+            json.dump(corpo, fh)
+        return self.plan
+
+    def test_cut_without_a_duration_decision_does_not_render(self):
+        import io
+        from contextlib import redirect_stderr
+        erro = io.StringIO()
+        with redirect_stderr(erro), self.assertRaises(SystemExit) as saiu:
+            warden.main(["cut", os.path.join(self.dir, "x.mp4"),
+                         "--campaign", self.cid, "--start", "0", "--end", "3",
+                         "--out", "d.mp4"])
+        self.assertEqual(saiu.exception.code, 1)
+        self.assertIn("no duration decision", erro.getvalue())
+        # e a mensagem dá as duas saídas, em vez de só reclamar
+        self.assertIn("--seconds", erro.getvalue())
+        self.assertIn("--any-length", erro.getvalue())
+
+    def test_a_plan_whose_clips_say_nothing_about_length_does_not_render(self):
+        import io
+        from contextlib import redirect_stderr
+        plano = self._plano([{"out": "a.mp4", "start": 0, "end": 3},
+                             {"out": "b.mp4", "start": 4, "end": 7}])
+        erro = io.StringIO()
+        with redirect_stderr(erro), self.assertRaises(SystemExit) as saiu:
+            warden.main(["cut", "--plan", plano])
+        self.assertEqual(saiu.exception.code, 1)
+        self.assertIn("no duration decision for this batch", erro.getvalue())
+        self.assertIn("2 of 2 clips", erro.getvalue())
+
+    def test_seconds_at_the_top_of_the_plan_settles_the_whole_batch(self):
+        """O número dito uma vez vale para o lote inteiro, que é como a pessoa fala."""
+        plano = self._plano([{"out": "a.mp4", "start": 0, "end": 3},
+                             {"out": "b.mp4", "start": 4, "end": 7}], seconds=20)
+        # não chega a renderizar (a fonte não existe), mas passa do portão:
+        # o que se prova aqui é que a falta de duração não é mais o motivo.
+        import io
+        from contextlib import redirect_stderr
+        erro = io.StringIO()
+        try:
+            with redirect_stderr(erro):
+                warden.main(["cut", "--plan", plano])
+        except SystemExit:
+            pass
+        self.assertNotIn("no duration decision", erro.getvalue())
+
+    def test_a_number_on_each_clip_also_settles_it(self):
+        plano = self._plano([{"out": "a.mp4", "start": 0, "end": 3, "seconds": 20},
+                             {"out": "b.mp4", "start": 4, "end": 7, "seconds": 25}])
+        import io
+        from contextlib import redirect_stderr
+        erro = io.StringIO()
+        try:
+            with redirect_stderr(erro):
+                warden.main(["cut", "--plan", plano])
+        except SystemExit:
+            pass
+        self.assertNotIn("no duration decision", erro.getvalue())
+
+    def test_one_clip_missing_its_number_is_still_the_whole_batch_stopping(self):
+        """Um clipe mudo sobre duração num lote de três é o defeito inteiro."""
+        import io
+        from contextlib import redirect_stderr
+        plano = self._plano([{"out": "a.mp4", "start": 0, "end": 3, "seconds": 20},
+                             {"out": "b.mp4", "start": 4, "end": 7},
+                             {"out": "c.mp4", "start": 8, "end": 11, "seconds": 20}])
+        erro = io.StringIO()
+        with redirect_stderr(erro), self.assertRaises(SystemExit):
+            warden.main(["cut", "--plan", plano])
+        self.assertIn("1 of 3 clips", erro.getvalue())
+
+
+class AsTresMargensDaInterface(unittest.TestCase):
+    """O hook começava a 184px do topo, e nada reprovava.
+
+    Medido no arquivo entregue em 14/09, isolando a tinta parada contra o fundo
+    em movimento: 184px no primeiro corte, 199px no segundo. As abas "Seguindo
+    / Para você" e a lupa do TikTok cobrem os primeiros ~200px, então os dois
+    saíram dentro da faixa que o app tapa. O único portão de posição que existia
+    era a LARGURA do hook contra os 854px úteis -- que protege a coluna direita
+    por simetria e não sabe nada sobre topo nem sobre base.
+    """
+
+    def _side(self, **muda):
+        import warden_style as S
+        side = {"frame": {"w": 1080, "h": 1920},
+                "margins": S.margens(1080, 1920),
+                "duration_s": 20.0, "motion": True,
+                "hook": {"width_px": 849, "usable_px": 854, "lines": 2,
+                         "size_px": 76, "chars": 41, "complete": True,
+                         "top_px": 280, "right_px": 964,
+                         "seconds_on_screen": 3.0},
+                "caption": {"cues": 11, "max_lines": 2, "max_cue_s": 2.1,
+                            "karaoke": True, "bottom_px": 1560,
+                            "right_px": 940}}
+        for chave, valor in muda.items():
+            bloco, campo = chave.split("__")
+            side[bloco][campo] = valor
+        return side
+
+    def _rejeitos(self, side):
+        import warden_style as S
+        return [m for nivel, m in S.check_sidecar(side) if nivel == "REJECT"]
+
+    def test_as_tres_margens_ficam_gravadas_no_sidecar(self):
+        import warden_style as S
+        self.assertEqual(S.margens(1080, 1920),
+                         {"top": 280, "bottom": 270, "right": 100})
+
+    def test_as_margens_escalam_com_o_quadro(self):
+        """720x1280 não é 1080x1920 com os mesmos pixels."""
+        import warden_style as S
+        self.assertEqual(S.margens(720, 1280),
+                         {"top": 187, "bottom": 180, "right": 67})
+
+    def test_um_clipe_dentro_das_tres_margens_nao_e_reprovado(self):
+        self.assertEqual(self._rejeitos(self._side()), [])
+
+    def test_o_hook_de_14_09_a_184px_e_reprovado(self):
+        achados = self._rejeitos(self._side(hook__top_px=184))
+        self.assertTrue(any("184px from the top" in m for m in achados), achados)
+
+    def test_a_legenda_dentro_da_faixa_de_baixo_e_reprovada(self):
+        achados = self._rejeitos(self._side(caption__bottom_px=1700))
+        self.assertTrue(any("1700px down" in m for m in achados), achados)
+
+    def test_texto_sob_a_coluna_de_botoes_e_reprovado(self):
+        achados = self._rejeitos(self._side(hook__right_px=1010))
+        self.assertTrue(any("like/comment/share" in m for m in achados), achados)
+
+    def test_a_legenda_mira_mais_alto_do_que_o_limite(self):
+        """A margem é onde reprova; a folga é onde o render mira.
+
+        Confundir as duas foi como a legenda foi parar a 60px da interface com
+        todos os checks verdes.
+        """
+        import warden_style as S
+        self.assertGreater(S.caption_piso(1920), S.margens(1080, 1920)["bottom"])
+        self.assertEqual(S.caption_piso(1920), 360)
+
+    def test_um_clipe_sem_legenda_nao_quebra_o_portao_de_margem(self):
+        side = self._side()
+        side["caption"] = None
+        self._rejeitos(side)          # não levanta
+
+
+class OHookComecaAbaixoDaInterface(unittest.TestCase):
+    """O mesmo conserto, medido no arquivo e não no dicionário."""
+
+    def setUp(self):
+        _ffmpeg_or_skip()
+        _pillow_or_skip()
+        self.dir = _temp(self, "warden-margem-")
+
+    def test_o_bloco_do_hook_comeca_na_margem_de_topo(self):
+        import warden_media as M
+        src = _make_source(os.path.join(self.dir, "src.mp4"), seconds=6)
+        r = rules(id="margem-teste",
+                  video={"duration_min_s": 1, "duration_max_s": 30,
+                         "width": 1080, "height": 1920, "audio": "forbidden"})
+        out = os.path.join(self.dir, "corte.mp4")
+        res = M.cut(src, out, r, 0, 4, sound="platform", crop="center",
+                    hook="ELES NÃO BURLARAM A REGRA, JOGARAM O JOGO")
+        side = json.load(open(os.path.splitext(out)[0] + "-estilo.json"))
+        self.assertEqual(side["margins"]["top"], 280)
+        # O topo do BLOCO, não o centro dele: era o centro que a conta antiga
+        # governava, e metade do bloco subia para dentro da faixa do app.
+        self.assertGreaterEqual(side["hook"]["top_px"], 280)
+        self.assertLessEqual(side["hook"]["right_px"], 1080 - 100)
+
+
+class OComandoQueAFerramentaSugereTemQueFuncionar(unittest.TestCase):
+    """A ferramenta mandava rodar um comando que ela mesma recusava.
+
+    Medido no corte do vlog em 14/09: o corte queima 461,35-481,35s e a nota
+    dizia "approve it with --start 461 --end 481". Rodando exatamente isso, o
+    portão respondia "not approved" e listava, na mesma linha, "the approved
+    windows are 461-481s" -- porque 481,35 não cabe em 481. Uma instrução que
+    não satisfaz o próprio portão é pior que nenhuma: ela gasta a confiança de
+    quem a seguiu.
+    """
+
+    def setUp(self):
+        self.dir = _temp(self, "warden-aprovacao-")
+        self.srt = os.path.join(self.dir, "fala.srt")
+        with open(self.srt, "w", encoding="utf-8") as fh:
+            fh.write("1\n00:07:41,350 --> 00:07:42,950\nEntão tem condições.\n\n"
+                     "2\n00:08:00,190 --> 00:08:01,670\nEssa é a nossa dispensa.\n\n")
+
+    def test_a_janela_sugerida_cobre_a_janela_que_vai_queimar(self):
+        import warden_style as S
+        _, motivo = S.approval_state(self.srt, start=461.35, end=481.35)
+        self.assertIn("--start 461", motivo)
+        self.assertIn("--end 482", motivo)   # para cima, não 481
+
+    def test_aprovar_a_janela_sugerida_faz_o_portao_passar(self):
+        """O teste que o defeito não passava: seguir a instrução tem que bastar."""
+        import warden_style as S
+        _, motivo = S.approval_state(self.srt, start=461.35, end=481.35)
+        inicio = float(re.search(r"--start (\d+)", motivo).group(1))
+        fim = float(re.search(r"--end (\d+)", motivo).group(1))
+        S.write_approval(self.srt, start=inicio, end=fim)
+        ok, porque = S.approval_state(self.srt, start=461.35, end=481.35)
+        self.assertTrue(ok, porque)
+
+
+class ALegendaDoAcervoNaoFicaNaBorda(unittest.TestCase):
+    """O detector estava olhando onde a legenda não estava.
+
+    `burned_text_bands` inspeciona os 16% de cima e os 16% de baixo do quadro,
+    e foi calibrada para tarja de disclaimer e rodapé de acervo. No vlog de
+    14/09 ela devolveu `bottom: false` -- e a conclusão de que o limiar estava
+    alto demais era FALSA. Medido no quadro da fonte aos 95,1s: a legenda
+    queimada do vídeo está em y 747-774 de 1080, a 69% da altura. No meio.
+    Nenhum ajuste de limiar faria aquele detector enxergá-la.
+
+    Estes testes guardam o detector que olha a faixa inteira que o corte mantém.
+    """
+
+    def setUp(self):
+        _pillow_or_skip()
+        self.S = __import__("warden_style")
+
+    def _quadro(self, com_texto_em=None, largura=1920, altura=1080):
+        """Um quadro cinza com, opcionalmente, uma faixa de letra branca."""
+        from PIL import Image, ImageDraw
+        img = Image.new("L", (largura, altura), 128)
+        if com_texto_em is not None:
+            d = ImageDraw.Draw(img)
+            y = int(altura * com_texto_em)
+            # letra branca sobre um fundo escuro: a assinatura que _row_span mede
+            d.rectangle([int(largura*0.25), y - 30, int(largura*0.75), y + 30], fill=20)
+            for i in range(14):
+                x = int(largura*0.27) + i * int(largura*0.034)
+                d.rectangle([x, y - 18, x + int(largura*0.020), y + 18], fill=255)
+        return img
+
+    def test_acha_a_legenda_no_meio_do_quadro(self):
+        faixas = self.S.legenda_do_acervo([self._quadro(com_texto_em=0.70)])
+        self.assertTrue(faixas, "não achou a legenda a 70% da altura")
+        self.assertAlmostEqual(faixas[0]["y0"], 0.70, delta=0.06)
+
+    def test_material_sem_texto_nao_vira_faixa(self):
+        """O teste que impede o conserto de virar paranoia."""
+        self.assertEqual(self.S.legenda_do_acervo([self._quadro()]), [])
+
+    def test_textura_sem_assinatura_de_letra_nao_conta(self):
+        """Teto ripado dá densidade de borda alta e `span` zero.
+
+        Medido no quadro real: a garagem do vlog produz uma faixa de borda
+        forte a 15-29% da altura com span 0, no mesmo quadro em que a legenda
+        dá 77% da largura mantida. A largura é o que separa os dois.
+        """
+        from PIL import Image, ImageDraw
+        img = Image.new("L", (1920, 1080), 128)
+        d = ImageDraw.Draw(img)
+        for i in range(40):                       # ripas horizontais finas
+            d.rectangle([0, 200 + i * 4, 1920, 201 + i * 4], fill=60)
+        self.assertEqual(self.S.legenda_do_acervo([img]), [])
+
+    def test_uma_legenda_que_pisca_em_um_quadro_de_oito_conta(self):
+        """Legenda de vlog some entre falas. Um quadro já é sinal.
+
+        O custo de achar que tem quando não tem é um clipe sem a NOSSA legenda,
+        e a fala continua na tela. O custo de achar que não tem quando tem é o
+        clipe que o dono reprovou.
+        """
+        quadros = [self._quadro() for _ in range(7)] + [self._quadro(com_texto_em=0.70)]
+        self.assertTrue(self.S.legenda_do_acervo(quadros))
+
+    def test_so_a_faixa_mantida_pelo_corte_e_medida(self):
+        """Texto que o enquadramento 9:16 joga fora não é problema nosso."""
+        from PIL import Image, ImageDraw
+        img = Image.new("L", (1920, 1080), 128)
+        d = ImageDraw.Draw(img)
+        d.rectangle([0, 700, 400, 780], fill=20)          # texto só à esquerda
+        for i in range(8):
+            d.rectangle([20 + i*45, 720, 20 + i*45 + 26, 760], fill=255)
+        inteiro = self.S.legenda_do_acervo([img])
+        recortado = self.S.legenda_do_acervo([img], recorte=(900, 1500))
+        self.assertTrue(inteiro or True)      # no quadro inteiro pode ou não pegar
+        self.assertEqual(recortado, [],
+                         "texto fora da faixa mantida não pode contar")

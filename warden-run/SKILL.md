@@ -9,10 +9,10 @@ Someone sends a link, or asks you to go find a campaign. What comes back is
 files they can upload, with the caption to paste. Everything between is yours.
 
 ```
-find or read the campaign  ->  ask what they like  ->  pull the TEXT of the
-   archive (--text-first)  ->  choose the windows on the words  ->  pull the
-   video  ->  read and approve the captions, window by window  ->  render
-   ->  look at the contact sheet  ->  check  ->  send
+find or read the campaign  ->  ask what they like  ->  pull the WORDS of the
+   archive (--text-first)  ->  choose the windows on the words  ->  pull ONLY
+   those windows (--window)  ->  read and approve the captions, window by
+   window  ->  render  ->  look at the contact sheet  ->  check  ->  send
 ```
 
 ## 1. The campaign
@@ -64,11 +64,15 @@ the rule set is the payment.
 ## 3. Footage, text, moments
 
 `warden archive --campaign <id> --text-first`, then `warden transcribe`, then
-`warden digest`. The order is in `warden-clip` and it is not negotiable: the
-moments are chosen on the words, before any video is opened. `--text-first`
-pulls the published subtitle, or the audio when there is none, and no video at
-all -- measured on the 18-minute source of 14/09: subtitles 4s / 73 KB against
-whole video 16s / 361 MB. Pull the video only once the windows are chosen.
+`warden digest`. The order is written once, in `warden-clip`, and it is not
+negotiable: the moments are chosen on the words, before any video is opened.
+`--text-first` pulls the published subtitle, or the audio when there is none,
+and no video at all.
+
+Once the windows are chosen, pull ONLY those windows:
+`warden archive --campaign <id> --window <a>-<b>`, one per window. The whole
+file is the exception and `warden-clip` section 4c is where it is argued for --
+the numbers, and when each path is right, live there and not here.
 
 If their preference is `approval: yes`, send the chosen moments first, as
 timestamps with the line that carries each one, and wait. If it is `no`, render
@@ -82,7 +86,10 @@ and `target_s` from `warden prefs show`. Then `warden-package` for the caption.
 When THEY said a number of seconds, it goes on the command line as
 `--seconds <n>`. `target_s` is their standing taste; `--seconds` is this
 request, and with it the delivery gate rejects a file that misses the number
-unless a campaign rule is to blame.
+unless a campaign rule is to blame. When nobody named a number, you say that
+too, with `--any-length`: `cut` will not render without one of the two. On
+14/09 "20 segundos" came back as 24,5s and 15,4s because the number never
+became a parameter and nothing missed it.
 
 The captions are approved per WINDOW, never per file.
 `warden captions review <srt> --start <s> --end <s> --approve` signs the lines
@@ -96,8 +103,13 @@ checklist it names before you send: the sheet is the only step in this whole
 path that looks at the picture, and a file with ten visible defects was once
 reported as passing because nobody opened it.
 
-Send each clip as it finishes, never the batch at the end. A person watching a
-progress message for twenty minutes assumes you died.
+Send each clip as it finishes, never the batch at the end.
+
+And that is the only reason to end a turn before the clips exist. The cure for
+a long silence is a shorter path -- the words first, the windows only -- not a
+stream of progress notes: each one is a turn of yours and seconds of theirs.
+The persona, under "What you say, and how little of it", is where that rule
+lives.
 
 **How a file is handed over is written in the persona, under "Handing the file
 over", and it is written there and nowhere else.** Read it there. In one line:

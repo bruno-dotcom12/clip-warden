@@ -7,9 +7,11 @@ that adds its own sound on the platform, footage that did not come from the
 published archive.
 
 Send this agent a campaign link. It reads the brief, writes down what the
-campaign demands, pulls the footage the brief authorises, picks the moments from
-the transcript, renders vertical clips that already sit inside the rules, and
-sends the files back in the chat with the caption to paste.
+campaign demands, pulls the WORDS the archive publishes, picks the moments from
+those words, pulls only the seconds it picked, renders vertical clips that
+already sit inside the rules, and sends the files back in the chat with the
+caption to paste. The video is the last thing it downloads, and it downloads
+only the seconds it is going to use.
 
 You post. It does not post for you, and that is on purpose: the platform's
 posting API locks an unaudited app's uploads to private, so a clip it published
@@ -99,9 +101,11 @@ it rather than from the model's reading.
 | `warden schema` | the rule set a campaign fills |
 | `warden campaign save --json '<json>'` | store one, verified by reading it back |
 | `warden fetch <url>` | a brief as readable text |
-| `warden archive --campaign <id>` | pull the authorised footage, and only that |
-| `warden archive --campaign <id> --text-first` | pull only what gives the words — the published subtitle, or the audio — and no video. Choose the windows on that first |
-| `warden archive --campaign <id> --window <a>-<b>` | pull ONLY that window of the source, through the same archive gate |
+| `warden archive --campaign <id> --text-first` | **the first download.** Only what gives the words — the published subtitle, or the audio — and no video. Choose the windows on that |
+| `warden archive --campaign <id> --window <a>-<b>` | **the second.** Only the seconds you chose, through the same archive gate, with the origin card beside it |
+| `warden archive --campaign <id>` | the whole file. The exception, not the flow: it cost 12min26s to the first clip against 62s |
+| `warden cut … --seconds <n>` / `--any-length` | the duration the person asked for. One of the two is required — a cut with no duration decision does not render |
+| `warden delivered [<clip>]` | strike a confirmed send off the list; with no path, asks what is still owed and exits 1 while anything is |
 | `warden authorize <url> --campaign <id>` | is this link in the campaign's archive? exit 1 = no |
 | `warden trusted add\|check\|list <x>` | the owner's trusted channels and domains, for clipping without a campaign |
 | `warden transcribe <file>` | published subtitles when they exist, whisper when they do not |

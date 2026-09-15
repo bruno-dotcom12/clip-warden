@@ -250,7 +250,7 @@ def fold(text):
 
 
 def whole(term, folded):
-    """O termo aparece no texto como token inteiro? Recebe e compara já dobrado.
+    r"""O termo aparece no texto como token inteiro? Recebe e compara já dobrado.
 
     Dois defeitos medidos, os dois silenciosos, os dois nesta fronteira:
 
@@ -466,6 +466,100 @@ def ledger_add(row):
     os.replace(tmp, ledger_path())
 
 
+# ------------------------------------------------------- delivery ledger
+
+# Um clipe renderizado não é um clipe entregue, e até 14/09 essa frase era só
+# uma frase: o repo inteiro não tinha uma linha de código que soubesse quantos
+# envios estavam devendo. O `--plan` contava RENDERS numa lista Python que
+# morria com o processo, e o modelo ficava sendo a única memória de quem já
+# tinha ido. Na rodada do vlog dois cortes saíram e um chegou, e a falta só
+# apareceu porque o dono contou os arquivos na tela dele.
+#
+# Isto é essa contagem, em disco. `deliver()` anota o clipe como DEVENDO no
+# instante em que imprime o `MEDIA:`; `warden delivered <clipe>` risca da
+# lista depois que o envio voltou; `warden delivered` sozinho responde
+# "falta alguém?" e sai 1 enquanto faltar. Não impede o modelo de mentir --
+# nada impede -- mas troca um esquecimento invisível por uma pergunta que tem
+# resposta.
+
+PRAZO_ENTREGA_H = 6
+
+
+def entregas_path():
+    return os.path.join(state_dir(), "entregas.json")
+
+
+def entregas_all():
+    path = entregas_path()
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except (ValueError, OSError):
+        # Um registro corrompido não pode derrubar um corte. Perder a conta é
+        # ruim; recusar-se a renderizar por causa dela é pior.
+        return []
+
+
+def _entregas_grava(rows):
+    tmp = entregas_path() + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(rows, fh, indent=2, ensure_ascii=False)
+    os.replace(tmp, entregas_path())
+
+
+def _recente(row):
+    """Uma pendência velha não é uma dívida, é lixo de outra sessão."""
+    try:
+        quando = datetime.fromisoformat(row.get("at", ""))
+    except ValueError:
+        return False
+    idade = datetime.now(timezone.utc) - quando
+    return idade.total_seconds() < PRAZO_ENTREGA_H * 3600
+
+
+def entregas_pendentes():
+    """Os clipes liberados que ninguém confirmou ter enviado, ainda de pé.
+
+    Um arquivo apagado sai da conta: o que se cobra é entrega de clipe que
+    existe. E a janela de seis horas existe para o portão valer dentro de uma
+    conversa sem virar um bloqueio permanente na primeira vez que alguém fechar
+    o terminal no meio de um lote.
+    """
+    return [r for r in entregas_all()
+            if not r.get("sent") and _recente(r) and os.path.isfile(r.get("clip", ""))]
+
+
+def entregas_registra(clip):
+    """Anota um clipe como devendo envio. Idempotente por caminho."""
+    clip = os.path.abspath(clip)
+    rows = [r for r in entregas_all() if _recente(r) and r.get("clip") != clip]
+    rows.append({"clip": clip,
+                 "at": datetime.now(timezone.utc).isoformat(),
+                 "sent": False, "sent_at": None})
+    try:
+        _entregas_grava(rows)
+    except OSError:
+        pass                      # sem estado gravável, o resto do corte segue
+    return clip
+
+
+def entregas_confirma(clip):
+    """Risca um clipe da lista. Devolve (achou, pendentes_restantes)."""
+    alvo = os.path.abspath(os.path.expanduser(clip))
+    rows = entregas_all()
+    achou = False
+    for row in rows:
+        if row.get("clip") == alvo and not row.get("sent"):
+            row["sent"] = True
+            row["sent_at"] = datetime.now(timezone.utc).isoformat()
+            achou = True
+    if achou:
+        _entregas_grava(rows)
+    return achou, entregas_pendentes()
+
+
 # ---------------------------------------------------------------- commands
 
 def cmd_schema(args):
@@ -590,6 +684,14 @@ def cmd_status(args):
         print(f"  {cid}: {used} post(s)" + (f" of {cap}" if cap else "")
               + (f", closes {R.get(rules, 'posting.deadline')}"
                  if R.get(rules, "posting.deadline") else ""))
+    devendo = entregas_pendentes()
+    if devendo:
+        print(f"deliveries owed: {len(devendo)} clip(s) cleared and never "
+              f"confirmed as sent")
+        for row in devendo:
+            print(f"  {row['clip']}")
+    else:
+        print("deliveries owed: none")
     print("ffprobe: " + (shutil.which("ffprobe") or "MISSING"))
     print("ffmpeg:  " + (shutil.which("ffmpeg") or "MISSING"))
     # Tudo que um corte precisa e que pode não estar aqui. Cada linha existe
@@ -824,7 +926,8 @@ def cmd_archive(args):
         # olhando. Sem esta linha ele baixa o vídeo inteiro de novo por reflexo.
         print("this is the cheap pass: subtitles if the source publishes them, "
               "otherwise the audio. Choose the windows on this text FIRST, then "
-              "run `warden archive` without --text-first to pull the video.",
+              "pull ONLY those windows with `warden archive --window <a>-<b>`, "
+              "one per window. Do not pull the whole file to cut 20s out of it.",
               file=sys.stderr)
         print("measured on the 18-minute source of 14/09: subtitles 4s / 73 KB, "
               "audio 4s / 15 MB, whole video 16s / 361 MB, and transcribing "
@@ -982,7 +1085,12 @@ def deliver(result, rules, campaign, ledger):
     # e não parava nada, e um lote de podcast inteiro pode sair sem legenda com
     # a explicação enterrada.
     breaches = list(result.get("style_breaches") or [])
-    if result.get("asked_for_captions") and not (result.get("style") or {}).get("caption"):
+    # Exceção deliberada: quando a fonte já traz a fala escrita na tela, não
+    # queimar a nossa é a decisão CERTA, não uma falha. Reprovar aqui obrigaria
+    # a entregar legenda dupla ou a não entregar nada.
+    ja_vem_legendado = (result.get("style") or {}).get("source_caption_clash")
+    if (result.get("asked_for_captions") and not ja_vem_legendado
+            and not (result.get("style") or {}).get("caption")):
         porques = [n for n in result.get("notes") or []
                    if "not burning captions" in n or "nothing was burned" in n]
         breaches.append(
@@ -1065,6 +1173,13 @@ def deliver(result, rules, campaign, ledger):
           "between tool calls attaches nothing: only the last message of a turn "
           "is ever sent. Do not say the batch is ready until every send came "
           "back successful.", file=sys.stderr)
+    # A dívida, em disco, no instante em que o caminho fica disponível. Daqui
+    # para a frente existe uma pergunta com resposta -- `warden delivered` --
+    # em vez de só a memória do turno, que foi o que falhou em 14/09.
+    entregas_registra(result["out"])
+    print(f"  and when the send comes back, run `warden delivered "
+          f"{result['out']}` so the count stops owing this one.",
+          file=sys.stderr)
     print(f"MEDIA:{result['out']}")
     return 0
 
@@ -1090,6 +1205,20 @@ def cmd_cut(args):
             "ships silent for the platform to add its own, then "
             "`warden prefs set --key sound --value embedded|platform` (or pass "
             "--sound). A clip must not ship silent by accident.", code=1)
+    # A duração é decidida antes de um quadro ser escrito, como o som. O
+    # mecanismo do `--seconds` já existia e já funcionava -- quando ele chega, a
+    # janela é movida para o número e o portão de entrega cobra. O que não
+    # existia era nada que NOTASSE a falta dele. No vlog de 14/09 pediram 20
+    # segundos e saíram 24,5s e 15,4s: 22% acima e 23% abaixo, com as janelas
+    # coladas nas fronteiras da transcrição e o número da pessoa nunca tendo
+    # virado parâmetro. Nenhum portão disparou, porque sem `asked_s` não há o
+    # que comparar. Agora a ausência é uma decisão que alguém toma em voz alta.
+    if args.seconds is None and not args.any_length:
+        die("no duration decision: nobody said how long this clip should be. If "
+            "the person named a number, pass --seconds <n> and the cut lands on "
+            "it. If nobody named one, pass --any-length and the window decides. "
+            "A clip that came out 22% longer than the number someone said is a "
+            "clip they have to ask for again.", code=1)
     try:
         result = _media().cut(args.source, clip_out(args.out), rules,
                               args.start, args.end,
@@ -1373,6 +1502,19 @@ def cmd_cut_plan(args):
             "or with `warden prefs set --key sound --value embedded|platform`.",
             code=1)
 
+    # O mesmo portão do corte avulso, na porta do lote. `seconds` no topo do
+    # plano vale para todos; um clipe pode trazer o seu.
+    pedido_topo = plan.get("seconds", getattr(args, "seconds", None))
+    sem_pedido = [c for c in clips
+                  if not isinstance(c, dict) or c.get("seconds") is None]
+    if pedido_topo is None and sem_pedido and not args.any_length:
+        die(f"no duration decision for this batch: {len(sem_pedido)} of "
+            f"{len(clips)} clips say nothing about how long they should be. Put "
+            f"the number the person said in the plan's 'seconds' (or on each "
+            f"clip), or pass --any-length if nobody named one. On 14/09 two "
+            f"clips of \"20 segundos\" came out 24.5s and 15.4s because the "
+            f"number never reached the renderer.", code=1)
+
     asked = len(clips)
     # "delivered" era a palavra errada e ela contradizia o conserto do P0: este
     # laço RENDERIZA e libera; quem entrega é a chamada de `send_message`, que
@@ -1519,8 +1661,43 @@ def cmd_cut_plan(args):
               file=sys.stderr)
         return 1
     print("# the batch is done when those sends came back, not when this line "
-          "printed.", file=sys.stderr)
+          "printed. `warden delivered` answers whether any are still owed, and "
+          "it exits 1 while one is. Run it before you end your turn.",
+          file=sys.stderr)
     return 0
+
+
+def cmd_delivered(args):
+    """Risca um clipe da lista de envios devidos, ou diz quem ainda falta.
+
+    Sem argumento é a pergunta -- "falta alguém?" -- e ela sai 1 enquanto
+    faltar, para que "entreguei tudo" deixe de ser uma coisa que só o modelo
+    sabe. Com um caminho é a confirmação, feita DEPOIS que o `send_message`
+    voltou: confirmar antes de ler o resultado é escrever no papel que o
+    pacote chegou enquanto ele ainda está na esteira.
+    """
+    if args.clip:
+        achou, pendentes = entregas_confirma(args.clip)
+        if not achou:
+            print(f"nothing was owing for {args.clip}. Either it was already "
+                  f"confirmed, or this is not a path `warden cut` printed in "
+                  f"the last {PRAZO_ENTREGA_H}h.", file=sys.stderr)
+        else:
+            print(f"confirmed: {os.path.basename(args.clip)}")
+    else:
+        pendentes = entregas_pendentes()
+    if not pendentes:
+        print("nothing is owing. Every clip cleared in this window came back "
+              "confirmed.")
+        return 0
+    print(f"{len(pendentes)} clip(s) rendered and cleared, and NOT confirmed "
+          f"as sent:", file=sys.stderr)
+    for row in pendentes:
+        print(f"  {row['clip']}", file=sys.stderr)
+    print("Each one is a file the person does not have. Send it with "
+          "send_message, read the result, then run this again. Do not end your "
+          "turn while this command exits 1.", file=sys.stderr)
+    return 1
 
 
 def cmd_discover(args):
@@ -1671,7 +1848,8 @@ def main(argv=None):
     p.add_argument("--text-first", action="store_true",
                    help="pull only what gives the words -- the published "
                         "subtitle, or the audio when there is none -- and no "
-                        "video. Choose the windows on that, then pull the video.")
+                        "video. Choose the windows on that, then pull ONLY those "
+                    "windows with --window. The whole file is the exception.")
     p.set_defaults(func=cmd_archive)
 
     p = sub.add_parser("transcribe")
@@ -1713,6 +1891,10 @@ def main(argv=None):
                         "is moved to it from the same start, and the delivery "
                         "gate rejects a file that misses it without a campaign "
                         "rule to blame. Pass it whenever someone said a number.")
+    p.add_argument("--any-length", action="store_true",
+                   help="nobody named a duration, so the window decides. Required "
+                        "when --seconds is absent: a cut with no duration "
+                        "decision does not render.")
     p.add_argument("--out")
     p.add_argument("--subtitles")
     p.add_argument("--hook")
@@ -1774,6 +1956,17 @@ def main(argv=None):
     p.set_defaults(func=cmd_prefs)
 
     sub.add_parser("status").set_defaults(func=cmd_status)
+
+    # O contrato de quantidade só vale se alguém puder PERGUNTAR se ele foi
+    # cumprido. Sem argumento este comando é a pergunta e sai 1 enquanto
+    # faltar clipe; com um caminho é a confirmação de um envio que já voltou.
+    p = sub.add_parser("delivered",
+                       help="confirm a clip was sent, or ask which are still owed")
+    p.add_argument("clip", nargs="?",
+                   help="the path `warden cut` printed, confirmed AFTER the "
+                        "send_message result came back. Omit to ask what is "
+                        "still owing; exits 1 while anything is.")
+    p.set_defaults(func=cmd_delivered)
 
     args = parser.parse_args(argv)
     return args.func(args)

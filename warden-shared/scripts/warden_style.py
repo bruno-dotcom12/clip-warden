@@ -18,6 +18,7 @@ direita do TikTok reserva 140px e a margem esquerda de corte come 86px. Tudo
 aqui escala a partir dessa proporção, para um quadro de qualquer largura.
 """
 import json
+import math
 import os
 import re
 import subprocess
@@ -36,6 +37,47 @@ FONT_PATH = os.environ.get("WARDEN_FONT") or os.path.join(ASSETS, "Anton-Regular
 # O quadro de referência em que os números do PRIME foram medidos.
 REF_W, REF_H = 1080, 1920
 REF_USABLE = 854                 # largura útil: 1080 - 140 (coluna do TikTok) - 86
+
+# As três margens da interface do TikTok, em pixels do quadro de referência de
+# 1080x1920 e escaladas por regra de três para qualquer outro. Até aqui a única
+# proteção era a largura útil de 854, que cuida da coluna direita POR SIMETRIA
+# -- texto centralizado nunca chega lá. Simetria não é portão, e não cobre nem
+# o topo nem a base.
+#
+# TOPO: as abas "Seguindo / Para você" e a lupa ocupam os primeiros ~200px. No
+# clipe entregue em 14/09 a primeira linha do hook começava a 184px -- medido
+# no arquivo, isolando a tinta parada contra o fundo em movimento; 199px no
+# segundo corte, que abre com maiúscula sem acento. Os dois caem dentro da
+# faixa que o próprio app cobre. 280 é o primeiro Y em que a linha de cima está
+# livre com folga em vez de por pouco.
+MARGEM_TOPO = 280
+# BASE: a legenda do app, o nome de quem postou e o som ocupam os últimos ~270px.
+MARGEM_BASE = 270
+# DIREITA: a coluna de curtir / comentar / compartilhar come os últimos ~100px.
+MARGEM_DIREITA = 100
+# A folga da legenda é outra coisa que a margem. A margem é onde o portão
+# reprova; a folga é onde o render mira. Sem ela a legenda encostava no próprio
+# limite: medida em ~1590 num quadro de 1920, ou seja 60px do começo da
+# interface de baixo. Passava, e passava por pouco. 90px é a diferença entre
+# obedecer à regra e disputar espaço com ela.
+CAPTION_FOLGA = 90
+
+
+def margens(width, height):
+    """As três margens da interface, em pixels DESTE quadro."""
+    return {"top": round(height * MARGEM_TOPO / REF_H),
+            "bottom": round(height * MARGEM_BASE / REF_H),
+            "right": round(width * MARGEM_DIREITA / REF_W)}
+
+
+def caption_piso(height):
+    """Quantos pixels a legenda deixa livres embaixo: a margem MAIS a folga.
+
+    Existe separado de `margens` porque um é o alvo do render e o outro é o
+    limite do portão. Confundir os dois foi como a legenda foi parar a 60px da
+    interface com todos os checks verdes.
+    """
+    return round(height * (MARGEM_BASE + CAPTION_FOLGA) / REF_H)
 
 # Corpo do hook, como fração da largura do quadro. 76/1080 é o tamanho da âncora
 # do `tese-01`, que é o clipe que o dono aprovou com uma frase sustentada.
@@ -995,8 +1037,15 @@ def approval_state(srt_path, start=None, end=None):
     if not srt_path or not os.path.isfile(srt_path):
         return False, "there is no subtitle file to approve"
     path = approval_path(srt_path)
-    comando = (f"`warden captions review {srt_path} --start {start:.0f} "
-               f"--end {end:.0f} --approve`"
+    # Para FORA, nos dois lados, e isso não é cosmético. Com `:.0f` a sugestão
+    # arredondava: um corte que queima 461,35-481,35s mandava aprovar
+    # `--start 461 --end 481`, a pessoa rodava exatamente esse comando, e o
+    # mesmo portão recusava em seguida -- porque 481,35 não cabe em 481. A
+    # ferramenta mandava rodar um comando que ela própria não aceitava, e a
+    # saída dizia "the approved windows are 461-481s" logo abaixo de "not
+    # approved". Medido no corte do vlog, 14/09.
+    comando = (f"`warden captions review {srt_path} --start {math.floor(start)} "
+               f"--end {math.ceil(end)} --approve`"
                if start is not None and end is not None
                else f"`warden captions review {srt_path} --approve`")
     if not os.path.isfile(path):
@@ -1137,11 +1186,82 @@ def sample_frames(video, start, length, count=8):
 def _edge_density(img):
     """Fração de pixels de borda forte. Texto tem muita; um céu não tem."""
     from PIL import ImageFilter
-    edges = img.filter(ImageFilter.FIND_EDGES)
+    return _histogram_density(img.filter(ImageFilter.FIND_EDGES))
+
+
+def _histogram_density(edges):
+    """A mesma fração, sobre um mapa de bordas que JÁ foi calculado.
+
+    Existe separada porque a ordem importa: `FIND_EDGES` carimba uma borda forte
+    na primeira e na última linha de tudo o que recebe, então filtrar DEPOIS de
+    recortar mede o recorte. Em fatias finas isso domina -- ver o comentário da
+    varredura em `burned_text_bands`, onde custou uma medição inteira.
+    """
     hist = edges.histogram()
     total = sum(hist) or 1
-    strong = sum(hist[70:])
-    return strong / total
+    return sum(hist[70:]) / total
+
+
+def legenda_do_acervo(frames, recorte=None, min_ratio=2.2, min_largura=0.12):
+    """Texto queimado EM QUALQUER ALTURA do quadro, não só nas duas bordas.
+
+    LEIA ISTO ANTES DE MEXER NO DETECTOR DE LEGENDA DUPLA.
+
+    `burned_text_bands` olha os 16% de cima e os 16% de baixo, e foi calibrada
+    para o que ela foi escrita para pegar: tarja de disclaimer no topo, rodapé
+    de acervo embaixo. No vlog de 14/09 ela devolveu `bottom: false` com 1 voto
+    em 8 e média 0,9x -- e a conclusão de que o limiar estava alto demais estava
+    errada. Medido no quadro da fonte aos 95,1s: a legenda queimada do vídeo
+    fica em y 747-774 de 1080, ou seja a **69% da altura**. No meio. Nenhum
+    ajuste de limiar faria aquele detector enxergá-la, porque ele não olha ali.
+    Legenda de vídeo vertical moderno mora no terço inferior do meio, não na
+    borda, e é exatamente a altura em que a NOSSA cai depois do recorte 9:16.
+
+    O que separa letra de textura não é densidade de borda, é a assinatura que
+    `_row_span` mede: branco >=225 encostado em preto <70. No mesmo quadro, o
+    teto ripado da garagem dá `span` 0 e a legenda dá 468px de 607 de largura.
+    Por isso uma faixa só conta com largura de verdade.
+
+    `recorte` é (x0, x1) no quadro da FONTE: a faixa vertical que o corte vai
+    manter. Medir o quadro inteiro responde a pergunta errada -- o que importa
+    é o texto que sobrevive ao enquadramento.
+
+    Devolve faixas em FRAÇÃO da altura, com em quantos quadros cada uma
+    apareceu. Uma legenda pisca entre falas, então um quadro já é sinal: o
+    custo de achar que tem quando não tem é um clipe sem a nossa legenda; o de
+    achar que não tem quando tem é o clipe que o dono reprovou.
+    """
+    try:
+        from PIL import ImageFilter
+    except ImportError:
+        return []
+    achadas = []
+    for img in frames or []:
+        quadro = img
+        if recorte:
+            x0, x1 = int(recorte[0]), int(recorte[1])
+            if x1 > x0:
+                quadro = img.crop((x0, 0, x1, img.size[1]))
+        w, h = quadro.size
+        for y0, y1, span in _text_rows(quadro, ImageFilter, min_ratio=min_ratio):
+            if span / max(1, w) < min_largura:
+                continue                      # textura, não letra
+            achadas.append((y0 / h, y1 / h, span / w))
+    if not achadas:
+        return []
+    achadas.sort()
+    faixas = []
+    for a, z, larg in achadas:
+        for f in faixas:
+            if a <= f["y1"] and z >= f["y0"]:        # mesma faixa, outro quadro
+                f["y0"] = min(f["y0"], a)
+                f["y1"] = max(f["y1"], z)
+                f["span"] = max(f["span"], larg)
+                f["frames"] += 1
+                break
+        else:
+            faixas.append({"y0": a, "y1": z, "span": larg, "frames": 1})
+    return faixas
 
 
 def burned_text_bands(frames, band=0.16):
@@ -1161,10 +1281,19 @@ def burned_text_bands(frames, band=0.16):
     texto começa. Sem ela o degradê era de tamanho fixo e cobria o disclaimer
     mas não a legenda do acervo, que fica mais acima -- medido num render, não
     suposto: o rodapé apagava o amarelo e deixava a fala legível.
+
+    São TRÊS estados e não dois. `bottom`/`top` continuam sendo o booleano duro,
+    calibrado para tarja fixa; `bottom_suspect`/`top_suspect` são o material que
+    mostra sinal de texto sem alcançar esse booleano, que é o que uma legenda de
+    vlog -- fina, centralizada, intermitente -- produz. Ver o bloco de gatilhos
+    lá embaixo para o número de cada um e a medição que o justifica. `*_why` traz
+    os gatilhos que dispararam, em texto, para a nota e para a evidência.
     """
     if not frames:
-        return {"top": False, "bottom": False, "bottom_reach": 0.0,
-                "evidence": "no frames to look at"}
+        return {"top": False, "bottom": False,
+                "top_suspect": False, "bottom_suspect": False,
+                "bottom_reach": 0.0, "evidence": "no frames to look at"}
+    from PIL import ImageFilter
     votes = {"top": 0, "bottom": 0}
     ratios = {"top": [], "bottom": []}
     reaches = []
@@ -1187,13 +1316,30 @@ def burned_text_bands(frames, band=0.16):
         # comeu um terço do quadro. O que separa texto de arte densa é a QUEDA:
         # a faixa de letras é um pico, e ela acaba onde a densidade despenca para
         # menos da metade desse pico.
+        #
+        # UMA detecção de bordas no quadro INTEIRO, e depois recorta. A versão
+        # anterior chamava `_edge_density` em cada fatia, o que roda FIND_EDGES
+        # dentro do recorte -- e FIND_EDGES inventa uma borda forte na primeira e
+        # na última linha do que recebe. Numa fatia de 2% da altura (10px num
+        # quadro de 540) essas duas linhas são 20% dos pixels da fatia, então
+        # TODA fatia saía densa e a varredura subia até o teto sempre. Medido em
+        # 14/09, com o código como estava: `bottom_reach` deu exatamente 0,22 --
+        # o BAND_CAP -- nos seis quadros sintéticos limpos, nos oito quadros de
+        # um `testsrc2` e nos quadros com disclaimer, os três iguais. Um número
+        # que vale 0,22 para tudo não é uma medição, é uma constante com nome de
+        # medição, e era ela que o degradê estava usando para se dimensionar.
+        # Com a detecção feita uma vez no quadro inteiro: limpo 0,02, disclaimer
+        # 0,10. Agora separa.
+        edges = img.filter(ImageFilter.FIND_EDGES)
+        base_reach = _histogram_density(edges.crop((0, strip, w, h - strip))) or 1e-6
         step = BAND_SLICE
         densities = []
         for i in range(int(BAND_CAP / step) + 1):
             y0 = int(h * (1 - (i + 1) * step))
             y1 = int(h * (1 - i * step))
             if y1 > y0:
-                densities.append(_edge_density(img.crop((0, y0, w, y1))) / base)
+                densities.append(
+                    _histogram_density(edges.crop((0, y0, w, y1))) / base_reach)
         peak = max(densities) if densities else 0.0
         floor = max(2.0, peak * 0.45)
         reach = 0.0
@@ -1208,16 +1354,66 @@ def burned_text_bands(frames, band=0.16):
         reaches.append(min(reach, BAND_CAP))
     need = max(2, int(len(frames) * 0.6))         # persistente, não um quadro solto
     found = {name: votes[name] >= need for name in votes}
+    medias = {name: sum(ratios[name]) / len(ratios[name]) for name in ratios}
     # A mediana, não o máximo: um quadro em que a arte também é densa embaixo não
     # deve mandar o degradê cobrir metade do clipe.
     ordered = sorted(reaches)
     found["bottom_reach"] = ordered[len(ordered) // 2] if ordered else 0.0
+
+    # ------------------------------------------------------------ o terceiro estado
+    #
+    # O booleano duro acima foi calibrado para TARJA FIXA: um disclaimer que fica
+    # no lugar o clipe inteiro. Ele pede 1,9x de densidade E persistência em 60%
+    # dos quadros, e as duas exigências juntas são cegas para o caso que passou
+    # em 14/09: um vlog do YouTube com legenda própria, fina, centralizada e
+    # INTERMITENTE -- ela some entre as falas. Medido naquele corte: 1 de 8
+    # quadros votou, média 1,7x. O `bottom` saiu False, e False aqui desliga em
+    # cascata o degradê, o REJECT do `check_sidecar` e todas as notas. Saíram
+    # duas legendas de origens diferentes no mesmo quadro e nada reprovou.
+    #
+    # Não se afrouxa o booleano duro -- ele decide sozinho e por isso tem de
+    # continuar caro. O que entra é um terceiro estado, e o que ele custa é um
+    # degradê discreto num rodapé, não um clipe.
+    #
+    # Os três gatilhos, e o número de cada um:
+    #
+    #  - UM quadro que votou (ratio > 1,9). Uma faixa que atinge a assinatura de
+    #    texto num quadro só é exatamente o que uma legenda intermitente faz.
+    #    Ela não basta para o booleano (uma mão que passa também produz isso),
+    #    mas basta para desconfiar.
+    #  - média >= 1,35. É o piso mais baixo que ainda não toca material limpo:
+    #    medido, um `testsrc2` (o padrão de teste mais carregado que existe) dá
+    #    0,99x e o quadro sintético limpo da suíte dá 1,03x. O caso que passou
+    #    deu 1,7x. 1,35 fica no meio, com 31% de folga sobre a leitura limpa mais
+    #    alta que foi medida.
+    #  - `bottom_reach` no teto. Depois do conserto da varredura acima isto
+    #    voltou a significar alguma coisa: uma faixa densa de ponta a ponta até
+    #    22% da altura, na metade dos quadros. Limpo mede 0,02.
+    SUSPEITO_PISO = 1.35
+    for name in ("top", "bottom"):
+        gatilhos = []
+        if votes[name] >= 1:
+            gatilhos.append(f"{votes[name]} frame(s) over 1.9x")
+        if medias[name] >= SUSPEITO_PISO:
+            gatilhos.append(f"mean {medias[name]:.1f}x over the {SUSPEITO_PISO}x floor")
+        if name == "bottom" and found["bottom_reach"] >= BAND_CAP:
+            gatilhos.append(f"the dense band runs to the {BAND_CAP:.0%} cap")
+        found[name + "_suspect"] = bool(gatilhos) and not found[name]
+        found[name + "_why"] = gatilhos
+
     found["evidence"] = "; ".join(
         f"{name}: {votes[name]}/{len(frames)} frames, "
-        f"{sum(ratios[name]) / len(ratios[name]):.1f}x the middle's edge density"
+        f"{medias[name]:.1f}x the middle's edge density"
         for name in ("top", "bottom"))
-    if found["bottom"]:
-        found["evidence"] += f"; the bottom band reaches {found['bottom_reach']:.0%} up"
+    # `bottom_reach` SEMPRE, e não só quando `bottom` é True. Ele era escondido
+    # justamente no caso em que era a única coisa a dizer: no corte de 14/09 ele
+    # marcava o teto enquanto o booleano dizia "limpo", e ninguém leu porque a
+    # evidência não o continha.
+    found["evidence"] += f"; the bottom band reaches {found['bottom_reach']:.0%} up"
+    for name in ("top", "bottom"):
+        if found[name + "_suspect"]:
+            found["evidence"] += (f"; {name.upper()} SUSPECT (not the hard "
+                                  f"boolean): " + ", ".join(found[name + "_why"]))
     return found
 
 
@@ -1413,6 +1609,7 @@ METRICS = (
     "width", "height", "fps", "duration_s",
     "text_width_ratio",      # a linha mais larga contra a largura útil: >1 é corte
     "text_rows",             # quantas faixas de texto no quadro: 3 é legenda dupla
+    "text_rows_max",         # e no quadro mais carregado de todos
     "caption_lines_max",     # linhas na maior cue
     "cut_interval_s",        # média entre trocas de plano
     "scale_variation",       # o quanto a escala mudou ao longo do clipe
@@ -1473,6 +1670,16 @@ def measure(video, samples=10):
                 bottoms += 1
                 break
     out["text_rows"] = round(sum(rows_per_frame) / len(rows_per_frame), 2)
+    # A média sozinha não responde à pergunta que interessa. O hook sai da tela
+    # aos HOOK_SECONDS, então o número de faixas CAI no meio do clipe: num corte
+    # de 20s com hook, oito dos dez quadros amostrados já não têm hook nenhum, e
+    # a média dilui para perto de uma camada o que em alguns quadros são três.
+    # A pergunta é "existe algum quadro com mais faixas do que as nossas camadas
+    # explicam?", e quem responde isso é a distribuição, não a média. Por isso
+    # saem os três: a média (que o corpus já mede), o máximo, e a contagem por
+    # quadro, que é de onde `cross_check` tira a mediana.
+    out["text_rows_max"] = max(rows_per_frame)
+    out["text_rows_per_frame"] = rows_per_frame
     out["text_width_ratio"] = round(max(widths), 3) if widths else 0.0
     out["bottom_text"] = bottoms >= max(2, int(len(frames) * 0.5))
     # Linhas na maior cue: uma faixa de texto contígua mais alta que ~1,6 linhas
@@ -1652,8 +1859,18 @@ LIMITS = {
 # porque lá a largura do hook não é recuperada de pixels -- é o número que o PIL
 # mediu com a fonte real antes de desenhar. Exato onde dá para ser exato.
 REPORTED_ONLY = ("duration_s", "cut_interval_s", "caption_lines_max",
-                 "text_width_ratio", "text_rows", "bottom_text",
+                 "text_width_ratio", "text_rows", "text_rows_max", "bottom_text",
                  "fps", "width", "height")
+
+
+def cap_margem(side):
+    """A legenda do sidecar, ou um dicionário vazio.
+
+    Existe porque o bloco de margens roda junto com o do hook, antes de `cap`
+    ser definido, e ler `side["caption"]` direto dava `None` em clipe sem
+    legenda -- que é um clipe legítimo, não um erro.
+    """
+    return (side.get("caption") or {}) if isinstance(side, dict) else {}
 
 
 def check_sidecar(side):
@@ -1689,6 +1906,46 @@ def check_sidecar(side):
     if hook.get("lines") and hook["lines"] > MAX_LINES:
         out.append(("REJECT", f"the hook is on {hook['lines']} lines; at most "
                               f"{MAX_LINES} fit above the picture"))
+    # As três margens da interface, medidas contra o que foi desenhado. Até
+    # aqui o único portão de posição era a LARGURA do hook contra os 854px
+    # úteis -- que protege a coluna direita por simetria e não protege nem o
+    # topo nem a base. O hook entregue em 14/09 passava nesse portão e começava
+    # a 184px do topo, dentro dos ~200px que as abas e a lupa do app cobrem.
+    # Largura certa e altura errada saíam com a mesma cara de aprovado.
+    margens_ = side.get("margins") or {}
+    quadro = side.get("frame") or {}
+    if margens_ and quadro:
+        topo = margens_.get("top")
+        if hook.get("top_px") is not None and topo and hook["top_px"] < topo:
+            out.append(("REJECT",
+                        f"the hook starts {hook['top_px']}px from the top and the "
+                        f"app's own tabs and search icon cover the first {topo}px: "
+                        f"the first line lands under them"))
+        elif hook.get("top_px") is not None:
+            out.append(("ok", f"hook starts at {hook['top_px']}px, clear of the "
+                              f"top {topo}px"))
+        direita = margens_.get("right")
+        limite_x = (quadro.get("w") or 0) - (direita or 0)
+        for nome, bloco in (("hook", hook), ("caption", cap_margem(side))):
+            if not bloco or bloco.get("right_px") is None or not limite_x:
+                continue
+            if bloco["right_px"] > limite_x:
+                out.append(("REJECT",
+                            f"the {nome} reaches {bloco['right_px']}px across and "
+                            f"the like/comment/share column owns the last "
+                            f"{direita}px (from {limite_x}px): it sits under the "
+                            f"buttons"))
+        base = margens_.get("bottom")
+        fundo = cap_margem(side).get("bottom_px") if cap_margem(side) else None
+        limite_y = (quadro.get("h") or 0) - (base or 0)
+        if fundo is not None and limite_y and fundo > limite_y:
+            out.append(("REJECT",
+                        f"the caption ends {fundo}px down and the app's caption, "
+                        f"handle and sound own the last {base}px (from "
+                        f"{limite_y}px): the last line is behind them"))
+        elif fundo is not None and limite_y:
+            out.append(("ok", f"caption ends at {fundo}px, {limite_y - fundo}px "
+                              f"clear of the bottom {base}px"))
     # O hook é uma promessa, e uma promessa que fica na tela vinte segundos vira
     # uma placa. Em 14/09 os dois cortes tinham a frase nos oito quadros do
     # mosaico. A folga de meio segundo é o fade.
@@ -1712,11 +1969,22 @@ def check_sidecar(side):
         # A última delas é o CORTE, não a legenda. Mandar re-quebrar a legenda
         # aqui é mandar consertar o lugar errado: não existe palavra seguinte
         # dentro do clipe para a cue alcançar.
+        fecha = cap.get("sentence_closes_at_s")
+        onde = ""
+        if fecha and side.get("duration_s"):
+            falta = float(fecha) - float(side["duration_s"])
+            onde = (f" That sentence closes {falta:.1f}s later, at {fecha:.1f}s: "
+                    f"cut {fecha:.1f}s instead of {float(side['duration_s']):.1f}s, "
+                    f"or move the start so it fits in the number that was asked "
+                    f"for. When the extra second is the right trade, say it to "
+                    f"the person in ONE line about what they will see -- \"ficou "
+                    f"um segundo mais longo para não cortar a frase no meio\" -- "
+                    f"and never with the word cue in it.")
         out.append(("REJECT",
                     f"this clip ENDS mid-sentence, on \"…{pendurados[-1]}\". The "
                     f"speech goes on past --end, so the last thing the viewer "
-                    f"hears is half a clause. No caption setting fixes this: "
-                    f"move --end to where the sentence closes."))
+                    f"hears is half a clause. No caption setting fixes this."
+                    + (onde or " Move --end to where the sentence closes.")))
     outros = [t for t in pendurados
               if not (cap.get("ends_mid_sentence") and t == pendurados[-1])]
     if outros:
@@ -1749,11 +2017,28 @@ def check_sidecar(side):
     # essa e só essa: o material tem texto embaixo, nós queimamos legenda, e o
     # degradê não cobriu? Contar camadas sem perguntar se havia texto do acervo
     # reprovava clipes cujo material é limpo.
-    tem_texto_do_acervo = (side.get("source_text") or {}).get("bottom")
+    fonte = side.get("source_text") or {}
+    # E o terceiro estado entra AQUI também. `bottom` saindo False era o que
+    # desligava este REJECT em cascata junto com o degradê: em 14/09 a detecção
+    # tinha visto 1 quadro em 8 acima do limiar e ninguém foi avisado de nada,
+    # porque a primeira condição da conjunção era o booleano duro. Um material
+    # suspeito com a nossa legenda queimada por cima e sem degradê é a mesma
+    # imagem que o booleano duro descreve -- o portão não pode ser mais estreito
+    # que a detecção que o alimenta.
+    tem_texto_do_acervo = fonte.get("bottom")
+    suspeito = fonte.get("bottom_suspect")
     if cap.get("cues") and tem_texto_do_acervo and not side.get("footer_covered"):
         out.append(("REJECT", "this footage burns its own text along the bottom "
                               "and it was not covered, so our caption sits on "
                               "top of it: two captions in one frame"))
+    elif cap.get("cues") and suspeito and not side.get("footer_covered"):
+        porque = ", ".join(fonte.get("bottom_why") or ["-"])
+        out.append(("REJECT",
+                    f"this footage shows signs of its own burned text along the "
+                    f"bottom ({porque}) and it was not covered, so our caption "
+                    f"may be sitting on top of it. Cover it, or re-cut without "
+                    f"--subtitles: 'probably clean' is not a thing this can "
+                    f"ship on, and the contact sheet is where you settle it."))
     if side.get("motion") is False:
         out.append(("REJECT", "no scale movement at all: this reads as raw footage"))
     # O número que a pessoa pediu contra o que o arquivo tem. Quando a campanha
@@ -1824,6 +2109,102 @@ def check_against(measured, spec):
     return out
 
 
+# A folga que o segundo instrumento exige para reprovar. Ver `_linhas_demais`.
+LINHAS_DEMAIS_FOLGA = 2
+
+
+def _linhas_demais(side, medida):
+    """A segunda opinião contra legenda dupla: faixas de texto no render pronto
+    contra as linhas que nós desenhamos.
+
+    `burned_text_bands` olha o MATERIAL antes do render e pode errar para menos
+    -- foi o que fez em 14/09. `_text_rows` olha o arquivo PRONTO e não sabe de
+    onde veio nada, mas conta faixas de texto contíguas; e o `-estilo.json` sabe
+    exatamente o que nós desenhamos, porque foi o PIL que desenhou. Cruzar os
+    dois responde "o render tem faixa de texto que nós não pomos ali?", que é a
+    pergunta de legenda dupla, sem depender da detecção que falhou.
+
+    O orçamento são LINHAS e não camadas. `text_layers` do sidecar conta três
+    coisas (rodapé, legenda, hook) e é o número errado para cruzar: uma cue de
+    DUAS linhas lê como DUAS faixas, porque entre uma linha e outra passa imagem
+    limpa e `_text_rows` só junta o que é contíguo -- medido, 2 faixas para uma
+    cue de 2 linhas, 3 faixas para hook de 1 linha mais cue de 2. Usar
+    `text_layers` faria este portão reprovar todo corte com legenda de duas
+    linhas. O orçamento são as linhas que o sidecar registra: `caption.max_lines`
+    mais, QUANDO ELE ESTÁ LÁ, `hook.lines`.
+
+    "Quando ele está lá" é a parte que custou uma medição. O hook sai aos
+    HOOK_SECONDS (3s), e `measure` amostra o clipe inteiro por igual: num corte
+    de 20s com dez amostras, oito ou nove quadros já não têm hook. Somar o hook
+    ao orçamento de todos eles compra um crédito de duas linhas para a metade do
+    clipe em que ele não existe -- medido: com o hook no orçamento, um render com
+    a nossa cue de 2 linhas E uma legenda de acervo de 2 linhas por baixo dá 4
+    faixas contra um limite de 5, e passa. Sem ele, dá 4 contra 4, e reprova. Por
+    isso o hook só entra no orçamento quando fica mais da metade do clipe na
+    tela, que é o único caso em que o quadro MEDIANO o contém -- e é um corte
+    curto, de seis segundos ou menos. `seconds_on_screen` e `duration_s` já estão
+    no sidecar; nenhum dos dois é estimado.
+
+    E a folga é +2, não +1, porque `_text_rows` inventa uma faixa sozinha em
+    material real. A prova está no próprio corpus: os vinte scenepacks aprovados
+    carregam UMA frase-âncora de no máximo duas linhas e mediram `text_rows` de
+    0,9 a 2,1 de MÉDIA -- 2,1 de média com duas linhas desenhadas quer dizer
+    quadros com três e quatro faixas em clipes que o dono aprovou. Com +1 este
+    portão reprovaria o corpus inteiro, e um portão que reprova clipe bom é
+    desligado na semana seguinte.
+
+    Mediana e não máximo nem média, pelo mesmo motivo dos dois lados: o máximo é
+    um quadro (um letreiro no fundo, um flash de placa) e a média é puxada para
+    baixo pela saída do hook. A mediana pergunta "na MAIORIA dos quadros sobra
+    texto que não é nosso?", e é a única agregação que sobrevive às duas coisas.
+
+    O preço disto é conhecido e está dito: uma legenda de acervo de UMA linha
+    por baixo da nossa de duas dá 3 faixas contra um orçamento de 2, que é +1, e
+    este portão não a pega. Ele é a segunda opinião, não a primeira -- quem pega
+    aquele caso é o degradê que o `bottom_suspect` liga no `cut`. Aqui o erro
+    caro seria o outro.
+    """
+    por_quadro = (medida or {}).get("text_rows_per_frame")
+    hook = ((side or {}).get("hook") or {})
+    cap = ((side or {}).get("caption") or {})
+    if not por_quadro or not side:
+        return []
+    ficou = hook.get("seconds_on_screen")
+    clipe = (side or {}).get("duration_s")
+    hook_no_quadro_mediano = bool(
+        hook.get("lines") and ficou is not None and clipe
+        and float(ficou) > float(clipe) / 2.0)
+    linhas_hook = int(hook.get("lines") or 0) if hook_no_quadro_mediano else 0
+    orcamento = linhas_hook + int(cap.get("max_lines") or 0)
+    if not orcamento:
+        # Sem hook e sem legenda nossa, qualquer faixa de texto no render é de
+        # outra pessoa -- mas isso é `bottom_text`/`burned_text_bands` falando,
+        # não este cruzamento, que existe para separar o nosso do resto e aqui
+        # não tem nosso nenhum com que separar.
+        return []
+    ordenado = sorted(por_quadro)
+    mediana = ordenado[len(ordenado) // 2]
+    limite = orcamento + LINHAS_DEMAIS_FOLGA
+    if mediana >= limite:
+        return [("REJECT",
+                 f"the finished file shows {mediana} bands of text in most "
+                 f"frames and we only drew {orcamento} line(s) of our own "
+                 f"(caption {cap.get('max_lines') or 0}"
+                 + (f", hook {linhas_hook}" if linhas_hook
+                    else "" if not hook.get("lines") else
+                    f"; the hook's {hook['lines']} line(s) are not counted, it "
+                    f"leaves at {float(ficou):.1f}s of {float(clipe):.1f}s so "
+                    f"the median frame has no hook in it")
+                 + f"). That is {mediana - orcamento} "
+                 f"band(s) of text nobody here put in the frame, in more than "
+                 f"half the clip -- burned text of the footage itself, or "
+                 f"another clipper's caption, under ours. Two captions in one "
+                 f"frame is the reject; look at the contact sheet and re-cut "
+                 f"with the footer covered.")]
+    return [("ok", f"text bands: {mediana} in the median frame against "
+                   f"{orcamento} line(s) of ours, rejecting at {limite}")]
+
+
 def cross_check(side, medida):
     """A métrica de pixel cruzada com o que o render anotou de si.
 
@@ -1843,6 +2224,7 @@ def cross_check(side, medida):
     quando discordam diz qual é qual, em vez de escolher um e calar o outro.
     """
     out = []
+    out += _linhas_demais(side, medida)
     px = (medida or {}).get("text_width_ratio")
     hook = ((side or {}).get("hook") or {})
     largura, util = hook.get("width_px"), hook.get("usable_px")

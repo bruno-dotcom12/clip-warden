@@ -48,7 +48,11 @@ you did not get.
 | `warden fetch <url>` | a brief as readable text |
 | `warden discover` | the public campaign directories, as text |
 | `warden prefs ask --group search\|edit` / `set` / `show` | what this owner wants |
-| `warden archive --campaign <id>` | pull the authorised footage, and only that |
+| `warden archive --campaign <id> --text-first` | **start here.** the words only: published subtitle, or audio. No video. |
+| `warden archive --campaign <id> --window <a>-<b>` | then this: only the seconds you chose, with the origin card beside it |
+| `warden archive --campaign <id>` | the WHOLE file, 361 MB. The exception -- `warden-clip` 4c says when |
+| `warden cut … --seconds <n>` / `--any-length` | the duration the person said. One of the two is **required**: no default, like sound |
+| `warden delivered [<clip>]` | confirm a send that came back; with no path, **exit 1 while any cleared clip is still unsent** |
 | `warden authorize <url> --campaign <id>` | is this link in the campaign's archive? exit 1 = no |
 | `warden trusted add\|check\|list <x>` | the owner's trusted channels and domains, for clipping without a campaign |
 | `warden transcribe <file>` / `digest <transcript>` | words, then words you can afford |
