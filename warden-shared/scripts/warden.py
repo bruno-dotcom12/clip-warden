@@ -25,6 +25,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import unicodedata
 from datetime import datetime, timezone
 
@@ -722,6 +723,89 @@ def _conversas(desde=None):
     finally:
         con.close()
     return linhas
+
+
+_ENTROU = "inbound message:"
+_URL = re.compile(r"https?://[^\s'\"<>]+")
+
+
+def _chegadas(depois):
+    """[(quando, texto)] das mensagens que ENTRARAM depois de `depois`.
+
+    Lê o log do gateway, que registra cada mensagem recebida no instante em que
+    ela chega -- antes e independentemente de o agente ser acordado por ela.
+    É a única fonte que existe para a pergunta "chegou mais alguma coisa
+    enquanto eu pensava?".
+    """
+    if not os.path.isfile(GATEWAY_LOG):
+        return None
+    saiu = []
+    try:
+        with open(GATEWAY_LOG, encoding="utf-8", errors="replace") as fh:
+            for linha in fh:
+                if _ENTROU not in linha:
+                    continue
+                t = _carimbo_do_log(linha)
+                if t is None or t <= float(depois):
+                    continue
+                corpo = linha.split("msg='", 1)
+                texto = corpo[1].rsplit("' reply_to_id=", 1)[0] if len(corpo) > 1 else ""
+                saiu.append((t, texto))
+    except OSError:
+        return None
+    return saiu
+
+
+def cmd_inbox(args):
+    """Espera o link que a mensagem prometeu, em vez de responder "faltou".
+
+    Medido em 15/09, três vezes em três conversas, com o mesmo placar:
+
+        00:42:10  a pessoa pede os cortes "desse video do YouTube abaixo"
+        00:42:15  o agente responde "faltou o link"       (+5s)
+        00:42:17  o link chega, em mensagem separada       (+7s)
+
+    O agente não é cego ao link e o cartão de pré-visualização não tem nada a
+    ver com isso: o link simplesmente ainda não chegou, e a resposta saiu antes.
+    Uma ida e volta queimada, sempre, porque responder rápido demais parecia
+    grátis.
+
+    Então, quando o texto aponta para um link que não está nele -- "esse vídeo",
+    "esse link", "abaixo", "essa música" -- isto é o que se roda em vez de
+    perguntar. Sai 0 com o link na primeira linha, ou sai 1 depois do prazo,
+    e aí sim a pergunta é legítima.
+    """
+    espera = max(1.0, float(getattr(args, "wait", None) or 20))
+    inicio = time.time()
+    # A régua é o ÚLTIMO carimbo que já estava no log, não a hora atual: a
+    # mensagem que disparou este turno já está lá, e ela não conta como nova.
+    ja = _chegadas(0)
+    if ja is None:
+        die(f"{GATEWAY_LOG} is not readable from here, so there is no way to "
+            f"see a message arriving. Ask for the link.", code=2)
+    marca = max([t for t, _ in ja], default=0.0)
+    while True:
+        for quando, texto in (_chegadas(marca) or []):
+            achados = _URL.findall(texto)
+            if not achados:
+                continue
+            link = achados[-1]
+            # O log corta a mensagem por volta de 80 caracteres. Um link
+            # cortado é pior que link nenhum: ele baixa outra coisa, ou nada,
+            # e o erro aparece três passos adiante.
+            if texto.endswith(link) and len(texto) >= 79:
+                print(f"a link arrived but the log truncated it ({link!r}). "
+                      f"Ask the person to send just the URL.", file=sys.stderr)
+                return 1
+            print(link)
+            print(f"arrived {quando - inicio:.0f}s into the wait", file=sys.stderr)
+            return 0
+        if time.time() - inicio >= espera:
+            break
+        time.sleep(0.5)
+    print(f"nothing with a link arrived in {espera:.0f}s. Now the question is "
+          f"fair: ask for the URL.", file=sys.stderr)
+    return 1
 
 
 def cmd_voz(args):
@@ -1903,11 +1987,20 @@ _FALHOU = "Failed to send media"
 
 
 def _carimbo_do_log(linha):
-    """Segundos epoch da linha do log, ou None. Formato: 2026-09-15 03:11:40,013."""
+    """Segundos epoch da linha do log, ou None. Formato: 2026-09-15 03:11:40,013.
+
+    Os MILISSEGUNDOS entram na conta, e não são detalhe: duas mensagens no
+    mesmo segundo são comuns -- a pessoa cola o link logo depois do texto -- e
+    truncar em segundos faz as duas terem o mesmo carimbo, o que apaga a
+    segunda de qualquer comparação "chegou depois de".
+    """
     try:
-        return datetime.strptime(linha[:19], "%Y-%m-%d %H:%M:%S").timestamp()
+        base = datetime.strptime(linha[:19], "%Y-%m-%d %H:%M:%S").timestamp()
     except (ValueError, TypeError):
         return None
+    if len(linha) > 23 and linha[19] == "," and linha[20:23].isdigit():
+        base += int(linha[20:23]) / 1000.0
+    return base
 
 
 def envios_desde(quando):
@@ -2139,6 +2232,12 @@ def main(argv=None):
     p.add_argument("action", choices=["list", "add"])
     p.add_argument("file", nargs="?")
     p.set_defaults(func=cmd_tracks)
+
+    p = sub.add_parser("inbox")
+    p.add_argument("--wait", type=float, default=20.0,
+                   help="seconds to wait for a message carrying a URL "
+                        "(default 20). Exit 0 with the link, 1 if none came.")
+    p.set_defaults(func=cmd_inbox)
 
     p = sub.add_parser("voz")
     p.add_argument("--since", type=float,

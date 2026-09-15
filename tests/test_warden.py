@@ -12,6 +12,7 @@ import re
 import shutil
 import io
 import sys
+import time
 import tempfile
 import unittest
 
@@ -5067,3 +5068,116 @@ class AConfirmacaoDeEntregaEUmaLeituraNaoUmaPromessa(unittest.TestCase):
         # Dois arquivos no disco, um confirmado: ainda deve um.
         self.assertEqual(code, 1)
         self.assertEqual(len(self.W.entregas_pendentes()), 1)
+
+
+class OLinkChegaDoisSegundosDepoisDaRespostaQueDizQueEleFalta(unittest.TestCase):
+    """Três conversas, três vezes o mesmo placar, medido em 15/09:
+
+        00:42:10  a pessoa pede os cortes "desse video do YouTube abaixo"
+        00:42:15  o agente responde "faltou o link"        (+5s)
+        00:42:17  o link chega, em mensagem separada        (+7s)
+
+    O agente não é cego ao link, e o cartão de pré-visualização não tem nada a
+    ver com isso: o link não estava na mensagem (conteúdo bruto conferido,
+    metadados vazios) e ainda não tinha chegado. A resposta saiu antes.
+
+    O log do gateway registra cada mensagem no instante em que ela entra --
+    antes e independentemente do turno que ela vai disparar. É a única fonte
+    que responde "chegou mais alguma coisa enquanto eu pensava?".
+    """
+
+    def setUp(self):
+        import warden as W
+        self.W = W
+        self.dir = _temp(self, prefix="warden-inbox-")
+        self.log = os.path.join(self.dir, "gateway.log")
+        self._antigo = W.GATEWAY_LOG
+        W.GATEWAY_LOG = self.log
+        self.addCleanup(setattr, W, "GATEWAY_LOG", self._antigo)
+
+    _ms = 0
+
+    def _linha(self, texto, quando=None):
+        quando = quando or datetime.now(timezone.utc)
+        # Milissegundos crescentes: duas mensagens no mesmo segundo são o caso
+        # comum (a pessoa cola o link logo depois do texto), e o comando tem de
+        # saber distinguir a segunda da primeira.
+        type(self)._ms = (type(self)._ms + 1) % 1000
+        carimbo = quando.strftime("%Y-%m-%d %H:%M:%S,") + f"{type(self)._ms:03d}"
+        return (f"{carimbo} INFO gateway.run: inbound message: "
+                f"platform=plow_chat user=x chat=cht_a msg='{texto}' "
+                f"reply_to_id=None reply_to_text=''\n")
+
+    def _escreve(self, *textos, **kw):
+        with open(self.log, "a", encoding="utf-8") as fh:
+            for t in textos:
+                fh.write(self._linha(t, kw.get("quando")))
+
+    def _rodar(self, espera=2.0):
+        class _Args:
+            wait = espera
+        out, err = io.StringIO(), io.StringIO()
+        a, b = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = out, err
+        try:
+            code = self.W.cmd_inbox(_Args())
+        finally:
+            sys.stdout, sys.stderr = a, b
+        return code, out.getvalue(), err.getvalue()
+
+    def test_o_link_que_chega_durante_a_espera_e_devolvido(self):
+        # A mensagem que disparou o turno já está no log e não conta como nova.
+        self._escreve("Me faca 2 cortes desse video do YouTube abaixo")
+        import threading
+        def _depois():
+            time.sleep(0.6)
+            self._escreve("https://www.youtube.com/watch?v=9rwEGPyPasY")
+        t = threading.Thread(target=_depois)
+        t.start()
+        code, out, err = self._rodar(espera=6.0)
+        t.join()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.strip(), "https://www.youtube.com/watch?v=9rwEGPyPasY")
+
+    def test_a_mensagem_que_disparou_o_turno_nao_conta_como_nova(self):
+        # Senão o comando devolve o link da conversa anterior e o agente corta
+        # o vídeo errado.
+        self._escreve("https://www.youtube.com/watch?v=ANTIGO00000")
+        code, out, err = self._rodar(espera=1.0)
+        self.assertEqual(code, 1, out)
+        self.assertIn("nothing with a link arrived", err)
+
+    def test_sem_link_nenhum_a_pergunta_passa_a_ser_legitima(self):
+        self._escreve("Me faca 2 cortes desse video")
+        code, _, err = self._rodar(espera=1.0)
+        self.assertEqual(code, 1)
+        self.assertIn("ask for the URL", err)
+
+    def test_mensagem_sem_link_durante_a_espera_nao_encerra_a_espera(self):
+        self._escreve("Me faca 2 cortes desse video")
+        self._escreve("peraí")
+        code, _, err = self._rodar(espera=1.0)
+        self.assertEqual(code, 1, err)
+
+    def test_link_cortado_pelo_log_e_recusado_em_vez_de_devolvido_quebrado(self):
+        # O log corta a mensagem por volta de 80 caracteres. Um link cortado
+        # baixa outra coisa, ou nada, e o erro só aparece três passos adiante.
+        self._escreve("gatilho")
+        longo = ("Pega esse video e me faz os cortes mais virais "
+                 "https://www.youtube.com/watch?v=9rwEGPyPa")
+        self.assertGreaterEqual(len(longo), 79)
+        import threading
+        def _depois():
+            time.sleep(0.4)
+            self._escreve(longo)
+        t = threading.Thread(target=_depois)
+        t.start()
+        code, _, err = self._rodar(espera=6.0)
+        t.join()
+        self.assertEqual(code, 1)
+        self.assertIn("truncated", err)
+
+    def test_sem_log_diz_que_nao_da_para_ver_chegada(self):
+        self.W.GATEWAY_LOG = os.path.join(self.dir, "nao-existe.log")
+        with self.assertRaises(SystemExit):
+            self._rodar(espera=1.0)

@@ -22,6 +22,20 @@ moment" is the old order and it is wrong. Measured on the 18-minute source of
 while transcribing that same video costs **3min46s**. That is the whole reason
 this order exists.
 
+## 0. The link may be one message behind you
+
+When the words point at a link that is not in the text -- "esse vídeo", "esse
+link", "abaixo", "essa música" -- do not answer "faltou o link". Run:
+
+```
+warden inbox --wait 20
+```
+
+Measured 15/09, three for three: the request came in, the agent answered "faltou
+o link" five seconds later, and the link arrived at seven seconds as its own
+message. The card the person sees is drawn by their app and never reaches you.
+Exit 0 gives you the URL; exit 1 after the wait is when asking becomes fair.
+
 ## 1. The gate, and the rule set when there is one
 
 **Every download passes a gate, and the gate is never your reading of the link.**

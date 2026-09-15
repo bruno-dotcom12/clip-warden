@@ -68,5 +68,6 @@ you did not get.
 | `warden tracks add <file>` / `list` | the owner's own audio, kept by name so it is never asked for twice |
 | `warden style extract <clip>` / `check <render>` | the measured style of an approved clip, and whether a new one is inside it |
 | `warden voz [--since <ts>]` | how many messages each request actually cost the person; **exit 1 above four** |
+| `warden inbox --wait <s>` | the link the message promised but did not carry, when it arrives a second later. Exit 1 if none came |
 
 Every one of them accepts `--help`. None of them needs a path you have to guess.

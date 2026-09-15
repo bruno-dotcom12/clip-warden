@@ -397,3 +397,101 @@ a máquina fez hoje não é um teste.
   entregues no mesmo segundo, a contagem prova que dois saíram, mas não casa
   arquivo com envio. Para o defeito que isso existe para pegar — nenhum anexo,
   ou uma falha — a contagem basta.
+
+---
+
+## FASE 4 — Ler o que está na tela
+
+### O que a medição mostrou, e não é o que parecia
+
+A hipótese era que o agente estivesse cego ao cartão de pré-visualização.
+**Não é isso.** Conferido no conteúdo bruto que chega ao agente: o texto não tem
+URL nenhuma, e o campo de metadados está vazio. O cartão que você vê é desenhado
+pelo aplicativo de chat e **não viaja até o agente**.
+
+O link vinha numa **mensagem separada, sete segundos depois**. E o agente
+respondia em cinco.
+
+| Conversa | Pedido | "Faltou o link" | O link chegou |
+|---|---|---|---|
+| 1 | 00:42:10 | 00:42:15 (+5s) | 00:42:17 (+7s) |
+| 2 | 02:41:07 | 02:41:12 (+5s) | 02:41:14 (+7s) |
+| música | 02:55:51 | 02:55:57 (+6s) | 02:55:58 (+7s) |
+
+Três de três, o mesmo placar. **Ele perdia a corrida.** Responder rápido parecia
+de graça e custava uma ida e volta, sempre.
+
+### O que mudou
+
+O log do gateway registra **toda mensagem que entra, com o texto e o horário, no
+instante em que ela chega** — antes e independentemente do turno que ela vai
+disparar. É a única fonte que responde "chegou mais alguma coisa enquanto eu
+pensava?".
+
+```
+warden inbox --wait 20
+```
+
+Espera até 20 segundos por uma mensagem nova carregando uma URL, e imprime o
+link assim que ele aparece. Sai 0 com o link, sai 1 depois do prazo — e aí sim a
+pergunta é legítima.
+
+A persona e o `warden-clip` passaram a mandar rodar isso, **em vez de
+perguntar**, sempre que as palavras prometem um link que não está no texto:
+"esse vídeo", "esse link", "abaixo", "essa música".
+
+### Um defeito que o teste achou sozinho
+
+O carimbo do log tem milissegundos (`00:42:17,602`) e eu estava descartando os
+três dígitos. Duas mensagens no mesmo segundo — que é o caso comum, a pessoa
+cola o link logo depois do texto — ficavam com o mesmo carimbo, e a segunda
+sumia de qualquer comparação "chegou depois de". O teste do link truncado é que
+expôs isso.
+
+### A pergunta já respondida
+
+O outro pedido da fase era varrer o fluxo atrás de pontos em que ele reprocessa
+uma pergunta já respondida. Reconstituído do banco:
+
+- 02:57:28 — o agente pergunta qual clipe editar
+- 02:57:57 — você responde: "Faculdade nao vende"
+- 02:58:06 — o agente **roda `warden cut --track`**
+- 02:58:31 — o arquivo fica pronto no disco
+- 03:04:59 — você pergunta "Esta fazendo?"
+- 03:05:07 — ele responde: *"Não, ainda não comecei a cortar — estava esperando
+  sua resposta sobre qual caminho seguir."*
+
+A frase é falsa duas vezes: a pergunta já tinha sido respondida sete minutos
+antes, e ele já tinha cortado. Duas regras foram para a persona:
+
+- **Se você perguntou e a próxima mensagem da pessoa não é uma pergunta, ela é a
+  resposta.** Aja. Nunca diga que está esperando algo que já está na conversa
+  acima de você.
+- **Nunca descreva o próprio estado de memória.** "Ainda não comecei" é uma
+  afirmação sobre o mundo. Antes de dizer, olhe: o arquivo está no disco ou não,
+  `warden delivered` sai 1 ou não. E depois de olhar, quase sempre, não diga —
+  isso é a FASE 2.
+
+### Auditoria da FASE 4
+
+**A causa foi medida, não suposta, e ela contraria a hipótese original.** Valia
+dizer isso: consertar "ler o cartão de pré-visualização" não teria consertado
+nada, porque o cartão não existe do lado do agente.
+
+**Seis testes novos**, todos falhariam sem o conserto: o link que chega durante a
+espera é devolvido; a mensagem que disparou o turno **não** conta como nova (ou o
+agente cortaria o vídeo da conversa anterior); sem link a pergunta volta a ser
+legítima; uma mensagem sem link não encerra a espera; um link cortado pelo log é
+**recusado** em vez de devolvido quebrado; e sem log o comando diz que não dá
+para ver chegada em vez de fingir que nada chegou.
+
+**A suíte: 362 testes, todos passando.**
+
+**O que ficou aberto, e é uma limitação real:**
+
+- O log corta a mensagem por volta de 80 caracteres. Quando a pessoa manda um
+  texto longo **com o link no fim**, a URL pode vir truncada. O comando detecta
+  isso e recusa, em vez de baixar outra coisa — mas nesse caso a pergunta volta
+  a ser necessária.
+- Se a pessoa demorar mais de 20 segundos para colar o link, a pergunta acontece
+  do mesmo jeito. O prazo é ajustável e 20s cobre os 7s medidos com folga.
