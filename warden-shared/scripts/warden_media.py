@@ -409,6 +409,45 @@ def trusted_check(url, entries):
 
 # ---------------------------------------------------------------- footage
 
+def fiscal(url, rules=None, trusted=None):
+    """O portão do download, nas DUAS formas que existem. (ok, porque, titulo).
+
+    Com campanha, o acervo decide. Sem campanha, a lista de fontes do dono
+    decide. Não há terceira forma e não há caminho de download que não passe por
+    uma das duas -- e é por isso que a pergunta mora aqui, numa função só, em
+    vez de cada chamador escolher o seu portão.
+
+    Medido em 15/09, e é o motivo de esta função existir: o caminho barato
+    (`--text-first`, `--window`) exigia `--campaign`, então quem mandava um link
+    solto -- que é o caso comum -- não tinha caminho barato nenhum. O agente
+    baixava o vídeo inteiro porque era a única porta aberta, e pagava 3min46s de
+    transcrição por um texto que a legenda publicada entrega em 5s. Abrir o
+    caminho barato para link confiável sem abrir uma porta lateral significa
+    exatamente isto: o portão continua existindo, só muda quem responde.
+    """
+    if trusted is not None:
+        ok, porque = trusted_check(url, trusted)
+        return ok, porque, None
+    return authorize(rules, url)
+
+
+def archive_trusted(url, out_dir, entries, mode="video"):
+    """O acervo de uma fonte que o dono avalizou, sem campanha. Um link, um arquivo.
+
+    Mesma função que `archive()` cumpre para a campanha, com o outro portão.
+    `mode="text"` é o caminho barato e é o padrão do fluxo: legenda publicada se
+    houver, áudio se não houver, vídeo nunca.
+    """
+    ok, porque, _ = fiscal(url, trusted=entries)
+    if not ok:
+        raise RuntimeError(
+            f"refusing to pull {url}: {porque}. Add the channel or the domain "
+            f"with `warden trusted add <@channel|domain>` if it is a source you "
+            f"vouch for.")
+    os.makedirs(out_dir, exist_ok=True)
+    return _download_one(url, out_dir, mode=mode)
+
+
 def archive(rules, out_dir, limit=None, mode="video"):
     """Download what the brief authorised, and refuse to improvise.
 
@@ -440,7 +479,7 @@ def _carimbo(segundos):
     return f"{int(h):02d}:{int(m):02d}:{seg:06.3f}"
 
 
-def archive_window(rules, out_dir, url, start, end, folga=2.0):
+def archive_window(rules, out_dir, url, start, end, folga=2.0, trusted=None):
     """Baixa SÓ a janela pedida de um link do acervo. (caminho, in_point).
 
     LEIA ISTO ANTES DE MEXER NO DOWNLOAD. Esta função é as duas coisas ao mesmo
@@ -481,7 +520,7 @@ def archive_window(rules, out_dir, url, start, end, folga=2.0):
     original começa DENTRO do arquivo baixado -- sem ele, quem cortar depois
     usa o tempo da fonte num arquivo que já não tem esse tempo.
     """
-    ok, porque, titulo = authorize(rules, url)
+    ok, porque, titulo = fiscal(url, rules=rules, trusted=trusted)
     if not ok:
         raise RuntimeError(
             f"refusing to pull a window of {url}: {porque}. "
@@ -516,21 +555,7 @@ def archive_window(rules, out_dir, url, start, end, folga=2.0):
         raise RuntimeError(f"yt-dlp returned no file for the {de:.0f}-{ate:.0f}s "
                            f"window of that link")
     caminho = os.path.join(out_dir, saiu[0])
-    # O arquivo tem faixa de vídeo mesmo? A pergunta existe porque a resposta
-    # já foi não, calada, e um clipe só de áudio passa por todo o resto.
-    sonda = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-         "stream=codec_name", "-of", "csv=p=0", caminho],
-        capture_output=True, text=True)
-    if sonda.returncode != 0 or not sonda.stdout.strip():
-        try:
-            os.remove(caminho)
-        except OSError:
-            pass          # apagar é higiene; a mensagem abaixo é o que importa
-        raise RuntimeError(
-            f"the window that came down has no video track (ffprobe found none). "
-            f"That is what `--download-sections` does over an HLS stream, and it "
-            f"does it silently. The file was deleted rather than handed on.")
+    _confere_janela(caminho, de, ate)
     # A ORIGEM VIAJA COM O ARQUIVO, e este é o conserto de um defeito que
     # chegou a dois clipes entregues.
     #
@@ -545,15 +570,120 @@ def archive_window(rules, out_dir, url, start, end, folga=2.0):
     # ele passa a carregar de onde veio, ao lado dele, e quem consome exige
     # isso: `cut` que receba um arquivo de janela SEM esta ficha recusa queimar
     # legenda, em vez de queimar a legenda errada.
-    ficha = caminho + ".origem.json"
-    with open(ficha, "w", encoding="utf-8") as fh:
+    _escreve_origem(caminho, url, de, ate, start, end)
+    return caminho, max(0.0, float(start) - de)
+
+
+def _confere_janela(caminho, de, ate):
+    """A faixa de vídeo existe mesmo? Escrita uma vez, para os dois caminhos.
+
+    A resposta já foi NÃO, calada: `--download-sections` sobre HLS entrega um
+    mp4 sem faixa de vídeo e sem erro. Um arquivo assim atravessa todo o resto
+    do sistema e vira um clipe entregue. Apagar é higiene; a mensagem é o que
+    importa.
+    """
+    sonda = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=codec_name", "-of", "csv=p=0", caminho],
+        capture_output=True, text=True)
+    if sonda.returncode != 0 or not sonda.stdout.strip():
+        try:
+            os.remove(caminho)
+        except OSError:
+            pass
+        raise RuntimeError(
+            f"the {de:.0f}-{ate:.0f}s window that came down has no video track "
+            f"(ffprobe found none). That is what `--download-sections` does over "
+            f"an HLS stream, and it does it silently. The file was deleted "
+            f"rather than handed on.")
+
+
+def _escreve_origem(caminho, url, de, ate, start, end):
+    """A ficha que faz o relógio do recorte ser explícito. Ver `archive_window`."""
+    with open(caminho + ".origem.json", "w", encoding="utf-8") as fh:
         json.dump({"url": url,
                    "source_start": round(de, 3),
                    "source_end": round(ate, 3),
                    "in_point": round(max(0.0, float(start) - de), 3),
                    "asked_start": round(float(start), 3),
                    "asked_end": round(float(end), 3)}, fh, indent=1)
-    return caminho, max(0.0, float(start) - de)
+
+
+def archive_windows(rules, out_dir, url, janelas, folga=2.0, trusted=None):
+    """Várias janelas do mesmo link, numa execução só do yt-dlp. [(caminho, in_point)].
+
+    Medido em 15/09, no vídeo de 18 minutos: duas janelas em duas execuções
+    custam 38s; as mesmas duas numa execução custam **30s**. O ganho é de uma
+    negociação de conexão a menos, e é o único ganho de download que sobrou
+    depois de medir.
+
+    E aqui está o motivo de o resto não ter ganho: `--download-sections` obriga
+    o yt-dlp a usar o ffmpeg como downloader, e o ffmpeg **remuxa a seção em
+    tempo real**, a cerca de 1,8x. Uma janela de 28s custa uns 17s de ffmpeg
+    independentemente da banda. Por isso duas janelas (30s) custam mais que o
+    arquivo inteiro deste vídeo (13s): a janela economiza DISCO -- 14 MB contra
+    382 MB -- e só economiza tempo quando a fonte é longa o bastante para o
+    download inteiro passar dos 30s.
+
+    `--download-sections` aceita ser repetido -- está na documentação do
+    yt-dlp -- mas o nome de saída então colide entre as seções, e a
+    documentação não trata desse caso. Por isso o template carrega
+    `%(section_start)s`, que é o campo que o próprio yt-dlp expõe para isto.
+    """
+    ok, porque, titulo = fiscal(url, rules=rules, trusted=trusted)
+    if not ok:
+        raise RuntimeError(
+            f"refusing to pull windows of {url}: {porque}. "
+            + (f"(the video is {titulo!r}) " if titulo else "")
+            + "Downloading slices is still downloading: the gate is the same "
+              "one, and a fast clip made of unauthorised footage is worse than "
+              "a slow one.")
+    if not janelas:
+        raise RuntimeError("archive_windows was given no window to pull")
+    os.makedirs(out_dir, exist_ok=True)
+    pedidos = []
+    secoes = []
+    for start, end in janelas:
+        de = max(0.0, float(start) - folga)
+        ate = float(end) + folga
+        pedidos.append((float(start), float(end), de, ate))
+        secoes += ["--download-sections", f"*{_carimbo(de)}-{_carimbo(ate)}"]
+    marca = hashlib.sha256(url.encode()).hexdigest()[:10]
+    template = os.path.join(
+        out_dir, f"janela-{marca}-%(section_start)s-%(section_end)s.%(ext)s")
+    run(_ytdlp() + ["--no-playlist", "--restrict-filenames", *secoes,
+                    "-f", "bv*[height<=1080][protocol^=http]+ba[protocol^=http]/"
+                          "b[height<=1080][protocol^=http]/b[protocol^=http]",
+                    "--merge-output-format", "mp4", "-o", template, "--", url],
+        TIMEOUT_DOWNLOAD * max(1, len(janelas)), "yt-dlp (windows)")
+
+    saiu = sorted(f for f in os.listdir(out_dir)
+                  if f.startswith(f"janela-{marca}-")
+                  and os.path.splitext(f)[1].lower() in (".mp4", ".mkv", ".webm"))
+    resultados = []
+    for start, end, de, ate in pedidos:
+        # O yt-dlp arredonda o carimbo no nome, então o arquivo é casado pelo
+        # início mais próximo e não por igualdade de string -- casar por string
+        # devolveria "nenhum arquivo" com o arquivo no disco.
+        melhor, dist = None, None
+        for nome in saiu:
+            partes = os.path.splitext(nome)[0].split("-")
+            try:
+                inicio = float(partes[-2])
+            except (ValueError, IndexError):
+                continue
+            d = abs(inicio - de)
+            if dist is None or d < dist:
+                melhor, dist = nome, d
+        if melhor is None or dist > 1.5:
+            raise RuntimeError(
+                f"yt-dlp returned no file for the {start:.0f}-{end:.0f}s window "
+                f"of that link (it wrote {saiu or 'nothing'})")
+        caminho = os.path.join(out_dir, melhor)
+        _confere_janela(caminho, de, ate)
+        _escreve_origem(caminho, url, de, ate, start, end)
+        resultados.append((caminho, max(0.0, start - de)))
+    return resultados
 
 
 def origem_da_janela(source):

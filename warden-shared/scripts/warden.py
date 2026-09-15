@@ -879,19 +879,137 @@ def cmd_authorize(args):
     return 1
 
 
+def _o_que_fazer_com_o_texto():
+    """A linha que impede o reflexo de baixar o vídeo inteiro em seguida.
+
+    Escrita uma vez e impressa pelos dois portões, porque a frase tem de ser a
+    mesma nos dois: duas versões dela é o começo de duas ordens de trabalho.
+    """
+    print("this is the cheap pass: subtitles if the source publishes them, "
+          "otherwise the audio. Choose the windows on this text FIRST, then "
+          "pull ONLY those windows with --window, one per window. Do not pull "
+          "the whole file to cut 20s out of it.", file=sys.stderr)
+    print("measured on the 18-minute source of 15/09: the published subtitle "
+          "is 5s and 89 KB and covers the whole video; the whole file is 13s "
+          "and 382 MB, and transcribing it costs 3min46s. The subtitle pass is "
+          "what saves the three minutes.", file=sys.stderr)
+
+
+def _janela_pedida(valor):
+    try:
+        de, ate = [float(x) for x in str(valor).split("-", 1)]
+    except ValueError:
+        die("--window is two seconds, as 181-201.6", code=2)
+    return de, ate
+
+
+def _diz_o_in_point(caminho, dentro, de, ate):
+    print(caminho)
+    print(f"IN_POINT:{dentro:.3f}")
+    print(f"this file is ONLY the {de:.1f}-{ate:.1f}s window of the source, "
+          f"plus a couple of seconds of keyframe slack on each side. Inside "
+          f"it, the window you asked for starts at {dentro:.3f}s -- so cut "
+          f"it with `--start {dentro:.3f} --end {dentro + (ate - de):.3f}`, "
+          f"not with the source's own timestamps, which this file no longer "
+          f"has.", file=sys.stderr)
+
+
+def _varias_janelas(valor):
+    """"181-201.6,745.5-765" -> [(181.0, 201.6), (745.5, 765.0)]."""
+    janelas = []
+    for pedaco in str(valor).split(","):
+        pedaco = pedaco.strip()
+        if pedaco:
+            janelas.append(_janela_pedida(pedaco))
+    if not janelas:
+        die("--windows is a comma separated list of windows, as "
+            "181-201.6,745.5-765", code=2)
+    return janelas
+
+
+def _diz_as_janelas(resultados, janelas):
+    for (caminho, dentro), (de, ate) in zip(resultados, janelas):
+        _diz_o_in_point(caminho, dentro, de, ate)
+
+
+def _archive_trusted(args, url):
+    """O mesmo caminho barato, com o portão da lista do dono em vez do acervo."""
+    entries = load_trusted()
+    out = safe_out(args.out or os.path.join(state_dir(), "footage", "trusted"),
+                   "footage directory")
+    varias = getattr(args, "windows", None)
+    if varias:
+        janelas = _varias_janelas(varias)
+        try:
+            resultados = _media().archive_windows(
+                None, out, url, janelas, trusted=entries)
+        except Exception as exc:
+            die(f"{type(exc).__name__}: {exc}", code=1)
+        _diz_as_janelas(resultados, janelas)
+        return 0
+    janela = getattr(args, "window", None)
+    if janela:
+        de, ate = _janela_pedida(janela)
+        try:
+            caminho, dentro = _media().archive_window(
+                None, out, url, de, ate, trusted=entries)
+        except Exception as exc:
+            die(f"{type(exc).__name__}: {exc}", code=1)
+        _diz_o_in_point(caminho, dentro, de, ate)
+        return 0
+    modo = "text" if getattr(args, "text_first", False) else "video"
+    try:
+        caminho = _media().archive_trusted(url, out, entries, mode=modo)
+    except Exception as exc:
+        die(f"{type(exc).__name__}: {exc}", code=1)
+    print(caminho)
+    if modo == "text":
+        _o_que_fazer_com_o_texto()
+    return 0
+
+
 def cmd_archive(args):
+    """Puxa o material, pelo caminho barato, com um dos dois portões.
+
+    Os dois portões são a campanha e a lista de fontes do dono. Um dos dois tem
+    de existir: sem nenhum, não há quem responda se este link pode ser cortado,
+    e a resposta nunca é o palpite de quem está lendo o link.
+    """
+    confiavel = getattr(args, "trusted", None)
+    if confiavel and args.campaign:
+        die("--campaign and --trusted are the two gates and you pick one: the "
+            "campaign's archive, or the owner's trusted list.", code=2)
+    if not confiavel and not args.campaign:
+        die("this needs a gate: `--campaign <id>` to pull that campaign's "
+            "archive, or `--trusted <url>` to pull one link the owner vouched "
+            "for. There is no third way to decide a link may be cut.", code=2)
+
+    if confiavel:
+        return _archive_trusted(args, confiavel)
+
     rules = load_campaign(args.campaign)
     out = safe_out(args.out or os.path.join(state_dir(), "footage", safe_id(args.campaign)),
                    "footage directory")
+    varias = getattr(args, "windows", None)
+    if varias:
+        janelas = _varias_janelas(varias)
+        urls = R.get(rules, "sources.archive_urls", []) or []
+        if not urls:
+            die("this campaign publishes no archive, so there is no authorised "
+                "link to take windows of", code=1)
+        try:
+            resultados = _media().archive_windows(
+                rules, out, args.url or urls[0], janelas)
+        except Exception as exc:
+            die(f"{type(exc).__name__}: {exc}", code=1)
+        _diz_as_janelas(resultados, janelas)
+        return 0
     janela = getattr(args, "window", None)
     if janela:
         # Baixa SÓ a janela escolhida, de cada link autorizado do acervo. O
         # fiscal é o mesmo: `archive_window` recusa um link que não está em
         # sources.archive_urls antes de qualquer byte descer.
-        try:
-            de, ate = [float(x) for x in str(janela).split("-", 1)]
-        except ValueError:
-            die("--window is two seconds, as 181-201.6", code=2)
+        de, ate = _janela_pedida(janela)
         urls = R.get(rules, "sources.archive_urls", []) or []
         if not urls:
             die("this campaign publishes no archive, so there is no authorised "
@@ -901,14 +1019,7 @@ def cmd_archive(args):
             caminho, dentro = _media().archive_window(rules, out, alvo, de, ate)
         except Exception as exc:
             die(f"{type(exc).__name__}: {exc}", code=1)
-        print(caminho)
-        print(f"IN_POINT:{dentro:.3f}")
-        print(f"this file is ONLY the {de:.1f}-{ate:.1f}s window of the source, "
-              f"plus a couple of seconds of keyframe slack on each side. Inside "
-              f"it, the window you asked for starts at {dentro:.3f}s -- so cut "
-              f"it with `--start {dentro:.3f} --end {dentro + (ate - de):.3f}`, "
-              f"not with the source's own timestamps, which this file no longer "
-              f"has.", file=sys.stderr)
+        _diz_o_in_point(caminho, dentro, de, ate)
         return 0
     modo = "text" if getattr(args, "text_first", False) else "video"
     try:
@@ -924,15 +1035,7 @@ def cmd_archive(args):
     if modo == "text":
         # O que fazer em seguida, dito aqui, porque é aqui que o agente está
         # olhando. Sem esta linha ele baixa o vídeo inteiro de novo por reflexo.
-        print("this is the cheap pass: subtitles if the source publishes them, "
-              "otherwise the audio. Choose the windows on this text FIRST, then "
-              "pull ONLY those windows with `warden archive --window <a>-<b>`, "
-              "one per window. Do not pull the whole file to cut 20s out of it.",
-              file=sys.stderr)
-        print("measured on the 18-minute source of 14/09: subtitles 4s / 73 KB, "
-              "audio 4s / 15 MB, whole video 16s / 361 MB, and transcribing "
-              "195s. The subtitle pass is what saves the three minutes.",
-              file=sys.stderr)
+        _o_que_fazer_com_o_texto()
     return 0
 
 
@@ -1835,7 +1938,12 @@ def main(argv=None):
     p.set_defaults(func=cmd_tracks)
 
     p = sub.add_parser("archive")
-    p.add_argument("--campaign", required=True)
+    p.add_argument("--campaign", help="the campaign whose archive to pull from")
+    p.add_argument("--trusted", metavar="URL",
+                   help="a single link from the owner's trusted list, when "
+                        "there is no campaign. Same gate, different list: "
+                        "`warden trusted check` decides, and an unvouched "
+                        "source is refused before a byte comes down.")
     p.add_argument("--out")
     p.add_argument("--limit", type=int)
     p.add_argument("--window",
@@ -1843,6 +1951,11 @@ def main(argv=None):
                         "seconds (181-201.6). Goes through the same archive "
                         "gate as a whole pull. Prints IN_POINT: where that "
                         "window begins inside the file it wrote.")
+    p.add_argument("--windows",
+                   help="every window of the batch at once, comma separated "
+                        "(181-201.6,745.5-765). One yt-dlp run instead of one "
+                        "per window: measured 30s against 38s for two. Same "
+                        "gate, same origin card, one IN_POINT line per file.")
     p.add_argument("--url", help="which authorised archive link to take the "
                                  "window of; defaults to the first one")
     p.add_argument("--text-first", action="store_true",

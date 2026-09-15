@@ -8,12 +8,11 @@ description: The whole path from one message to finished clips. Use when someone
 Someone sends a link, or asks you to go find a campaign. What comes back is
 files they can upload, with the caption to paste. Everything between is yours.
 
-```
-find or read the campaign  ->  ask what they like  ->  pull the WORDS of the
-   archive (--text-first)  ->  choose the windows on the words  ->  pull ONLY
-   those windows (--window)  ->  read and approve the captions, window by
-   window  ->  render  ->  look at the contact sheet  ->  check  ->  send
-```
+**The order of work is written in `warden-clip`, section 2, and nowhere else.**
+Not here, not in the persona, not in the README. This skill is the front door --
+what happens at each door, and what to ask -- and it does not carry a second copy
+of the order, because the second copy is the one that goes stale and the model
+obeys whichever it reads first.
 
 ## 1. The campaign
 
@@ -63,16 +62,15 @@ the rule set is the payment.
 
 ## 3. Footage, text, moments
 
-`warden archive --campaign <id> --text-first`, then `warden transcribe`, then
-`warden digest`. The order is written once, in `warden-clip`, and it is not
-negotiable: the moments are chosen on the words, before any video is opened.
-`--text-first` pulls the published subtitle, or the audio when there is none,
-and no video at all.
+`warden-clip`, sections 2 to 4, is the whole of it: which command, in which
+order, with the measured reason for each. Do not work from a summary of it, and
+do not write one here.
 
-Once the windows are chosen, pull ONLY those windows:
-`warden archive --campaign <id> --window <a>-<b>`, one per window. The whole
-file is the exception and `warden-clip` section 4c is where it is argued for --
-the numbers, and when each path is right, live there and not here.
+The one thing this skill adds is the gate, because it is the front door and the
+gate is the first question a link raises. `warden archive` takes `--campaign
+<id>` when a campaign vouches for the footage, and `--trusted <url>` when the
+owner's own list does. It refuses to run with neither, which is the point: there
+is no third way to decide that a link may be cut.
 
 If their preference is `approval: yes`, send the chosen moments first, as
 timestamps with the line that carries each one, and wait. If it is `no`, render

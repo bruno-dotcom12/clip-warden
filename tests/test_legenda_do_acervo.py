@@ -415,7 +415,7 @@ class DizEmVozAlta(unittest.TestCase):
 
     def test_a_nota_sai_mesmo_quando_o_material_esta_limpo(self):
         fonte = _fonte_de_vlog(self.dir, "limpo", com_legenda=False)
-        r = self._corte(fonte, "limpo.mp4")
+        r = self._corte(fonte, "corte-limpo.mp4")
         nota = [n for n in r["notes"] if "footage checked before burning" in n]
         self.assertEqual(len(nota), 1, r["notes"])
         self.assertIn("found nothing down there", nota[0])
@@ -425,7 +425,7 @@ class DizEmVozAlta(unittest.TestCase):
 
     def test_suspeito_e_queimando_legenda_cobre_o_rodape_e_diz(self):
         fonte = _fonte_de_vlog(self.dir, "vlog", com_legenda=True)
-        r = self._corte(fonte, "vlog.mp4")
+        r = self._corte(fonte, "corte-vlog.mp4")
         self.assertTrue(r["style"]["footer_covered"], r["notes"])
         nota = [n for n in r["notes"] if "footage checked before burning" in n]
         self.assertEqual(len(nota), 1, r["notes"])

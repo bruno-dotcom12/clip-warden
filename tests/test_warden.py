@@ -2293,7 +2293,7 @@ class DefinitionOfDone(unittest.TestCase):
 # com um resultado pior e ninguém é avisado. Cada caso aqui já custou alguma
 # coisa, e o primeiro custou um clipe com o rosto na borda do quadro.
 
-class MissingDependencySpeaks(unittest.TestCase):
+class SemDetectorDeRostoOCorteParaEDiz(unittest.TestCase):
     """Sem detector de rosto o corte para; nunca cai no centro calado."""
 
     def setUp(self):
@@ -2358,7 +2358,7 @@ class MissingDependencySpeaks(unittest.TestCase):
         self.assertIn("MISSING", texto)
 
 
-class NothingDegradesQuietly(unittest.TestCase):
+class NadaDegradaCaladoNaVarreduraDeBaixo(unittest.TestCase):
     """Os outros sítios da mesma varredura."""
 
     def setUp(self):
@@ -4663,3 +4663,155 @@ class ALegendaDoAcervoNaoFicaNaBorda(unittest.TestCase):
         self.assertTrue(inteiro or True)      # no quadro inteiro pode ou não pegar
         self.assertEqual(recortado, [],
                          "texto fora da faixa mantida não pode contar")
+
+
+class OCaminhoBaratoExisteSemCampanha(unittest.TestCase):
+    """O caminho barato existia só para quem tinha campanha, e isso custou 3min46s.
+
+    Medido em 15/09: `warden archive --text-first` exigia `--campaign`. Quem
+    manda um link solto -- que foi o caso das três conversas de teste -- não
+    tinha caminho barato nenhum, então o agente baixava o vídeo inteiro porque
+    era a única porta aberta, e pagava 3min46s de transcrição por um texto que a
+    legenda publicada entrega em 5s.
+
+    Abrir essa porta sem abrir uma porta LATERAL é o que estes testes guardam: o
+    portão continua existindo, só muda quem responde. Uma fonte que o dono não
+    avalizou é recusada antes de um byte de mídia descer, exatamente como uma
+    fonte fora do acervo é.
+    """
+
+    def setUp(self):
+        import warden_media
+        self.M = warden_media
+        self.dir = _temp(self, prefix="warden-barato-")
+        self.chamadas = []
+        self._run = warden_media.run
+        warden_media.run = lambda *a, **k: self.chamadas.append(a) or ""
+        self.addCleanup(setattr, warden_media, "run", self._run)
+
+    def _baixou(self):
+        return [c for c in self.chamadas
+                if any(str(x).startswith("--download-sections")
+                       or str(x) == "--skip-download" or str(x) == "-f"
+                       for x in (c[0] or []))]
+
+    def test_lista_de_confianca_vazia_nao_avaliza_nada(self):
+        with self.assertRaises(RuntimeError) as erro:
+            self.M.archive_trusted(
+                "https://www.youtube.com/watch?v=QualquerUm1", self.dir, [])
+        self.assertIn("refusing to pull", str(erro.exception))
+        self.assertEqual(self._baixou(), [], "baixou mídia apesar da recusa")
+
+    def test_fonte_fora_da_lista_do_dono_e_recusada_antes_de_baixar(self):
+        with self.assertRaises(RuntimeError) as erro:
+            self.M.archive_trusted(
+                "https://exemplo-qualquer.invalid/v.mp4", self.dir,
+                ["youtube.com"])
+        self.assertIn("refusing to pull", str(erro.exception))
+        self.assertEqual(self._baixou(), [])
+
+    def test_a_recusa_diz_como_o_dono_avaliza_a_fonte(self):
+        with self.assertRaises(RuntimeError) as erro:
+            self.M.archive_trusted(
+                "https://exemplo-qualquer.invalid/v.mp4", self.dir,
+                ["youtube.com"])
+        self.assertIn("warden trusted add", str(erro.exception))
+
+    def test_o_mesmo_fiscal_vale_para_a_janela_sem_campanha(self):
+        with self.assertRaises(RuntimeError) as erro:
+            self.M.archive_windows(
+                None, self.dir, "https://exemplo-qualquer.invalid/v.mp4",
+                [(100.0, 120.0)], trusted=["youtube.com"])
+        self.assertIn("refusing to pull windows", str(erro.exception))
+        self.assertEqual(self._baixou(), [])
+
+    def test_o_fiscal_e_um_so_e_atende_pelos_dois_portoes(self):
+        # Com campanha, o acervo responde. Com lista, a lista responde. Não há
+        # terceira forma, e as duas passam pela mesma função.
+        regras = {"schema": 1, "id": "f", "video": {"width": 1080, "height": 1920},
+                  "sources": {"archive_urls": []}, "caption": {}, "posting": {}}
+        ok, _, _ = self.M.fiscal("https://www.youtube.com/watch?v=AAAAAAAAAAA",
+                                 rules=regras)
+        self.assertFalse(ok)
+        ok, porque, _ = self.M.fiscal("https://www.youtube.com/watch?v=AAAAAAAAAAA",
+                                      trusted=["youtube.com"])
+        self.assertTrue(ok, porque)
+
+
+class UmComandoBaixaTodasAsJanelasDoLote(unittest.TestCase):
+    """Duas janelas em duas execuções custam 38s; numa execução, 31s.
+
+    E a ficha de origem tem de ser escrita para CADA uma. Um arquivo de janela
+    sem ela é um arquivo com relógio implícito, e foi assim que dois clipes
+    saíram com a legenda da abertura do vídeo.
+    """
+
+    def setUp(self):
+        import warden_media
+        self.M = warden_media
+        self.dir = _temp(self, prefix="warden-janelas-")
+        self.args = []
+
+        def _falso_run(args, *a, **k):
+            self.args.append(list(args))
+            # O yt-dlp escreveria um arquivo por seção, nomeado pelo template.
+            for nome in ("janela-%s-98.0-122.0.mp4", "janela-%s-743.5-767.0.mp4"):
+                marca = _hash_da_url("https://www.youtube.com/watch?v=AAAAAAAAAAA")
+                caminho = os.path.join(self.dir, nome % marca)
+                with open(caminho, "wb") as fh:
+                    fh.write(b"x")
+            return ""
+
+        def _hash_da_url(u):
+            import hashlib
+            return hashlib.sha256(u.encode()).hexdigest()[:10]
+
+        self._run = warden_media.run
+        warden_media.run = _falso_run
+        self.addCleanup(setattr, warden_media, "run", self._run)
+        # A sonda de faixa de vídeo é do ffprobe e não tem o que sondar aqui.
+        self._confere = warden_media._confere_janela
+        warden_media._confere_janela = lambda *a, **k: None
+        self.addCleanup(setattr, warden_media, "_confere_janela", self._confere)
+
+    def test_duas_janelas_viram_uma_execucao_so(self):
+        self.M.archive_windows(
+            None, self.dir, "https://www.youtube.com/watch?v=AAAAAAAAAAA",
+            [(100.0, 120.0), (745.5, 765.0)], trusted=["youtube.com"])
+        self.assertEqual(len(self.args), 1,
+                         "pediu mais de uma execução do yt-dlp para o lote")
+        secoes = [a for a in self.args[0] if a == "--download-sections"]
+        self.assertEqual(len(secoes), 2, self.args[0])
+
+    def test_cada_janela_leva_a_propria_ficha_de_origem(self):
+        saiu = self.M.archive_windows(
+            None, self.dir, "https://www.youtube.com/watch?v=AAAAAAAAAAA",
+            [(100.0, 120.0), (745.5, 765.0)], trusted=["youtube.com"])
+        self.assertEqual(len(saiu), 2)
+        for caminho, dentro in saiu:
+            ficha = caminho + ".origem.json"
+            self.assertTrue(os.path.isfile(ficha), f"falta {ficha}")
+            with open(ficha, encoding="utf-8") as fh:
+                dados = json.load(fh)
+            self.assertIn("source_start", dados)
+            self.assertAlmostEqual(dentro, 2.0, places=3)
+
+    def test_a_ficha_diz_o_pedido_e_nao_so_a_folga(self):
+        saiu = self.M.archive_windows(
+            None, self.dir, "https://www.youtube.com/watch?v=AAAAAAAAAAA",
+            [(100.0, 120.0), (745.5, 765.0)], trusted=["youtube.com"])
+        with open(saiu[1][0] + ".origem.json", encoding="utf-8") as fh:
+            dados = json.load(fh)
+        self.assertAlmostEqual(dados["asked_start"], 745.5, places=3)
+        self.assertAlmostEqual(dados["asked_end"], 765.0, places=3)
+        self.assertAlmostEqual(dados["source_start"], 743.5, places=3)
+
+    def test_o_template_carrega_o_inicio_da_secao_ou_os_nomes_colidem(self):
+        # A documentação do yt-dlp não trata da colisão quando
+        # `--download-sections` é repetido; `%(section_start)s` é o campo que
+        # ele mesmo expõe para distinguir os arquivos.
+        self.M.archive_windows(
+            None, self.dir, "https://www.youtube.com/watch?v=AAAAAAAAAAA",
+            [(100.0, 120.0), (745.5, 765.0)], trusted=["youtube.com"])
+        saida = self.args[0][self.args[0].index("-o") + 1]
+        self.assertIn("%(section_start)s", saida)

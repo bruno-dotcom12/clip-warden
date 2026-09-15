@@ -8,38 +8,56 @@ description: Go from a campaign's authorised archive to finished vertical clips.
 The order is fixed and it is not a preference.
 
 ```
-rule set -> WORDS (--text-first) -> chosen windows -> --window -> render -> sheet -> send_message
+gate -> WORDS (--text-first) -> chosen windows -> --windows -> render -> sheet -> deliver
 ```
+
+**This is the only copy of the order of work in this repository.** The persona
+points here, `warden-run` points here, and neither carries a second version. If
+you find one somewhere, it is stale and this section wins.
 
 **The video is the last thing you pull, and you pull only the seconds you
 chose.** Any instruction anywhere that reads "pull the footage, then find the
-moment" is the old order and it is wrong. Measured on the same 18-minute
-source: this order reaches the first clip in **62s**; pulling the video first
-took **12min26s**. If you are about to run `warden archive` with neither
-`--text-first` nor `--window`, stop -- section 4c is the only place that is
-right, and it is an exception you have to be able to justify.
+moment" is the old order and it is wrong. Measured on the 18-minute source of
+15/09: the published subtitle is **5s and 89 KB** and covers the whole video,
+while transcribing that same video costs **3min46s**. That is the whole reason
+this order exists.
 
-## 1. The rule set first
+## 1. The gate, and the rule set when there is one
 
-No clip is rendered before the campaign is stored, because the renderer takes
-its duration and its resolution from the rule set. Run `warden-campaign` first
-if `warden campaign show <id>` comes back empty.
+**Every download passes a gate, and the gate is never your reading of the link.**
+There are two and there is no third:
+
+```
+warden archive --campaign <id> ...      the campaign's archive vouches
+warden archive --trusted <url> ...      the owner's trusted list vouches
+```
+
+`warden archive` refuses to run with neither. With a campaign, store it first --
+`warden-campaign` does that, and the renderer takes its duration and resolution
+from the rule set, so `warden campaign show <id>` coming back empty means you
+are not ready to cut. Without a campaign, `warden trusted check <url>` is the
+question and `warden trusted add <@channel|domain>` is how the owner answers it.
+
+Until 15/09 the cheap path required `--campaign`, so a person who sent a bare
+link had no cheap path at all and the agent pulled the whole file three times in
+a row because it was the only door open. `--trusted` is that door.
 
 ## 2. Pull the words. Never the video.
 
 ```
 warden archive --campaign <id> --text-first     subtitles, or audio if none
+warden archive --trusted <url> --text-first     the same, for a bare link
 ```
 
-This is the first command you run after the rule set exists. It pulls what
-gives you the WORDS and no video at all: the published subtitle if the source
-has one, the audio track if it does not.
+This is the first command you run. It pulls what gives you the WORDS and no
+video at all: the published subtitle if the source has one, the audio track if
+it does not.
 
-Measured on the 18-minute source of 14/09: the published subtitle comes down in
-**4s and 73 KB**; the audio in **4s and 15 MB**; the whole video is **16s and
-361 MB**, and transcribing it costs **195s**. Choosing a window is work on
-TEXT. Pulling 361 MB to find out where to cut is paying for the video before
-knowing whether you want it.
+Measured on the 18-minute source of 15/09: the published subtitle comes down in
+**5s and 89 KB** and covers the whole video with 1007 lines; the whole file is
+**13s and 382 MB**, and transcribing it costs **3min46s**. Choosing a window is
+work on TEXT. Transcribing 18 minutes of audio to use 40 seconds of it is paying
+four minutes for something that was already written down.
 
 `warden archive --campaign <id>` downloads from `sources.archive_urls` and from
 nowhere else, with or without the flag. If it says the rule set publishes no
@@ -111,10 +129,16 @@ of those before you pick, not after you render.
 ## 4. Pull ONLY the windows you chose
 
 ```
-warden archive --campaign <id> --window 181-201.6
+warden archive --trusted <url> --windows 181-201.6,745.5-765      the whole batch
+warden archive --campaign <id> --window 181-201.6                 one window
 → /var/lib/hermes/warden/footage/<id>/janela-....mp4
 → IN_POINT:2.000
 ```
+
+**Ask for the whole batch at once.** `--windows` takes every window of the batch
+comma separated and pulls them in ONE yt-dlp run: measured 15/09, **31s for two
+windows against 38s** as two separate commands. One `IN_POINT:` line comes back
+per file, in the order you asked.
 
 It prints `IN_POINT:` because the file it wrote is **not** the source: it is
 that window plus a couple of seconds of keyframe slack. Cut it with
@@ -123,10 +147,14 @@ timestamps, which that file no longer has.
 
 Two things about this path, both measured:
 
-- **It costs disk, not time.** Two windows download in 37s against 25s for the
-  whole file, because each section renegotiates the connection. What it saves is
-  ~340 MB per source. On an 18-minute video the whole file is fine; on a
-  two-hour stream the windows are the only sane way.
+- **It costs disk, not time, and on a short source it costs time too.** Measured
+  15/09 on the 18-minute video: the whole file is **13s and 382 MB**; two
+  windows are **31s and 14 MB**. The reason is in yt-dlp's own documentation --
+  `--download-sections` "needs ffmpeg", and ffmpeg remuxes the section in real
+  time at about 1.8x, so a 28-second window costs ~17s of ffmpeg no matter how
+  fast the connection is. So: **under about half an hour of source, pull it
+  whole; over that, pull the windows.** What the windows always save is disk,
+  and on a two-hour stream they are the only sane way.
 - **It goes through the same archive gate.** `archive_window` refuses a link
   that is not in `sources.archive_urls` before a single byte comes down, and
   says so: downloading a slice is still downloading. A fast clip made of
