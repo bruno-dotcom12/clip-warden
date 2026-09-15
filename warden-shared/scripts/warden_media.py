@@ -180,20 +180,26 @@ def _gdown():
     caminho principal -- o defeito ficou invisível porque ninguém tinha chegado
     nele.
     """
-    try:
-        import gdown  # noqa: F401
-        return [sys.executable, "-m", "gdown"]
-    except Exception:
-        return ["gdown"]
+    # O BINÁRIO ao lado deste interpretador, não `-m gdown`.
+    #
+    # Medido em 15/09/2026, e é um conserto em cima de um conserto: trocar o
+    # PATH por `-m gdown` resolvia o "não está instalado" e quebrava tudo em
+    # seguida, porque `python -m gdown` expõe uma CLI DIFERENTE da do script --
+    # ela não aceita `--fuzzy`, e o erro que chegava era o usage do argparse.
+    # O bin do venv fica ao lado do executável que está rodando, então é daí
+    # que se pega, sem depender do PATH e sem trocar de CLI.
+    lado = os.path.join(os.path.dirname(sys.executable), "gdown")
+    if os.path.isfile(lado) and os.access(lado, os.X_OK):
+        return [lado]
+    return ["gdown"]
 
 
 def _tem_gdown():
     """Dá para usar o gdown? A pergunta é se dá para IMPORTAR, não se está no PATH."""
-    try:
-        import gdown  # noqa: F401
+    lado = os.path.join(os.path.dirname(sys.executable), "gdown")
+    if os.path.isfile(lado) and os.access(lado, os.X_OK):
         return True
-    except ImportError:
-        return have("gdown")
+    return have("gdown")
 
 
 def _ytdlp(*, paced=True):
@@ -341,8 +347,16 @@ def run(args, timeout, label):
         # paragraph about YouTube refusing this address, which is the same
         # crime -- a confident cause that was never observed -- committed by
         # the code meant to prevent it.
-        if (label.startswith("yt-dlp")
-                and _BOT_CHECK.search(saida) and not _ESTE_VIDEO.search(saida)):
+        # Por LINHA, e não sobre o buffer inteiro. Medido em 15/09: numa
+        # playlist o yt-dlp imprime um item por linha, então "Private video"
+        # do item 1 e "not a bot" do item 2 chegam juntos -- e a checagem sobre
+        # o texto todo via as duas, concluía "é sobre o vídeo" e devolvia ao
+        # modelo a pilha de inglês que este arquivo existe para não devolver.
+        # A pergunta certa é se ALGUMA linha é bloqueio e não é sobre o vídeo.
+        bloqueio_na_linha = any(
+            _BOT_CHECK.search(l) and not _ESTE_VIDEO.search(l)
+            for l in saida.splitlines())
+        if label.startswith("yt-dlp") and bloqueio_na_linha:
             raise FonteBloqueada(_porque_bloqueou(label))
         tail = saida.strip().splitlines()[-6:]
         raise RuntimeError(f"{label} failed:\n  " + "\n  ".join(tail))
@@ -378,6 +392,12 @@ def fetch_text(url, limit=200_000):
     except LookupError:
         body = raw.decode("utf-8", errors="replace")
     body = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", body)
+    # A cauda que o corte deixou aberta. `read(limit * 4)` pode cair NO MEIO de
+    # um <script>, e sem a tag de fecho o padrão acima não casa: o bloco inteiro
+    # sobrevive. Medido em 15/09 numa página de campanhas -- 150.181 caracteres
+    # de CSS do tailwind chegaram como se fossem o briefing, no primeiro comando
+    # que um estranho roda.
+    body = re.sub(r"(?is)<(script|style|noscript)[^>]*>(?:(?!</\1>).)*$", " ", body)
     body = re.sub(r"(?is)<br\s*/?>|</p>|</div>|</li>|</h[1-6]>", "\n", body)
     body = re.sub(r"(?s)<[^>]+>", " ", body)
     body = html.unescape(body)
@@ -1206,6 +1226,46 @@ def _download_one(url, out_dir, mode="video"):
                         "that is not a clip source, and it would fill the host's disk")
                 fh.write(chunk)
         return target
+    if "drive.google.com" in parsed.netloc and "/folders/" in parsed.path:
+        # Uma PASTA do Drive, que é como uma campanha real publica o acervo --
+        # medido em 15/09/2026 num briefing de verdade: a pasta trazia cinco
+        # cortes oficiais. Antes disto o link caía no caminho de arquivo, o
+        # `--fuzzy` não casava com uma pasta, e o dono recebia o usage do gdown.
+        #
+        # Uma pasta não é UM arquivo, e esta função devolve um. Então ela baixa
+        # a pasta inteira e devolve o maior vídeo, dizendo em voz alta quais são
+        # os outros: escolher sozinha qual corte da campanha usar seria decidir
+        # no lugar da pessoa, e ficar calada seria esconder o acervo dela.
+        if not _tem_gdown():
+            raise RuntimeError(
+                "this is a Google Drive folder and gdown is neither importable "
+                "by this interpreter nor on PATH, so it cannot be pulled")
+        destino = os.path.join(out_dir, "drive-" +
+                               hashlib.sha256(url.encode()).hexdigest()[:12])
+        os.makedirs(destino, exist_ok=True)
+        run(_gdown() + ["--folder", "--no-cookies", "-O", destino, "--", url],
+            TIMEOUT_DOWNLOAD, "gdown (folder)")
+        videos = []
+        for raiz, _, arquivos in os.walk(destino):
+            for f in arquivos:
+                if os.path.splitext(f)[1].lower() in (
+                        ".mp4", ".mov", ".m4v", ".webm", ".mkv"):
+                    videos.append(os.path.join(raiz, f))
+        if not videos:
+            raise RuntimeError(
+                f"{url} is a Drive folder with no video in it. Check that the "
+                f"folder is shared with anyone who has the link, and that the "
+                f"footage is in this folder rather than a subfolder of it.")
+        videos.sort(key=os.path.getsize, reverse=True)
+        if len(videos) > 1:
+            print(f"  (this Drive folder holds {len(videos)} videos. The "
+                  f"biggest is the one returned; the others are beside it in "
+                  f"{destino} and any of them can be cut:", file=sys.stderr)
+            for v in videos:
+                print(f"     {os.path.getsize(v) // (1024*1024)} MB  "
+                      f"{os.path.basename(v)}", file=sys.stderr)
+            print("  )", file=sys.stderr)
+        return videos[0]
     if "drive.google.com" in parsed.netloc:
         if not _tem_gdown():
             raise RuntimeError(
@@ -1348,8 +1408,24 @@ def _dimensions(path):
         capture_output=True, text=True).stdout.strip()
     partes = [p for p in out.split(",")[:2] if p.strip()]
     if len(partes) < 2:
+        nome = os.path.basename(path)
+        # Três causas diferentes davam a MESMA frase, e ela acusava a errada
+        # em duas delas: um arquivo de 0 byte e um mp4 truncado mandavam a
+        # pessoa rodar `archive --window`, quando o problema era o download.
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            raise RuntimeError(
+                f"{nome} is an empty file ({0} bytes). Whatever wrote it did "
+                f"not finish -- pull it again before cutting.")
+        tipos = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type",
+             "-of", "csv=p=0", path], capture_output=True, text=True).stdout
+        if not tipos.strip():
+            raise RuntimeError(
+                f"{nome} has no readable stream at all: ffprobe finds neither "
+                f"picture nor sound in it. It is very likely a truncated or "
+                f"corrupt download rather than footage -- pull it again.")
         raise RuntimeError(
-            f"{os.path.basename(path)} has no video stream -- it is sound only. "
+            f"{nome} has no video stream -- it is sound only. "
             f"This is what `archive --text-first` writes on purpose, for "
             f"`transcribe` to listen to; it is not footage and there is nothing "
             f"to frame. Pull the picture with `warden archive --window <a>-<b>` "

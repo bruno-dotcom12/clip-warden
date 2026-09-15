@@ -21,6 +21,8 @@ import json
 import os
 import tempfile
 import unittest
+import urllib.parse
+from unittest import mock
 
 import warden_tiktok as T
 
@@ -28,6 +30,19 @@ import warden_tiktok as T
 PUBLISH_ID = "v_inbox_file~v2.7685480798933239816"      # o da medição de 14/09
 UPLOAD_URL = "https://open-upload.tiktokapis.com/upload/?upload_id=abc123"
 TOKEN = "act.exemploDeTokenQueNaoPodeVazarEmLugarNenhum123456"
+
+# Os outros dois segredos do arquivo. O refresh é o que vale 365 dias e renova
+# tudo sozinho; o client_secret é o que identifica o app. Vazar qualquer um dos
+# três é perder a conta, então os três são testados pelo mesmo critério.
+REFRESH = "rft.oRefreshTokenQueValeTrezentosESessentaECincoDias0011"
+SEGREDO_APP = "csecret.oClientSecretDoAppQueNaoPodeVazarJamais2233"
+CHAVE_APP = "awx4mkiukayqqc1740"
+
+# O que volta da renovação. O refresh GIROU de propósito: a documentação avisa
+# que "the returned refresh_token may be different than the one passed in the
+# payload", e é o dia da rotação que quebra quem guardou o antigo.
+TOKEN_NOVO = "act.oAccessTokenNovinhoQueVeioDaRenovacao445566"
+REFRESH_NOVO = "rft.oRefreshQueGIROU-esteEhOqueValeDaquiPraFrente7788"
 
 
 # ───────────────────────────────────────────────────────── uma rede de mentira
@@ -40,18 +55,26 @@ class Rede:
     que já chegou (em 14/09 ele respondeu SEND_TO_USER_INBOX 43 minutos depois).
     """
 
-    def __init__(self, *, init=None, put=(201, b""), status=("SEND_TO_USER_INBOX",)):
+    def __init__(self, *, init=None, put=(201, b""), status=("SEND_TO_USER_INBOX",),
+                 oauth=None):
         self.init = init if init is not None else (200, _ok({
             "publish_id": PUBLISH_ID, "upload_url": UPLOAD_URL}))
         self.put = put
         self.status = list(status)
+        self.oauth = oauth if oauth is not None else _renovacao()
         self.chamadas = []
 
     def __call__(self, metodo, url, *, corpo=None, cabecalhos=None, timeout=None):
         self.chamadas.append({"metodo": metodo, "url": url, "corpo": corpo,
                               "cabecalhos": dict(cabecalhos or {}),
                               "timeout": timeout})
+        if url == T.URL_OAUTH:
+            return self.oauth
         if url == T.URL_INIT:
+            # Lista quando o init responde coisas diferentes na primeira e na
+            # segunda vez, que é o caso da recusa seguida de renovação.
+            if isinstance(self.init, list):
+                return self.init.pop(0) if len(self.init) > 1 else self.init[0]
             return self.init
         if url == T.URL_STATUS:
             valor = self.status[0] if len(self.status) == 1 else self.status.pop(0)
@@ -79,6 +102,29 @@ def _erro(code, message, http=400):
         "data": {},
         "error": {"code": code, "message": message,
                   "log_id": "2026091416504899"}}).encode("utf-8")
+
+
+def _renovacao(**campos):
+    """A resposta do /v2/oauth/token/, no formato que a documentação descreve."""
+    corpo = {"access_token": TOKEN_NOVO,
+             "expires_in": 86400,
+             "open_id": "0d8e6b7a-inventado",
+             "refresh_expires_in": 31536000,
+             "refresh_token": REFRESH_NOVO,
+             "scope": "user.info.basic,video.upload",
+             "token_type": "Bearer"}
+    corpo.update(campos)
+    return 200, json.dumps(corpo).encode("utf-8")
+
+
+def _erro_oauth(nome, descricao, http=400):
+    """O OUTRO formato de erro: `error` é string no topo, não um objeto.
+
+    Não é capricho de teste, é o que o endpoint de OAuth devolve. Tratar os dois
+    formatos como um só é como uma recusa vira sucesso silencioso.
+    """
+    return http, json.dumps({"error": nome, "error_description": descricao,
+                             "log_id": "2026091509000077"}).encode("utf-8")
 
 
 class Relogio:
@@ -136,6 +182,26 @@ class Base(unittest.TestCase):
         with open(self.token_file, "w", encoding="utf-8") as fh:
             json.dump(dados, fh)
         os.chmod(self.token_file, 0o600)
+
+    def grava_renovavel(self, **campos):
+        """Um arquivo com os três campos que fazem a renovação acontecer só."""
+        dados = {"refresh_token": REFRESH, "client_key": CHAVE_APP,
+                 "client_secret": SEGREDO_APP}
+        dados.update(campos)
+        self.grava_token(**dados)
+
+    def le_token_do_disco(self):
+        with open(self.token_file, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def modo_do_token(self):
+        import stat as _stat
+        return _stat.S_IMODE(os.stat(self.token_file).st_mode)
+
+    def rascunhos_no_diretorio(self):
+        """Sobras de escrita atômica. Deve ser sempre vazio, dê no que der."""
+        return [n for n in os.listdir(self.tmp)
+                if n.startswith(".") and "tiktok.json" in n]
 
     def clipe(self, nome="mbl-02-votaria-nele.mp4", tamanho=8933576):
         """Um arquivo do tamanho exato que foi medido subindo em 14/09."""
@@ -283,11 +349,20 @@ class SemToken(Base):
         self.grava_token(scope=None)
         self.assertEqual(T.token(), TOKEN)
 
-    def test_token_vencido_e_recusado_com_a_duracao_real(self):
+    def test_token_vencido_sem_com_que_renovar_nomeia_o_que_falta(self):
+        """Antes isto era "refaça a autorização". Agora dá para não refazer.
+
+        A renovação existe e não precisa da pessoa; o que impede é o arquivo não
+        ter os três campos. Dizer quais são é a diferença entre um minuto de
+        trabalho e uma autorização nova a cada 24 horas, para sempre.
+        """
         self.grava_token(expires_at=T._relogio() - 1)
         with self.assertRaises(T.TikTokIndisponivel) as caso:
             T.token()
-        self.assertIn("vencido", str(caso.exception))
+        texto = str(caso.exception)
+        for campo in T.CAMPOS_RENOVACAO:
+            self.assertIn(campo, texto)
+        self.assertIn("venceu", texto)
 
     def test_expires_in_sozinho_nao_vence_nada(self):
         """`expires_in` é duração, não data: sem âncora não dá para concluir."""
@@ -626,7 +701,8 @@ class StatusConta(Base):
         self.grava_token(expires_at=T._relogio() - 1)
         ok, motivo = T.status_conta()
         self.assertFalse(ok)
-        self.assertIn("vencido", motivo)
+        self.assertIn("venceu", motivo)
+        self.assertIn("client_secret", motivo)
 
     def test_modo_frouxo_e_aviso_dentro_de_um_ok(self):
         os.chmod(self.token_file, 0o644)
@@ -659,6 +735,449 @@ class StatusConta(Base):
     def test_permissao_do_arquivo_e_lida_sem_quebrar_quando_some_no_meio(self):
         os.remove(self.token_file)
         self.assertIsNone(T._modo_frouxo(self.token_file))
+
+
+# ──────────────────────────────────────── renovar o token sem pedir licença
+
+class Renovacao(Base):
+    """A capacidade que a documentação autoriza e que o agente precisa.
+
+    "Although the fetched access_token expires within 24 hours, it can be
+    refreshed without user consent. The developer's back-end server can schedule
+    background jobs to keep tokens up to date." Sem isto, um agente que corta às
+    3h da manhã para de funcionar todo dia até alguém acordar.
+    """
+
+    def test_renova_quando_o_access_token_venceu(self):
+        rede = self.rede()
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        self.assertEqual(T.token(), TOKEN_NOVO)
+        pedidos = rede.pedidos(T.URL_OAUTH)
+        self.assertEqual(len(pedidos), 1)
+        self.assertEqual(pedidos[0]["cabecalhos"]["Content-Type"],
+                         "application/x-www-form-urlencoded")
+        enviado = urllib.parse.parse_qs(pedidos[0]["corpo"].decode("utf-8"))
+        self.assertEqual(enviado["grant_type"], ["refresh_token"])
+        self.assertEqual(enviado["client_key"], [CHAVE_APP])
+        self.assertEqual(enviado["client_secret"], [SEGREDO_APP])
+        self.assertEqual(enviado["refresh_token"], [REFRESH])
+
+    def test_renova_quando_esta_perto_de_vencer(self):
+        """Um token que vence em trinta segundos morre no meio do upload."""
+        rede = self.rede()
+        self.grava_renovavel(
+            expires_at=T._iso(T._relogio() + T.MARGEM_RENOVACAO - 30))
+        self.assertEqual(T.token(), TOKEN_NOVO)
+        self.assertEqual(len(rede.pedidos(T.URL_OAUTH)), 1)
+
+    def test_nao_renova_quando_o_token_ainda_e_bom(self):
+        """Renovar por precaução gasta rotação de refresh à toa."""
+        rede = self.rede()
+        self.grava_renovavel(expires_at=T._iso(T._relogio() + 3600))
+        self.assertEqual(T.token(), TOKEN)
+        self.assertEqual(rede.pedidos(T.URL_OAUTH), [])
+
+    def test_sem_ancora_de_validade_nao_renova_preventivamente(self):
+        """Duração sem data não é data. Quem cobre esse caso é o `envia`."""
+        rede = self.rede()
+        self.grava_renovavel(expires_in=86400)
+        self.assertEqual(T.token(), TOKEN)
+        self.assertEqual(rede.pedidos(T.URL_OAUTH), [])
+
+    def test_a_rotacao_do_refresh_token_e_gravada(self):
+        """A armadilha que a documentação nomeia: o refresh que volta é o que vale."""
+        self.rede()
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        T.token()
+        disco = self.le_token_do_disco()
+        self.assertEqual(disco["refresh_token"], REFRESH_NOVO)
+        self.assertEqual(disco["access_token"], TOKEN_NOVO)
+        self.assertNotIn(REFRESH, json.dumps(disco))
+
+    def test_refresh_que_volta_igual_tambem_e_gravado(self):
+        """O TikTok pode devolver o mesmo; isso não é motivo para não gravar."""
+        self.rede(oauth=_renovacao(refresh_token=REFRESH))
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        T.token()
+        self.assertEqual(self.le_token_do_disco()["refresh_token"], REFRESH)
+
+    def test_resposta_sem_refresh_token_preserva_o_antigo(self):
+        """Não voltou refresh nenhum: jogar o velho fora seria perder a conta."""
+        self.rede(oauth=_renovacao(refresh_token=None))
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        T.token()
+        self.assertEqual(self.le_token_do_disco()["refresh_token"], REFRESH)
+
+    def test_grava_ancora_absoluta_e_joga_fora_as_duracoes(self):
+        """`expires_in` relativo a uma emissão que passou é o que gerou o problema."""
+        self.rede()
+        self.grava_renovavel(expires_in=86400, obtained_at=T._relogio() - 90000,
+                             expires_at=T._iso(T._relogio() - 10))
+        T.token()
+        disco = self.le_token_do_disco()
+        self.assertNotIn("expires_in", disco)
+        self.assertNotIn("refresh_expires_in", disco)
+        self.assertNotIn("obtained_at", disco)
+        # ISO-8601 com fuso, legível por humano e relido pelo próprio módulo.
+        self.assertRegex(disco["expires_at"],
+                         r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00$")
+        self.assertAlmostEqual(T._instante(disco["expires_at"]),
+                               T._relogio() + 86400, delta=2)
+        self.assertAlmostEqual(T._instante(disco["refresh_expires_at"]),
+                               T._relogio() + 31536000, delta=2)
+        self.assertIn("renovado_em", disco)
+
+    def test_o_arquivo_reescrito_continua_600(self):
+        """O refresh_token vale um ano; 644 nele é a conta aberta para a máquina."""
+        self.rede()
+        os.chmod(self.token_file, 0o600)
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        T.token()
+        self.assertEqual(self.modo_do_token(), 0o600)
+
+    def test_reescrita_frouxa_nao_acontece_nem_se_o_arquivo_estava_frouxo(self):
+        """Renovar é a chance de consertar, não de herdar o modo ruim."""
+        self.rede()
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        os.chmod(self.token_file, 0o644)
+        T.token()
+        self.assertEqual(self.modo_do_token(), 0o600)
+
+    def test_o_temporario_ja_nasce_600_antes_de_qualquer_chmod(self):
+        """A janela entre criar e apertar é curta, e é uma janela mesmo assim.
+
+        Criar 644 e consertar depois deixa um instante em que qualquer conta da
+        máquina lê o refresh_token, que vale um ano. Este teste olha o modo que
+        o arquivo TINHA quando o `chmod` foi chamado, que é exatamente o que o
+        O_CREAT decidiu.
+        """
+        self.rede()
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        nascimentos = {}
+        real = os.chmod
+
+        def espia(caminho, modo, *a, **kw):
+            try:
+                nascimentos[caminho] = os.stat(caminho).st_mode & 0o777
+            except OSError:
+                pass
+            return real(caminho, modo, *a, **kw)
+
+        with mock.patch("os.chmod", side_effect=espia):
+            T.token()
+        self.assertTrue(nascimentos, "o chmod do temporário não foi chamado")
+        for caminho, modo in nascimentos.items():
+            self.assertEqual(modo, 0o600, f"{caminho} nasceu {modo:04o}")
+
+    def test_temporario_esquecido_com_modo_frouxo_nao_contamina(self):
+        """O outro motivo de o chmod existir: O_CREAT não manda em arquivo que já está lá.
+
+        Um agente morto a SIGKILL não roda a limpeza e pode deixar o rascunho no
+        diretório. Se ele estiver 644, abrir com O_CREAT herda o 644 — e o token
+        novo nasceria legível por todo mundo.
+        """
+        self.rede()
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        sobra = os.path.join(self.tmp, f".tiktok.json.{os.getpid()}.novo")
+        with open(sobra, "w", encoding="utf-8") as fh:
+            fh.write("lixo de um agente que morreu no meio")
+        os.chmod(sobra, 0o644)
+        T.token()
+        self.assertEqual(self.modo_do_token(), 0o600)
+        self.assertEqual(self.le_token_do_disco()["access_token"], TOKEN_NOVO)
+
+    def test_escrita_atomica_nao_deixa_arquivo_pela_metade(self):
+        """Agente morto no meio da gravação não pode deixar a pessoa sem token."""
+        self.rede()
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        antes = self.le_token_do_disco()
+        with mock.patch("os.replace", side_effect=OSError("disco cheio")):
+            with self.assertRaises(T.TikTokIndisponivel) as caso:
+                T.token()
+        # O arquivo antigo continua inteiro e válido como JSON.
+        self.assertEqual(self.le_token_do_disco(), antes)
+        # E não sobrou rascunho nenhum no diretório.
+        self.assertEqual(self.rascunhos_no_diretorio(), [])
+        texto = str(caso.exception)
+        self.assertIn("NÃO deu para gravar", texto)
+        self.assertIn("invalid_grant", texto)     # o que vai doer no próximo envio
+        self.assertNotIn(REFRESH_NOVO, texto)
+
+    def test_o_novo_token_nunca_aparece_na_falha_de_gravacao(self):
+        self.rede()
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        with mock.patch("os.replace", side_effect=OSError("disco cheio")):
+            with self.assertRaises(T.TikTokIndisponivel) as caso:
+                T.token()
+        for segredo in (TOKEN, TOKEN_NOVO, REFRESH, REFRESH_NOVO, SEGREDO_APP):
+            self.assertNotIn(segredo, str(caso.exception))
+
+
+class RenovacaoRecusada(Base):
+
+    def test_refresh_vencido_pede_oauth_novo_sem_tocar_a_rede(self):
+        """365 dias é o fim da linha: aqui a pessoa precisa sentar e autorizar."""
+        rede = self.rede()
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10),
+                             refresh_expires_at=T._iso(T._relogio() - 5))
+        with self.assertRaises(T.TikTokIndisponivel) as caso:
+            T.token()
+        texto = str(caso.exception)
+        self.assertIn("365 dias", texto)
+        self.assertIn("video.upload", texto)
+        self.assertEqual(rede.chamadas, [])     # nem tentou, e nem devia
+
+    def test_invalid_grant_manda_refazer_a_autorizacao(self):
+        self.rede(oauth=_erro_oauth("invalid_grant",
+                                    "Refresh token is invalid or expired."))
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        with self.assertRaises(T.TikTokIndisponivel) as caso:
+            T.token()
+        texto = str(caso.exception)
+        self.assertIn("invalid_grant", texto)
+        self.assertIn("Refresh token is invalid or expired.", texto)
+        self.assertIn("365 dias", texto)
+        self.assertIn("2026091509000077", texto)          # o log_id dele
+
+    def test_invalid_client_nao_manda_a_pessoa_refazer_oauth_a_toa(self):
+        """Chave errada é um erro de arquivo, não de autorização."""
+        self.rede(oauth=_erro_oauth("invalid_client", "Client key mismatch."))
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        with self.assertRaises(T.TikTokIndisponivel) as caso:
+            T.token()
+        texto = str(caso.exception)
+        self.assertIn("client_key", texto)
+        self.assertIn("client_secret", texto)
+        self.assertIn("não precisa ser refeita", texto)
+
+    def test_codigo_de_oauth_desconhecido_repassa_e_admite_que_nao_sabe(self):
+        self.rede(oauth=_erro_oauth("algo_novo", "nunca vimos isto"))
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        with self.assertRaises(T.TikTokIndisponivel) as caso:
+            T.token()
+        texto = str(caso.exception)
+        self.assertIn("algo_novo", texto)
+        self.assertIn("nunca vimos isto", texto)
+        self.assertIn("Não há receita conhecida", texto)
+
+    def test_o_envelope_de_erro_do_outro_formato_tambem_e_entendido(self):
+        """Se um dia o OAuth passar a usar o envelope, recusa não vira sucesso."""
+        self.rede(oauth=_erro("invalid_grant", "expirado"))
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        with self.assertRaises(T.TikTokIndisponivel) as caso:
+            T.token()
+        self.assertIn("invalid_grant", str(caso.exception))
+
+    def test_renovacao_sem_access_token_na_resposta_nao_finge_sucesso(self):
+        self.rede(oauth=(200, json.dumps({"expires_in": 86400}).encode()))
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        with self.assertRaises(T.TikTokIndisponivel) as caso:
+            T.token()
+        self.assertIn("access_token", str(caso.exception))
+
+    def test_cada_campo_que_falta_e_nomeado(self):
+        """Um a um: a mensagem diz exatamente qual chave gravar."""
+        for ausente in T.CAMPOS_RENOVACAO:
+            with self.subTest(campo=ausente):
+                self.rede()
+                campos = {"refresh_token": REFRESH, "client_key": CHAVE_APP,
+                          "client_secret": SEGREDO_APP}
+                campos[ausente] = None
+                self.grava_token(expires_at=T._iso(T._relogio() - 10), **campos)
+                with self.assertRaises(T.TikTokIndisponivel) as caso:
+                    T.token()
+                texto = str(caso.exception)
+                self.assertIn(ausente, texto)
+                for presente in T.CAMPOS_RENOVACAO:
+                    if presente != ausente:
+                        self.assertNotIn("`" + presente + "`", texto)
+
+    def test_campo_em_branco_conta_como_ausente(self):
+        self.rede()
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10),
+                             client_secret="   ")
+        with self.assertRaises(T.TikTokIndisponivel) as caso:
+            T.token()
+        self.assertIn("client_secret", str(caso.exception))
+
+
+class RenovacaoNoEnvio(Base):
+    """A segunda linha de defesa: o TikTok recusou, então agora se sabe."""
+
+    def test_access_token_invalid_renova_e_tenta_uma_vez_mais(self):
+        rede = self.rede(init=[_erro("access_token_invalid", "invalid"),
+                               (200, _ok({"publish_id": PUBLISH_ID,
+                                          "upload_url": UPLOAD_URL}))])
+        self.grava_renovavel()            # sem âncora: não havia como prever
+        saida = T.envia(self.clipe())
+        self.assertTrue(saida["concluido"])
+        self.assertEqual(len(rede.pedidos(T.URL_OAUTH)), 1)
+        self.assertEqual(len(rede.pedidos(T.URL_INIT)), 2)
+        # A segunda tentativa vai com o token novo, não com o que foi recusado.
+        self.assertEqual(rede.pedidos(T.URL_INIT)[1]["cabecalhos"]["Authorization"],
+                         "Bearer " + TOKEN_NOVO)
+        self.assertEqual(self.le_token_do_disco()["access_token"], TOKEN_NOVO)
+
+    def test_a_segunda_tentativa_gasta_uma_vaga_do_minuto(self):
+        """O teto de 6/min é do TikTok; repetir não é de graça."""
+        rede = self.rede(init=[_erro("access_token_invalid", "invalid"),
+                               (200, _ok({"publish_id": PUBLISH_ID,
+                                          "upload_url": UPLOAD_URL}))])
+        self.grava_renovavel()
+        T.envia(self.clipe(), espera=0)
+        self.assertEqual(len(T._INITS), 2)
+
+    def test_sem_como_renovar_a_recusa_original_e_preservada(self):
+        """Não adianta falar de renovação para quem não tem com que renovar."""
+        rede = self.rede(init=_erro("access_token_invalid", "invalid"))
+        with self.assertRaises(T.TikTokIndisponivel) as caso:
+            T.envia(self.clipe())
+        self.assertIn("access_token_invalid", str(caso.exception))
+        self.assertEqual(rede.pedidos(T.URL_OAUTH), [])
+        self.assertEqual(len(rede.pedidos(T.URL_INIT)), 1)
+
+    def test_nao_repete_para_outros_codigos_de_erro(self):
+        """`spam_risk` não melhora com token novo; repetir só piora."""
+        rede = self.rede(init=_erro("spam_risk_too_many_posts", "spam"))
+        self.grava_renovavel()
+        with self.assertRaises(T.TikTokIndisponivel):
+            T.envia(self.clipe())
+        self.assertEqual(rede.pedidos(T.URL_OAUTH), [])
+        self.assertEqual(len(rede.pedidos(T.URL_INIT)), 1)
+
+    def test_nao_repete_duas_vezes(self):
+        """Se o token novo também for recusado, para. Laço de renovação, nunca."""
+        rede = self.rede(init=_erro("access_token_invalid", "invalid"))
+        self.grava_renovavel()
+        with self.assertRaises(T.TikTokIndisponivel):
+            T.envia(self.clipe())
+        self.assertEqual(len(rede.pedidos(T.URL_INIT)), 2)
+        self.assertEqual(len(rede.pedidos(T.URL_OAUTH)), 1)
+
+    def test_a_renovacao_aparece_no_progresso(self):
+        self.rede()
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        falas = []
+        T.envia(self.clipe(), progresso=falas.append)
+        self.assertTrue(any("renovando" in f for f in falas), falas)
+        for fala in falas:
+            for segredo in (TOKEN, TOKEN_NOVO, REFRESH, REFRESH_NOVO, SEGREDO_APP):
+                self.assertNotIn(segredo, fala)
+
+
+class OsTresSegredos(Base):
+    """access_token, refresh_token e client_secret têm o mesmo direito ao sigilo."""
+
+    def test_nenhum_dos_tres_vaza_quando_o_oauth_ecoa_tudo_de_volta(self):
+        self.rede(oauth=_erro_oauth(
+            "invalid_grant",
+            f"token {REFRESH} do app {SEGREDO_APP} com acesso {TOKEN}"))
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        with self.assertRaises(T.TikTokIndisponivel) as caso:
+            T.token()
+        texto = str(caso.exception)
+        for segredo in (TOKEN, REFRESH, SEGREDO_APP):
+            self.assertNotIn(segredo, texto)
+        self.assertIn("<token oculto>", texto)
+
+    def test_os_tres_sao_registrados_so_de_ler_o_arquivo(self):
+        """Antes de qualquer requisição: ler já basta para a limpeza valer."""
+        self.grava_renovavel()
+        T._le_arquivo()
+        for segredo in (TOKEN, REFRESH, SEGREDO_APP):
+            self.assertIn(segredo, T._SEGREDOS)
+
+    def test_o_refresh_novo_entra_na_limpeza_assim_que_chega(self):
+        self.rede()
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        T.token()
+        self.assertIn(REFRESH_NOVO, T._SEGREDOS)
+        self.assertIn(TOKEN_NOVO, T._SEGREDOS)
+        self.assertEqual(T._limpa(f"vazou {REFRESH_NOVO}"), "vazou <token oculto>")
+
+    def test_o_client_secret_nunca_e_impresso_no_progresso(self):
+        self.rede()
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        falas = []
+        T.token(progresso=falas.append)
+        for fala in falas:
+            self.assertNotIn(SEGREDO_APP, fala)
+
+
+class StatusDaRenovacao(Base):
+
+    def test_vencendo_mas_renovavel_nao_e_problema_da_pessoa(self):
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        ok, motivo = T.status_conta()
+        self.assertTrue(ok)
+        self.assertIn("renova sozinho", motivo)
+
+    def test_valido_diz_que_a_renovacao_esta_armada(self):
+        self.grava_renovavel(expires_at=T._iso(T._relogio() + 7200))
+        ok, motivo = T.status_conta()
+        self.assertTrue(ok)
+        self.assertIn("renovação automática armada", motivo)
+
+    def test_sem_renovacao_avisa_antes_de_doer(self):
+        """Ainda válido, mas vai parar em 24h. Melhor agora do que às 3h."""
+        self.grava_token(expires_at=T._iso(T._relogio() + 7200))
+        ok, motivo = T.status_conta()
+        self.assertTrue(ok)
+        self.assertIn("SEM renovação automática", motivo)
+        self.assertIn("client_secret", motivo)
+
+    def test_refresh_vencido_e_o_unico_caso_que_exige_a_pessoa(self):
+        self.grava_renovavel(expires_at=T._iso(T._relogio() + 7200),
+                             refresh_expires_at=T._iso(T._relogio() - 1))
+        ok, motivo = T.status_conta()
+        self.assertFalse(ok)
+        self.assertIn("365 dias", motivo)
+        self.assertIn("video.upload", motivo)
+
+    def test_refresh_perto_do_fim_vira_aviso_com_os_dias(self):
+        """Um prazo anual vence em silêncio; este é o único lugar que olha."""
+        self.grava_renovavel(
+            expires_at=T._iso(T._relogio() + 7200),
+            refresh_expires_at=T._iso(T._relogio() + 3 * 86400 + 60))
+        ok, motivo = T.status_conta()
+        self.assertTrue(ok)
+        self.assertIn("3 dia(s)", motivo)
+
+    def test_nao_renova_nem_toca_a_rede_mesmo_com_token_vencido(self):
+        """Renovar num `status` gastaria uma rotação por curiosidade."""
+        rede = self.rede()
+        self.grava_renovavel(expires_at=T._iso(T._relogio() - 10))
+        antes = self.le_token_do_disco()
+        ok, _ = T.status_conta()
+        self.assertTrue(ok)
+        self.assertEqual(rede.chamadas, [])
+        self.assertEqual(self.le_token_do_disco(), antes)
+
+    def test_continua_nunca_levantando_com_refresh_corrompido(self):
+        self.grava_renovavel(refresh_expires_at={"nao": "e uma data"},
+                             expires_at=["nem", "isto"])
+        ok, motivo = T.status_conta()
+        self.assertTrue(motivo)
+
+
+class Instantes(Base):
+    """`_instante` é o que separa "não sei quando vence" de um chute."""
+
+    def test_le_iso_com_fuso_e_com_z_e_numero(self):
+        alvo = T._relogio()
+        for valor in (alvo, int(alvo), T._iso(alvo), T._iso(alvo).replace("+00:00", "Z")):
+            with self.subTest(valor=valor):
+                self.assertAlmostEqual(T._instante(valor), alvo, delta=1)
+
+    def test_iso_sem_fuso_e_lido_como_utc(self):
+        """Ambíguo por natureza; UTC é a escolha, e ela está escrita."""
+        self.assertAlmostEqual(T._instante("2026-09-15T12:00:00"),
+                               T._instante("2026-09-15T12:00:00+00:00"), delta=1)
+
+    def test_lixo_vira_none_e_nao_uma_data_qualquer(self):
+        for valor in (None, "", "   ", "ontem", True, False, [], {}, "2026-13-45"):
+            with self.subTest(valor=valor):
+                self.assertIsNone(T._instante(valor))
 
 
 if __name__ == "__main__":

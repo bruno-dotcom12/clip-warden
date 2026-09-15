@@ -158,7 +158,7 @@ class Packaging(unittest.TestCase):
         with open(path, "w") as fh:
             json.dump(packed, fh)
         import io
-        from contextlib import redirect_stdout
+        from contextlib import redirect_stderr, redirect_stdout
         buffer = io.StringIO()
         with redirect_stdout(buffer):
             warden.main(["package", "--campaign", "pack", "--hook", "pov: he inherited it"])
@@ -390,11 +390,20 @@ class RootOwnedState(unittest.TestCase):
         if os.access(self.locked, os.W_OK):
             self.skipTest("this filesystem/user ignores the write bit (root?)")
         good = json.dumps(rules(id="x"))          # validates, so only the write can fail
-        out = io.StringIO()
-        with self.assertRaises(Exception):        # PermissionError, uncaught -- loud, not a false "saved"
-            with redirect_stdout(out):
+        out, err = io.StringIO(), io.StringIO()
+        # Sai 2 e diz o que houve. Antes de 15/09/2026 a PermissionError subia
+        # crua, e o teste travava isso como "loud, not a false saved" -- o que
+        # estava certo quanto ao silêncio e errado quanto à forma: um traceback
+        # é a coisa que o agente repassa como se fosse diagnóstico. O que
+        # importa continua travado aqui: NÃO diz "stored and verified", e o
+        # caminho que não pôde ser escrito aparece.
+        from contextlib import redirect_stderr
+        with self.assertRaises(SystemExit) as caso:
+            with redirect_stdout(out), redirect_stderr(err):
                 warden.main(["campaign", "save", "--json", good])
+        self.assertEqual(caso.exception.code, 2)
         self.assertNotIn("stored and verified", out.getvalue())
+        self.assertIn(self.locked, err.getvalue())
 
 
 class Delivery(unittest.TestCase):

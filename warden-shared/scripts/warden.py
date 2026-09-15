@@ -344,8 +344,25 @@ def load_campaign(cid):
         known = list_campaigns()
         hint = f" Known: {', '.join(known)}." if known else " None stored yet."
         die(f"no campaign called {cid!r}.{hint}")
-    with open(path) as fh:
-        return json.load(fh)
+    return _json_ou_morre(path, "campaign")
+
+
+def _json_ou_morre(caminho, oque):
+    """Lê um JSON de estado, ou morre nomeando o ARQUIVO.
+
+    Medido em 15/09/2026: um arquivo de estado corrompido derrubava
+    `warden status` -- o primeiro comando que um estranho roda -- com um
+    `JSONDecodeError` que não dizia QUAL arquivo, e portanto não dizia o que
+    apagar. O conteúdo é do agente, não do dono: apagar é sempre seguro, e
+    dizer isso é a diferença entre um minuto e uma reinstalação.
+    """
+    try:
+        with open(caminho) as fh:
+            return json.load(fh)
+    except (ValueError, OSError) as exc:
+        die(f"the {oque} file at {caminho} cannot be read ({type(exc).__name__}). "
+            f"Nothing the owner typed lives in it -- this agent wrote it -- so "
+            f"deleting it is safe and it will be written again.", code=2)
 
 
 def list_campaigns():
@@ -617,8 +634,17 @@ def ledger_all():
     path = ledger_path()
     if not os.path.exists(path):
         return []
-    with open(path) as fh:
-        return json.load(fh)
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except (ValueError, OSError):
+        # O ledger é contagem, não verdade do dono: um arquivo ilegível vira
+        # lista vazia com aviso, em vez de derrubar o comando. `entregas_all`
+        # já fazia assim; este não fazia, e era o mesmo par no mesmo arquivo.
+        print(f"warden: the post ledger at {path} is unreadable and is being "
+              f"treated as empty. The campaign cap cannot be trusted until it "
+              f"is deleted and rebuilt.", file=sys.stderr)
+        return []
 
 
 def ledger_for(cid):
@@ -1801,6 +1827,28 @@ def _planos_pedidos(args):
     return planos
 
 
+def _janela_sa(start, end, seconds):
+    """Recusa uma janela impossível ANTES de renderizar. None se está tudo bem.
+
+    Medido em 15/09/2026: `--start 10 --end 5` não dava erro. `length` era
+    `max(0.1, end - start)`, o `max` engolia o sinal, e o corte saía ESTENDIDO
+    ao mínimo da campanha -- um clipe de 15s, com contact sheet, `MEDIA:` e
+    saída 0. Quem digitou o intervalo ao contrário recebia um arquivo pronto
+    para postar, sem um aviso. O mesmo valia para `--seconds -5`.
+
+    É o único defeito desta auditoria que ENTREGA um arquivo errado dizendo que
+    está certo, e por isso o portão é aqui, antes do primeiro quadro.
+    """
+    if start is not None and end is not None and float(end) <= float(start):
+        return (f"--start {start} comes at or after --end {end}, so there is no "
+                f"window to cut. If you meant the other way round, swap them.")
+    if seconds is not None and float(seconds) <= 0:
+        return (f"--seconds {seconds} is not a duration. Pass the number of "
+                f"seconds the person asked for, or --any-length when nobody "
+                f"named one.")
+    return None
+
+
 def cmd_cut(args):
     if getattr(args, "plan", None):
         return cmd_cut_plan(args)
@@ -1811,6 +1859,10 @@ def cmd_cut(args):
     planos_pedidos = _planos_pedidos(args)
     obrigatorios = ("source", "campaign", "out") if planos_pedidos else (
         "source", "campaign", "start", "end", "out")
+    if (mal := _janela_sa(getattr(args, "start", None),
+                          getattr(args, "end", None),
+                          getattr(args, "seconds", None))):
+        die(mal, code=2)
     missing = [name for name in obrigatorios
                if getattr(args, name, None) is None]
     if missing:
@@ -2815,7 +2867,24 @@ def main(argv=None):
     p.set_defaults(func=cmd_delivered)
 
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        print("warden: interrupted", file=sys.stderr)
+        return 130
+    except BrokenPipeError:
+        return 0
+    except Exception as exc:
+        # Nenhum traceback chega ao agente, e o código é 2, nunca 1.
+        #
+        # Medido em 15/09/2026: um `campaigns/x.json` corrompido fazia
+        # `warden status` -- o PRIMEIRO comando que um estranho roda -- morrer
+        # com `json.decoder.JSONDecodeError` e sair 1. E 1 é o código
+        # documentado de "este clipe NÃO pode ser postado", então um defeito de
+        # arquivo lia como veredito sobre o trabalho. 2 é erro de comando.
+        die(f"{type(exc).__name__}: {exc}", code=2)
 
 
 if __name__ == "__main__":

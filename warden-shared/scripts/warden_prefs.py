@@ -108,8 +108,15 @@ def load(state_dir):
     target = path(state_dir)
     if not os.path.exists(target):
         return {}
-    with open(target) as fh:
-        return json.load(fh)
+    try:
+        with open(target) as fh:
+            carregado = json.load(fh)
+    except (ValueError, OSError):
+        # Preferência ilegível vira "nenhuma preferência", nunca um crash: o
+        # comando que conserta o preferences.json é `warden prefs set`, e ele
+        # morria lendo o próprio arquivo que ia reescrever.
+        return {}
+    return carregado if isinstance(carregado, dict) else {}
 
 
 def save(state_dir, prefs):

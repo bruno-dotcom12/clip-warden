@@ -278,14 +278,31 @@ class RecusaQueEDesteVideo(unittest.TestCase):
     def test_so_para_membros_nao_vira_mensagem_de_endereco(self):
         self.assertIn("members-only", self._erro_comum(SAIDA_MEMBROS))
 
-    def test_quando_as_duas_leituras_cabem_o_video_ganha(self):
-        """A segunda guarda, e a razão de ela existir: quando a saída admite as
-        duas leituras, a que fala do endereço é a que pode ser falsa sobre o
-        link, e a que fala do link é verificável pelo dono em dois cliques.
-        Afirmar a menos é o único erro que não inventa nada."""
-        misto = SAIDA_429 + "\n" + SAIDA_PRIVADO
-        self.assertTrue(warden_media._BOT_CHECK.search(misto))
-        self.assertIn("Private video", self._erro_comum(misto))
+    def test_a_decisao_e_por_LINHA_e_nao_pelo_texto_todo(self):
+        """Duas linhas, dois vídeos, duas causas -- e a resposta é sobre o
+        endereço.
+
+        Esta é a correção de 15/09/2026, e o teste anterior travava o defeito.
+        Ele juntava um 429 e um "Private video" e exigia que o vídeo ganhasse,
+        raciocinando que afirmar de menos não inventa nada. Mas a saída de uma
+        PLAYLIST é uma linha por item: o item 1 pode ser privado e o item 2
+        bater no bot check, e não há relação entre os dois. Decidindo pelo texto
+        inteiro, a mensagem honesta sumia exatamente ali -- e o que chegava ao
+        modelo era a pilha de inglês que este arquivo existe para não entregar.
+
+        A pergunta certa é se ALGUMA linha é bloqueio e não é sobre o vídeo.
+        """
+        playlist = SAIDA_PRIVADO + "\n" + SAIDA_429
+        with self.assertRaises(warden_media.FonteBloqueada) as caso:
+            warden_media.run(_falha_com(playlist), 30, "yt-dlp playlist listing")
+        self.assertIn("outgoing address", str(caso.exception))
+
+    def test_na_MESMA_linha_o_video_continua_ganhando(self):
+        """E a guarda original continua de pé onde ela nasceu: um vídeo com
+        restrição de idade abre com as mesmas quatro palavras do bot check, na
+        mesma linha, e ali a causa É aquele vídeo."""
+        uma_linha = "ERROR: [youtube] x: Sign in to confirm your age. Not a bot check."
+        self.assertIn("confirm your age", self._erro_comum(uma_linha))
 
 
 class ComoOYtdlpEChamado(unittest.TestCase):
