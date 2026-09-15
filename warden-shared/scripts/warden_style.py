@@ -1053,7 +1053,7 @@ def _limpa_marcacao(texto):
 
 
 def _sem_marcacao(segments):
-    """Os mesmos segmentos, sem marcação decorativa. Sem palavra, sem segmento.
+    r"""Os mesmos segmentos, sem marcação decorativa. Sem palavra, sem segmento.
 
     Limpa o texto do segmento E a lista de palavras, porque é dela que sai o
     `\k` de cada palavra: deixar o símbolo nas palavras poria de volta na tela
