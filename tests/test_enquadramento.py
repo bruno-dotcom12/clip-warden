@@ -225,6 +225,21 @@ class ADetecaoAchaAWebcamDeCanto(unittest.TestCase):
                 self.assertAlmostEqual(y1, 1.0, places=2)
                 self.assertLess((x1 - x0) * (y1 - y0), M.PIP_AREA_MAX)
 
+    def test_na_janela_mista_a_trilha_vai_do_canto_ao_meio(self):
+        """A prova numérica do conserto do caso misto: na janela que ALTERNA,
+        a trilha tem de ter pontos no canto (a webcam do PiP, rosto pequeno) E
+        pontos no meio (a fonte em tela cheia, rosto grande). Uma caixa fixa só
+        teria os primeiros, e nos outros quadros entregava ombro."""
+        saiu = M.tela_compartilhada(
+            os.path.join(LOTE, "janela-7893834d2c-82-106.mp4"), 2, 20)
+        trilha = saiu["trilha"]
+        self.assertGreaterEqual(len(trilha), 10,
+                                "uma amostra por segundo, ou a trilha tem vãos")
+        canto = [p for p in trilha if p[1] > 0.7 and p[3] < 0.25]
+        cheio = [p for p in trilha if p[3] > 0.30]
+        self.assertTrue(canto, f"nenhum ponto na webcam de canto: {trilha}")
+        self.assertTrue(cheio, f"nenhum ponto em tela cheia: {trilha}")
+
     def test_um_trecho_so_de_camera_continua_normal(self):
         """Do segundo 5 ao 17 da primeira janela não há tela nenhuma, e ali o
         enquadramento tem de seguir o rosto como sempre. É o portão da
@@ -362,7 +377,8 @@ class ACadeiaNaoPintaPretoNoPe(unittest.TestCase):
     def _cadeia(self, **kw):
         faixa = M.layout_dividido(1080, 1920, 1920, 1080,
                                   pip=(0.75, 0.667, 1.0, 1.0), rosto=(0.87, 0.89))
-        return M.cadeia_dividida(1080, 1920, faixa, length=20, **kw), faixa
+        cadeia, _rastreio = M.cadeia_dividida(1080, 1920, faixa, length=20, **kw)
+        return cadeia, faixa
 
     def test_o_fundo_e_o_proprio_quadro_borrado(self):
         cadeia, _ = self._cadeia()
@@ -375,7 +391,9 @@ class ACadeiaNaoPintaPretoNoPe(unittest.TestCase):
         self.assertIn(f"overlay={faixa['webcam'][0]}:{faixa['webcam'][1]}", cadeia)
         self.assertIn(f"overlay={faixa['tela'][0]}:{faixa['tela'][1]}", cadeia)
 
-    def test_a_webcam_e_recortada_no_pip_antes_de_ampliar(self):
+    def test_sem_trilha_a_webcam_e_o_recorte_fixo_do_pip(self):
+        """O ramo de trás, e ele continua existindo: é o caso em que a webcam
+        foi achada pela planura e nenhum quadro deu rosto para seguir."""
         cadeia, faixa = self._cadeia()
         cx, cy, cw, ch = faixa["corte_webcam"]
         self.assertIn(f"crop={cw}:{ch}:{cx}:{cy}", cadeia)
@@ -386,6 +404,116 @@ class ACadeiaNaoPintaPretoNoPe(unittest.TestCase):
         self.assertIn("zoompan", com)
         self.assertIn(f"s={faixa['webcam'][2]}x{faixa['webcam'][3]}", com)
         self.assertNotIn("zoompan", sem)
+
+    def test_com_trilha_a_faixa_de_cima_segue_o_rosto(self):
+        """E aí NÃO há recorte fixo: quem manda é o zoompan por quadro."""
+        faixa = M.layout_dividido(1080, 1920, 1920, 1080,
+                                  pip=(0.75, 0.667, 1.0, 1.0), rosto=(0.87, 0.89))
+        trilha = [(0.5, 0.60, 0.61, 0.45), (2.5, 0.86, 0.89, 0.14)]
+        cadeia, rastreio = M.cadeia_dividida(1080, 1920, faixa, length=20,
+                                             trilha=trilha, sw=1920, sh=1080)
+        cx, cy, cw, ch = faixa["corte_webcam"]
+        self.assertNotIn(f"crop={cw}:{ch}:{cx}:{cy}", cadeia)
+        self.assertIn("zoompan", cadeia)
+        self.assertEqual(rastreio["pontos"], 2)
+
+
+class AFaixaDeCimaSegueAPessoa(unittest.TestCase):
+    """O conserto do caso MISTO, que é o que uma live é.
+
+    A primeira versão recortava sempre o mesmo retângulo -- o da webcam de
+    canto. Numa janela que alterna entre webcam em tela cheia e tela
+    compartilhada, esse retângulo é o ombro da pessoa metade do tempo: medido
+    em 15/09/2026 na janela 82-106, 5 dos 8 quadros do mosaico eram um close
+    borrado de ombro, cabelo ou queixo. Avisar não bastava -- o clipe saía ruim
+    do mesmo jeito.
+    """
+
+    def test_num_quadro_de_tela_vale_o_rosto_de_dentro_da_webcam(self):
+        """A página de busca mostra FOTOS de rosto, e num quadro a foto é maior
+        que a webcam. Quem decide é estar dentro do PiP, não o tamanho."""
+        pip = (0.75, 0.667, 1.0, 1.0)
+        quadro = [(0.9, 0.6, 0.20, 0.42),        # foto na página, e é a maior
+                  (0.87, 0.89, 0.06, 0.14)]      # a webcam
+        # a foto está fora do PiP em y, a webcam dentro
+        trilha = M.trilha_do_rosto([(1.0, 0.55, quadro)], pip)
+        self.assertEqual(len(trilha), 1)
+        self.assertAlmostEqual(trilha[0][1], 0.87, places=2)
+        self.assertAlmostEqual(trilha[0][3], 0.14, places=2)
+
+    def test_num_quadro_de_camera_vale_o_maior_rosto(self):
+        quadro = [(0.2, 0.3, 0.04, 0.09), (0.6, 0.5, 0.18, 0.40)]
+        trilha = M.trilha_do_rosto([(1.0, 0.12, quadro)], (0.75, 0.667, 1.0, 1.0))
+        self.assertAlmostEqual(trilha[0][1], 0.6, places=2)
+
+    def test_uma_piscada_do_detector_segura_o_enquadramento(self):
+        um = [(0.6, 0.5, 0.18, 0.40)]
+        trilha = M.trilha_do_rosto(
+            [(1.0, 0.12, um), (2.0, 0.12, []), (3.0, 0.12, um)], None)
+        self.assertEqual([t for t, *_ in trilha], [1.0, 3.0],
+                         "o quadro sem rosto não vira ponto: a rampa atravessa")
+
+    def test_a_pessoa_fora_de_vista_ABRE_a_faixa_para_o_quadro_inteiro(self):
+        """Duas faltas seguidas é a pessoa realmente fora de vista. Segurar ali
+        entrega um close de cabelo ocupando um terço do clipe."""
+        um = [(0.6, 0.5, 0.18, 0.40)]
+        trilha = M.trilha_do_rosto(
+            [(1.0, 0.12, um), (2.0, 0.12, []), (3.0, 0.12, []),
+             (4.0, 0.12, um)], None)
+        meio = [p for p in trilha if p[0] in (2.0, 3.0)]
+        self.assertEqual(len(meio), 2)
+        for _t, cx, cy, fh in meio:
+            self.assertEqual((cx, cy, fh), (0.5, 0.5, 1.0),
+                             "um rosto da altura do quadro dá zoom 1")
+
+    def test_o_piso_de_tamanho_separa_o_adesivo_do_rosto(self):
+        """O adesivo animado do Mario mede 0,010-0,014 de largura e o YuNet acha
+        rosto nele com 0,79 de confiança; a webcam de canto mede 0,042-0,060."""
+        self.assertGreater(M.ROSTO_MIN_LARGURA, 0.014)
+        self.assertLess(M.ROSTO_MIN_LARGURA, 0.042)
+
+    def test_o_zoom_cresce_quando_o_rosto_e_pequeno_e_fica_em_um_quando_e_grande(self):
+        grande, _ = M.zoompan_do_rosto([(1.0, 0.5, 0.5, 0.45)], 1080, 616,
+                                       1920, 1080, motion=False)
+        pip, dados = M.zoompan_do_rosto([(1.0, 0.87, 0.89, 0.14)], 1080, 616,
+                                        1920, 1080, motion=False)
+        self.assertIn("zoompan", grande)
+        self.assertEqual(
+            M.zoompan_do_rosto([(1.0, 0.5, 0.5, 0.45)], 1080, 616, 1920, 1080,
+                               motion=False)[1]["zoom_max"], 1.0,
+            "um rosto de tela cheia já chega ao alvo: a faixa mostra o quadro")
+        self.assertGreater(dados["zoom_max"], 2.0)
+        self.assertLessEqual(dados["zoom_max"], M.ZOOM_ROSTO_MAX)
+
+    def test_sem_trilha_nao_ha_seguidor(self):
+        self.assertEqual(M.zoompan_do_rosto([], 1080, 616, 1920, 1080),
+                         (None, None))
+
+    def test_a_entrada_e_pre_recortada_na_proporcao_da_faixa(self):
+        """O zoompan recorta sempre na proporção da ENTRADA. Sem o pré-recorte
+        a faixa de cima sai esticada."""
+        filtro, _ = M.zoompan_do_rosto([(1.0, 0.5, 0.5, 0.20)], 1080, 616,
+                                       1920, 1080, motion=False)
+        self.assertTrue(filtro.startswith("crop="), filtro[:40])
+        w, h = filtro.split("crop=")[1].split(":")[:2]
+        self.assertAlmostEqual(int(w) / int(h), 1080 / 616, places=2)
+
+    def test_a_trilha_anda_em_patamares_e_nao_em_varredura(self):
+        """Uma rampa contínua entre uma amostra no canto e a seguinte no meio
+        varre o quadro -- e no meio do caminho a faixa para numa parede de
+        espuma acústica, sem rosto nenhum. Era o quadro de 8,8s do mosaico."""
+        moldado = M._com_rampa([(0, 0.0), (30, 1.0)])
+        valores = dict(moldado)
+        self.assertEqual(valores[0], 0.0)
+        self.assertEqual(valores[30], 1.0)
+        # perto de cada amostra o valor ainda é o dela, não o do meio
+        parados = [v for n, v in moldado if n <= 10]
+        self.assertTrue(all(v == 0.0 for v in parados), moldado)
+
+    def test_a_expressao_e_do_ffmpeg_e_fala_em_quadros(self):
+        expr = M._expressao_por_quadro([(0, 0.2), (60, 0.8)])
+        self.assertIn("if(lt(on,", expr)
+        self.assertNotIn("\\", expr, "a expressão vai dentro de aspas simples")
 
 
 class ODivididoSaiNoTamanhoCerto(unittest.TestCase):
@@ -408,7 +536,7 @@ class ODivididoSaiNoTamanhoCerto(unittest.TestCase):
         faixa = M.layout_dividido(1080, 1920, 1920, 1080,
                                   pip=(0.75, 0.6667, 1.0, 1.0),
                                   rosto=(0.875, 0.833))
-        cadeia = M.cadeia_dividida(1080, 1920, faixa, motion=False)
+        cadeia, _rastreio = M.cadeia_dividida(1080, 1920, faixa, motion=False)
         png = os.path.join(self.dir, "quadro.png")
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", src,
                         "-vf", cadeia, "-frames:v", "1", png],

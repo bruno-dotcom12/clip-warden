@@ -3566,10 +3566,31 @@ TELA_FRACAO_CERTA = 0.40
 # é o certo.
 PIP_AREA_MAX = 0.30
 PIP_ROSTO_AREA_MAX = 0.05
+# E um rosto pequeno DEMAIS não é uma pessoa neste quadro.
+#
+# A live carrega um adesivo animado do Mario num canto, e o YuNet acha rosto
+# nele -- com 0,79 de confiança. Medido nos dois arquivos em 15/09/2026: o
+# adesivo mede 0,010 a 0,014 de largura do quadro e o rosto da webcam de canto
+# mede 0,042 a 0,060, três vezes mais. Sem este piso, num quadro em que a pessoa
+# está olhando para baixo e não é detectada, o adesivo vira "o maior rosto" e a
+# faixa de cima passa a seguir um desenho: foi o que apareceu em 2 dos 8 quadros
+# do mosaico, com a espuma acústica da parede ocupando a faixa inteira.
+ROSTO_MIN_LARGURA = 0.025
 PIP_CELULAS = (16, 9)
 PIP_CRESCE_LIMIAR = 0.35
-# Onde o rosto cai dentro da faixa da webcam, quando há folga para escolher.
-ROSTO_NA_FAIXA = 0.58
+# Onde o rosto cai dentro da faixa da webcam, e quanto dela ele ocupa.
+#
+# 0,45 põe o rosto um pouco acima do meio da faixa, que é onde o hook deste
+# modo NÃO está: ele vira lower-third, encostado no pé da faixa. Com a faixa de
+# 616px e o rosto em 38% dela, a tinta do rosto vai de 158 a 390 e o bloco do
+# hook começa em 390 -- encosta, não cobre.
+ROSTO_NA_FAIXA = 0.45
+ROSTO_ALTURA_NA_FAIXA = 0.38
+# O teto do zoom do rastreio. Medido nesta live: o rosto do PiP tem 151px de
+# altura numa fonte de 1080, e para ele chegar a 38% da faixa bastam 2,7x. 4x é
+# folga para uma webcam ainda menor; acima disso é ampliação de um rosto que
+# não tem pixel para dar, e aí o borrão volta por outra porta.
+ZOOM_ROSTO_MAX = 4.0
 
 
 def _mapa_planura(img, cols=PIP_CELULAS[0], rows=PIP_CELULAS[1]):
@@ -3691,6 +3712,180 @@ def _quadros_coloridos(source, start, length, samples):
     return tmp, achados
 
 
+def trilha_do_rosto(por_quadro, pip=None):
+    """[(t, cx, cy, altura_do_rosto)] -- onde a pessoa está, quadro a quadro.
+
+    É o conserto do caso MISTO, e ele custou um clipe olhado com olhos.
+
+    A primeira versão recortava SEMPRE o mesmo retângulo, o do PiP. Numa janela
+    que alterna entre "webcam em tela cheia" e "tela compartilhada com webcam de
+    canto" -- que é o que uma live é -- esse retângulo só contém a pessoa nos
+    quadros de tela. Medido na janela 82-106 em 15/09/2026: em 5 dos 8 quadros
+    do mosaico a faixa de cima era um close borrado de ombro, cabelo ou queixo,
+    porque nesses quadros o canto inferior direito da fonte é o ombro dele.
+    Avisar não bastava: o clipe saía ruim do mesmo jeito.
+
+    Então a faixa de cima passa a SEGUIR A PESSOA em vez de uma caixa fixa, e
+    com isso o caso misto deixa de precisar ser classificado: onde há PiP a
+    trilha vai para o canto, onde a fonte está em tela cheia ela vai para o
+    meio, e o zoom acompanha o tamanho do rosto nos dois.
+
+    Qual rosto, quando há vários, é a pergunta que a página de busca do Google
+    obrigou a responder: ela mostra FOTOS de rosto, e num quadro a foto é maior
+    que a webcam. Num quadro de TELA vale o rosto que está dentro do PiP; num
+    quadro de câmera vale o maior. Quadro sem rosto nenhum não vira ponto: a
+    interpolação entre os vizinhos atravessa o vão, que é melhor que um salto.
+    """
+    escolhas = []
+    for t, planura_, rostos in por_quadro or []:
+        escolhido = None
+        if rostos:
+            if planura_ >= PLANURA_TELA and pip:
+                dentro = [r for r in rostos
+                          if pip[0] <= r[0] <= pip[2] and pip[1] <= r[1] <= pip[3]]
+                if dentro:
+                    escolhido = max(dentro, key=lambda r: r[2] * r[3])
+            else:
+                escolhido = max(rostos, key=lambda r: r[2] * r[3])
+        escolhas.append((float(t), escolhido))
+    # Sem rosto por DOIS quadros seguidos, a faixa ABRE para o quadro inteiro.
+    #
+    # Uma falha isolada é o detector piscando, e ali segurar o enquadramento
+    # anterior é certo. Duas seguidas é a pessoa realmente fora de vista -- ela
+    # se abaixou, virou de costas -- e aí segurar entrega um close de cabelo
+    # ocupando um terço do clipe. Medido em 15/09/2026 na janela 82-106: era o
+    # que sobrava em 2 dos 8 quadros do mosaico depois de o rastreio consertar
+    # os outros seis. Abrir mostra a mesma cena que a faixa de baixo mostra, o
+    # que é redundante -- e redundante é melhor que um close de nada.
+    vazio = (0.5, 0.5, 1.0, 1.0)
+    trilha = []
+    for i, (t, escolhido) in enumerate(escolhas):
+        if escolhido is None:
+            vizinho = escolhas[i - 1][1] if i else None
+            seguinte = escolhas[i + 1][1] if i + 1 < len(escolhas) else None
+            if vizinho is not None and seguinte is not None:
+                continue                        # piscada: segura o anterior
+            escolhido = vazio
+        trilha.append((round(t, 3), round(escolhido[0], 4),
+                       round(escolhido[1], 4), round(escolhido[3], 4)))
+    return trilha
+
+
+# Que fatia do intervalo entre duas amostras é MOVIMENTO; o resto é parado.
+#
+# Uma rampa contínua entre amostras é errada aqui, e o mosaico mostrou por quê:
+# entre uma amostra com a webcam no canto e a seguinte com a pessoa em tela
+# cheia, a interpolação linear varre o quadro inteiro -- e no meio do caminho a
+# faixa de cima para numa parede de espuma acústica, sem rosto nenhum. Medido em
+# 15/09/2026 na janela 82-106: era o quadro de 8,8s do mosaico.
+#
+# Então cada amostra é SEGURADA e a troca acontece num terço de segundo em volta
+# do ponto médio. Parado a maior parte do tempo, e quando muda, muda rápido --
+# que é como um corte se move, e não como uma panorâmica.
+RAMPA_DO_RASTREIO = 0.18
+
+
+def _com_rampa(pontos):
+    """Os pontos, com um patamar em cada um e a troca curta entre eles."""
+    if len(pontos) < 2:
+        return list(pontos)
+    saiu = [pontos[0]]
+    for (a, va), (b, vb) in zip(pontos, pontos[1:]):
+        meio = (a + b) / 2.0
+        meia = max(1.0, (b - a) * RAMPA_DO_RASTREIO)
+        saiu.append((int(round(meio - meia)), va))
+        saiu.append((int(round(meio + meia)), vb))
+    saiu.append(pontos[-1])
+    # Dois pontos no mesmo quadro fazem a divisão por zero virar um degrau; a
+    # ordem já garante o valor certo, então basta ficar com o último.
+    limpo = []
+    for n, v in saiu:
+        if limpo and limpo[-1][0] >= n:
+            limpo[-1] = (limpo[-1][0], v)
+        else:
+            limpo.append((n, v))
+    return limpo
+
+
+def _expressao_por_quadro(pontos):
+    """Os pontos, interpolados linearmente, como expressão do ffmpeg em `on`.
+
+    Piecewise LINEAR sobre os pontos que `_com_rampa` já moldou: patamar em cada
+    amostra e uma troca curta entre elas.
+    """
+    if not pontos:
+        return None
+    pontos = _com_rampa(sorted(pontos))
+    if len(pontos) == 1:
+        return f"{pontos[0][1]:.5f}"
+    expr = f"{pontos[-1][1]:.5f}"
+    for (a, va), (b, vb) in reversed(list(zip(pontos, pontos[1:]))):
+        tramo = max(1, b - a)
+        # Vírgula SEM escape: a expressão inteira vai dentro de aspas simples no
+        # filtergraph, e é o parser do próprio ffmpeg que as trata -- é o que o
+        # `zoompan` deste arquivo já faz em `z='min(a,b)'`.
+        expr = f"if(lt(on,{b}),{va:.5f}+{(vb - va) / tramo:.6f}*(on-{a}),{expr})"
+    return expr
+
+
+def zoompan_do_rosto(trilha, banda_w, banda_h, sw, sh, fps=30, motion=True):
+    """O filtro que faz a faixa de cima seguir a pessoa, ou None sem trilha.
+
+    `crop` não serve aqui, e a razão é do ffmpeg: as expressões de LARGURA e
+    ALTURA do `crop` são avaliadas uma vez, na configuração do filtro -- só x e
+    y correm por quadro. E é justamente o tamanho que muda: o rosto do PiP tem
+    151px de altura na fonte e o de tela cheia tem 430, quase três vezes. Um
+    recorte de tamanho fixo é uma narina num caso ou um ombro no outro.
+
+    `zoompan` avalia `z`, `x` e `y` a cada quadro, então é ele. A região que
+    ele recorta tem sempre a proporção da ENTRADA, por isso a entrada é
+    pré-recortada para a proporção da faixa -- senão a faixa de cima sai
+    esticada.
+    """
+    if not trilha:
+        return None, None
+    # Pré-recorte para a proporção da faixa, para o zoompan não esticar.
+    alvo = banda_w / float(banda_h)
+    cw, ch = float(sw), float(sh)
+    if cw / ch > alvo:
+        cw = ch * alvo
+    else:
+        ch = cw / alvo
+    ox, oy = (sw - cw) / 2.0, (sh - ch) / 2.0
+    pre = (f"crop={int(cw) - int(cw) % 2}:{int(ch) - int(ch) % 2}"
+           f":{int(round(ox))}:{int(round(oy))},")
+
+    zs, xs, ys = [], [], []
+    for t, cx, cy, fh in trilha:
+        n = int(round(float(t) * fps))
+        # O zoom que põe o rosto em ROSTO_ALTURA_NA_FAIXA da altura da faixa.
+        # Um rosto de tela cheia já chega nisso sozinho e o zoom fica em 1, que
+        # é a faixa mostrando o quadro inteiro -- redundante com a faixa de
+        # baixo, e nunca um borrão. É o piso certo para o caso de dúvida.
+        altura = max(0.01, float(fh) * sh / ch)
+        zs.append((n, min(ZOOM_ROSTO_MAX, max(1.0, ROSTO_ALTURA_NA_FAIXA / altura))))
+        xs.append((n, min(1.0, max(0.0, (float(cx) * sw - ox) / cw))))
+        ys.append((n, min(1.0, max(0.0, (float(cy) * sh - oy) / ch))))
+    for serie in (zs, xs, ys):
+        if serie[0][0] > 0:
+            serie.insert(0, (0, serie[0][1]))
+    ze = _expressao_por_quadro(zs)
+    if motion:
+        # O empurrão lento continua por cima do rastreio: um corte sem nenhuma
+        # variação de escala lê como material bruto, e num trecho em que a
+        # pessoa não sai do lugar o rastreio sozinho não varia nada.
+        ze = f"({ze})*min(1+0.0004*on,1.06)"
+    filtro = (f"{pre}zoompan=z='clip({ze},1,{ZOOM_ROSTO_MAX})'"
+              f":x='clip(({_expressao_por_quadro(xs)})*iw-(iw/zoom/2),0,"
+              f"iw-iw/zoom)'"
+              f":y='clip(({_expressao_por_quadro(ys)})*ih-(ih/zoom)*"
+              f"{ROSTO_NA_FAIXA},0,ih-ih/zoom)'"
+              f":d=1:s={banda_w}x{banda_h}:fps={fps},setsar=1")
+    return filtro, {"pontos": len(trilha),
+                    "zoom_min": round(min(z for _n, z in zs), 2),
+                    "zoom_max": round(max(z for _n, z in zs), 2)}
+
+
 def decide_enquadramento(medidas, tem_pip):
     """(modo, porquê) a partir do que foi medido quadro a quadro.
 
@@ -3735,7 +3930,7 @@ def decide_enquadramento(medidas, tem_pip):
                         f"do navegador é inutilizável")
 
 
-def tela_compartilhada(source, start, length, samples=10):
+def tela_compartilhada(source, start, length, samples=None):
     """O que este material É, olhado quadro a quadro.
 
     Devolve {"modo", "porque", "pip", "planuras", "faces"} -- e `faces` no mesmo
@@ -3745,6 +3940,16 @@ def tela_compartilhada(source, start, length, samples=10):
     # `quadros` começa None e não 0, e a diferença é a de sempre neste arquivo:
     # None é "nem cheguei a olhar" (não há detector nesta máquina) e 0 é "olhei
     # e não abriu um quadro sequer", que é erro de quem chamou e tem de parar.
+    # UMA AMOSTRA POR SEGUNDO, e o número saiu do mosaico e não do gosto.
+    #
+    # Com dez amostras num clipe de vinte segundos a trilha tem um ponto a cada
+    # 2,5s, e uma live troca de layout mais rápido que isso: o primeiro render
+    # com rastreio ainda tinha 3 dos 8 quadros do mosaico sem rosto na faixa de
+    # cima, todos em vãos entre amostras. Uma por segundo fecha esses vãos.
+    # O teto de 24 é o preço: cada amostra é uma detecção de rosto, e na imagem
+    # emulada elas custam ~0,2s cada.
+    if samples is None:
+        samples = max(8, min(24, int(round(float(length)))))
     saiu = {"modo": "normal", "porque": "", "pip": None, "planuras": [],
             "faces": None, "rosto": None, "quadros_de_tela": 0, "quadros": None}
     achado = _face_detector()
@@ -3755,8 +3960,10 @@ def tela_compartilhada(source, start, length, samples=10):
         return saiu
     cv2, det = achado
     tmp, pngs = _quadros_coloridos(source, start, length, samples)
+    passo = float(length) / max(1, samples)
     try:
         faces_todas, candidatos, planuras = [], [], []
+        por_quadro = []                    # (t relativo, planura, [rostos])
         from PIL import Image as _Image
         for i, png in enumerate(pngs):
             try:
@@ -3768,26 +3975,30 @@ def tela_compartilhada(source, start, length, samples=10):
             rows, cols = len(mapa), len(mapa[0])
             p = sum(sum(l) for l in mapa) / (rows * cols)
             planuras.append(p)
+            neste = []
             quadro = cv2.imread(png)
             if quadro is None:
+                por_quadro.append(((i + 0.5) * passo, p, neste))
                 continue
             h, w = quadro.shape[:2]
             det.setInputSize((w, h))
             _n, achadas = det.detect(quadro)
-            if achadas is None:
-                continue
-            for f in achadas:
+            for f in (achadas if achadas is not None else []):
                 fw, fh = float(f[2]), float(f[3])
                 cx = (float(f[0]) + fw / 2) / w
                 cy = (float(f[1]) + fh / 2) / h
                 area = (fw * fh) / (w * h)
                 faces_todas.append((cx, area))
+                if fw / w < ROSTO_MIN_LARGURA:
+                    continue               # adesivo, avatar do chat, miniatura
+                neste.append((cx, cy, fw / w, fh / h))
                 if p < PLANURA_TELA or area > PIP_ROSTO_AREA_MAX:
                     continue
                 caixa = _cresce_pip(mapa, cy * rows, cx * cols)
                 if (caixa[2] - caixa[0]) * (caixa[3] - caixa[1]) > PIP_AREA_MAX:
                     continue
                 candidatos.append((i, caixa, (cx, cy)))
+            por_quadro.append(((i + 0.5) * passo, p, neste))
         pip, em_quantos, rosto = _agrupa_pips(candidatos)
         # Uma webcam aparece em quase todo quadro de tela; uma foto na página
         # aparece em um ou dois. Menos da metade dos quadros de tela não é uma
@@ -3802,6 +4013,7 @@ def tela_compartilhada(source, start, length, samples=10):
         saiu["faces"] = faces_todas
         saiu["rosto"] = None if rosto is None else tuple(round(v, 4) for v in rosto)
         saiu["pip"] = None if pip is None else tuple(round(v, 4) for v in pip)
+        saiu["trilha"] = trilha_do_rosto(por_quadro, pip)
         saiu["modo"], saiu["porque"] = decide_enquadramento(planuras, pip is not None)
         if saiu["pip"]:
             saiu["porque"] += (f". A webcam está em x {saiu['pip'][0]:.0%}-"
@@ -3881,56 +4093,66 @@ def layout_dividido(width, height, sw, sh, pip=None, rosto=None):
     return faixa
 
 
-def cadeia_dividida(width, height, faixa, motion=True, length=None):
+def cadeia_dividida(width, height, faixa, motion=True, length=None,
+                    trilha=None, sw=None, sh=None):
     """A cadeia de filtros do clipe dividido, de uma entrada e uma saída.
 
     Sai como `split` + dois `overlay` sobre o fundo borrado, e não como
     `vstack` + `pad`: o pad pintaria os 472px abaixo da tela de preto, e preto
     no pé do quadro é exatamente o que `barras_pretas` reprova.
+
+    A faixa de cima sai do RASTREIO do rosto quando há trilha (ver
+    `zoompan_do_rosto`), e do recorte fixo do PiP só quando não há -- que é o
+    caso em que a detecção achou a webcam pela planura e não achou rosto em
+    quadro nenhum.
     """
     wx, wy, ww, wh = faixa["webcam"]
     tx, ty, tw, th = faixa["tela"]
     corte = faixa.get("corte_webcam")
+    seguidor, rastreio = (None, None)
+    if trilha and sw and sh:
+        seguidor, rastreio = zoompan_do_rosto(trilha, ww, wh, sw, sh,
+                                              motion=bool(motion))
+    tem_webcam = bool(seguidor or corte)
     # `split` com uma saída a mais do que se consome não é aviso: o ffmpeg
     # recusa o filtergraph inteiro ("expected to have exactly 1 input and 1
     # output"), e recusa só no caso SEM webcam -- que é o ramo raro, o pior
     # lugar para um erro esperar.
-    partes = ["fps=30,split=%d[dvbg]%s[dvsc]" % (3 if corte else 2,
-                                                 "[dvwc]" if corte else "")]
+    partes = ["fps=30,split=%d[dvbg]%s[dvsc]" % (3 if tem_webcam else 2,
+                                                 "[dvwc]" if tem_webcam else "")]
     partes.append(
         f"[dvbg]scale={width}:{height}:force_original_aspect_ratio=increase,"
         f"crop={width}:{height},boxblur=luma_radius=30:luma_power=2"
         f":chroma_radius=15:chroma_power=2,eq=brightness=-0.10:saturation=0.75,"
         f"setsar=1[dvbgb]")
-    if corte:
+    if seguidor:
+        partes.append(f"[dvwc]{seguidor}[dvwcb]")
+    elif corte:
         cx, cy, cw, ch = corte
-        recorte = f"crop={cw}:{ch}:{cx}:{cy},"
-    else:
-        recorte = ""
-    zoom = ""
-    if motion and corte:
-        # O zoom vive DENTRO da faixa da webcam, e só nela. Passá-lo no
-        # composto empurraria as duas faixas para fora do lugar -- a tela sairia
-        # cortada nas beiradas, que é o defeito que este modo existe para não
-        # ter. A tela fica parada de propósito: ela é texto, e texto que anda
-        # não se lê.
-        quadros = max(1.0, float(length or 1) * 30)
-        passo = (1.06 - 1.0) / quadros
-        zoom = (f",zoompan=z='min(1+{passo:.8f}*on,1.06)'"
-                f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1"
-                f":s={ww}x{wh}:fps=30,setsar=1")
-    if corte:
+        zoom = ""
+        if motion:
+            # O zoom vive DENTRO da faixa da webcam, e só nela. Passá-lo no
+            # composto empurraria as duas faixas para fora do lugar -- a tela
+            # sairia cortada nas beiradas, que é o defeito que este modo existe
+            # para não ter. A tela fica parada de propósito: ela é texto, e
+            # texto que anda não se lê.
+            quadros = max(1.0, float(length or 1) * 30)
+            passo = (1.06 - 1.0) / quadros
+            zoom = (f",zoompan=z='min(1+{passo:.8f}*on,1.06)'"
+                    f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1"
+                    f":s={ww}x{wh}:fps=30,setsar=1")
         partes.append(
-            f"[dvwc]{recorte}scale={ww}:{wh}:force_original_aspect_ratio=increase,"
+            f"[dvwc]crop={cw}:{ch}:{cx}:{cy},"
+            f"scale={ww}:{wh}:force_original_aspect_ratio=increase,"
             f"crop={ww}:{wh}{zoom},setsar=1[dvwcb]")
     partes.append(f"[dvsc]scale={tw}:{th},setsar=1[dvscb]")
     ultimo = "dvbgb"
-    if corte:
+    if tem_webcam:
         partes.append(f"[{ultimo}][dvwcb]overlay={wx}:{wy}[dvt1]")
         ultimo = "dvt1"
     partes.append(f"[{ultimo}][dvscb]overlay={tx}:{ty}[dvt2]")
     partes.append("[dvt2]setsar=1")
-    return ";".join(partes)
+    return ";".join(partes), rastreio
 
 
 def cut(source, out, rules, start, end, caption_srt=None, hook=None,
@@ -4219,7 +4441,7 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
             kept = width / ((sw - l - r) * height / sh)
             kept = min(1.0, kept)
 
-    faixas_do_layout = None
+    faixas_do_layout = rastreio = None
     if dividido:
         # A moldura já saiu em `pre`, então a webcam tem de ser recortada no
         # quadro JÁ recortado: as frações do PiP foram medidas no quadro
@@ -4239,11 +4461,18 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
             if rosto:
                 rosto = (min(max((rosto[0] * sw - corte_l) / sw_util, 0.0), 1.0),
                          rosto[1])
+        # A trilha vem em fração do quadro INTEIRO e o `pre` já tirou a
+        # moldura, então ela é levada para o mesmo sistema do PiP -- a mesma
+        # conta, pelo mesmo motivo, no mesmo lugar.
+        trilha = [(t, min(1.0, max(0.0, (cx * sw - corte_l) / sw_util)), cy, fh)
+                  for t, cx, cy, fh in (enq.get("trilha") or [])]
         faixas_do_layout = layout_dividido(width, height, sw_util, sh,
                                            pip=pip, rosto=rosto)
-        chain = pre + cadeia_dividida(width, height, faixas_do_layout,
-                                      motion=bool(motion) and not planos,
-                                      length=length)
+        seguida, rastreio = cadeia_dividida(
+            width, height, faixas_do_layout,
+            motion=bool(motion) and not planos, length=length,
+            trilha=trilha, sw=sw_util, sh=sh)
+        chain = pre + seguida
     else:
         chain = (f"{pre}scale={width}:{height}:force_original_aspect_ratio=increase,"
                  f"crop={width}:{height}:(in_w-out_w)*{fx:.4f}:(in_h-out_h)*0.5,"
@@ -4269,7 +4498,15 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         # aplicado no composto ele empurraria as duas faixas para fora do
         # lugar, cortando a tela nas beiradas -- que é o defeito que este modo
         # existe para não ter.
-        if (faixas_do_layout or {}).get("corte_webcam") and not planos:
+        if rastreio and not planos:
+            notes.append(
+                f"the webcam band FOLLOWS THE FACE frame by frame across "
+                f"{rastreio['pontos']} sampled positions, zooming "
+                f"{rastreio['zoom_min']:.1f}x to {rastreio['zoom_max']:.1f}x as "
+                f"the layout changes -- 1.0x is the source already being a "
+                f"full-frame webcam. The screen band is held still on purpose: "
+                f"it is text, and text that drifts cannot be read.")
+        elif (faixas_do_layout or {}).get("corte_webcam") and not planos:
             notes.append("scale moves 1.00 to 1.06 inside the webcam band only. "
                          "The screen band is held still on purpose: it is text, "
                          "and text that drifts cannot be read.")
@@ -4342,11 +4579,17 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     if dividido:
         _wx, _wy, _ww, _wh = faixas_do_layout["webcam"]
         _tx, _ty, _tw, _th = faixas_do_layout["tela"]
-        if faixas_do_layout.get("corte_webcam"):
+        if rastreio:
+            onde = (f"webcam band {_ww}x{_wh} at the top, TRACKING the face over "
+                    f"{rastreio['pontos']} sampled positions ({rastreio['zoom_min']:.1f}x"
+                    f"-{rastreio['zoom_max']:.1f}x); screen band {_tw}x{_th} at "
+                    f"y{_ty}, the whole 16:9 fitted by width")
+        elif faixas_do_layout.get("corte_webcam"):
             _cx, _cy, _cw, _ch = faixas_do_layout["corte_webcam"]
             onde = (f"webcam band {_ww}x{_wh} at the top, cut from {_cw}x{_ch} "
-                    f"of the source at x{_cx} y{_cy}; screen band {_tw}x{_th} "
-                    f"at y{_ty}, the whole 16:9 fitted by width")
+                    f"of the source at x{_cx} y{_cy} (NO face track: not one "
+                    f"sampled frame gave a face to follow); screen band "
+                    f"{_tw}x{_th} at y{_ty}, the whole 16:9 fitted by width")
         else:
             onde = (f"screen band {_tw}x{_th} at y{_ty}, the whole frame fitted "
                     f"by width, on a blurred fill -- no webcam band")
@@ -4355,24 +4598,25 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                      f"on top and the screen stays legible below.")
         _telas = enq.get("quadros_de_tela") or 0
         _lidos = enq.get("quadros") or 0
-        if faixas_do_layout.get("corte_webcam") and _lidos and _telas < _lidos * 0.7:
-            # A janela MISTURA layouts, e isto tem de sair dito porque se vê no
-            # mosaico e não no relatório. Medido nesta live em 15/09: dos oito
-            # quadros do mosaico, quatro vinham de webcam cheia -- e nesses a
-            # faixa de cima, que recorta o canto onde o PiP fica, mostra o ombro
-            # da pessoa desfocado. A pessoa continua inteira na faixa de baixo
-            # em todos eles, que é o defeito que importava; mas a faixa de cima
-            # não está fazendo nada nesses quadros, e quem entrega tem de saber
-            # disso antes de abrir a imagem e levar o susto.
+        if _lidos and _telas < _lidos * 0.7:
+            # A janela MISTURA layouts, e ela é a regra numa live, não a
+            # exceção: a fonte alterna entre webcam em tela cheia e tela
+            # compartilhada com webcam de canto. A primeira versão deste modo
+            # recortava sempre o mesmo retângulo e entregava um borrão de ombro
+            # em 5 dos 8 quadros do mosaico -- medido na janela 82-106. Quem
+            # resolve isso é o rastreio; a nota fica dizendo o que a janela é,
+            # e só vira aviso quando não há rastreio para segurá-la.
             notes.append(
-                f"this window MIXES layouts: only {_telas} of {_lidos} sampled "
-                f"frames are a shared screen, so on the other "
-                f"{_lidos - _telas} the source is already a full-frame webcam "
-                f"and the top strip -- which cuts the corner where the PiP "
-                f"lives -- shows a blurred shoulder there. The person is whole "
-                f"in the bottom strip on every frame, so nothing is lost; but "
-                f"if the top strip reads badly on the contact sheet, re-cut a "
-                f"window that stays on one layout.")
+                f"this window MIXES layouts: {_telas} of {_lidos} sampled frames "
+                f"are a shared screen and the rest are a full-frame webcam. "
+                + ("The top strip follows the face through both, so it lands on "
+                   "the corner webcam where there is one and on the full-frame "
+                   "face where there is not."
+                   if rastreio else
+                   "With no face track the top strip is a FIXED crop of the "
+                   "corner, which on the full-frame stretches is a blurred "
+                   "shoulder -- look at the contact sheet, and re-cut a window "
+                   "that stays on one layout if it reads badly."))
     else:
         notes.append(f"FRAMING: vertical band ({framed_by}) -- {enq['porque']}")
     # ---------------------------------------------------------------- texto
@@ -4420,6 +4664,7 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                        "frames": enq.get("quadros"),
                        "flatness": enq.get("planuras"),
                        "webcam_box": enq.get("pip"),
+                       "face_track": rastreio,
                        "bands": None if not faixas_do_layout else
                        {"webcam": list(faixas_do_layout["webcam"]),
                         "screen": list(faixas_do_layout["tela"]),
@@ -5022,7 +5267,7 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         marge = S.margens(width, height)
         leading = int(fitted * S.LEADING)
         hook_top = max(marge["top"], int(safe.get("y0", 0)))
-        if dividido and faixas_do_layout.get("corte_webcam"):
+        if dividido and faixas_do_layout:
             # O hook DESCE, e a aritmética manda, não o gosto.
             #
             # A faixa da webcam tem 616px num quadro de 1920, e o rosto ocupa
