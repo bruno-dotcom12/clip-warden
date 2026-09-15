@@ -47,6 +47,33 @@ The sound policy, if the campaign has one, because it is the step that happens
 on the platform and is the one people forget. The same goes for how long the
 post must stay up.
 
+## Putting it in their TikTok drafts
+
+```
+warden tiktok <clip.mp4> --campaign <id> --hook "<their line>"
+```
+
+It uploads the finished clip to their TikTok **inbox** and then prints the
+caption for them to paste. Both halves of that sentence matter.
+
+**The draft lands in the Caixa de entrada -- the notification -- and NOT in the
+Drafts tab of the profile.** Measured 14/09/2026: the owner looked in Drafts,
+did not find it, and concluded it had never arrived. Say where it is when you
+tell them it is there.
+
+**The caption does not go up with it, and you never imply it did.** The inbox
+endpoint has no field for one: its whole body is `source_info.source`,
+`video_size`, `chunk_size` and `total_chunk_count`. Pre-filling a caption exists
+only in Direct Post, which needs the `video.publish` scope and an audited app.
+So the text this skill wrote is printed for them to paste, and the honest
+sentence is "it is in your inbox, here is the caption to paste", never "it is
+posted with the caption".
+
+It needs a TikTok token for their account, which the image cannot carry -- it
+belongs to a person, not to the agent. `warden status` has a `tiktok draft
+upload:` line saying whether it is set up. When it is not, say so before
+rendering a clip on the promise of posting it, not after.
+
 ## After they post
 
 `warden log --campaign <id> --clip <name> --platform <p> --url <url>` keeps this
