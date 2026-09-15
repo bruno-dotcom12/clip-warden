@@ -58,9 +58,12 @@ QUESTIONS = [
      "decides whether the subtitle track is rendered in",
      "edit"),
     ("hook",
-     "Want a line across the top of the frame, and in which language?",
-     ["none", "pt", "en", "es"],
-     "decides the overlay and the language it is written in",
+     "Want a line across the top of the frame? In the video's own language, "
+     "or pinned to one?",
+     ["source", "none", "pt", "en", "es"],
+     "decides the overlay and the language it is written in. `source` is the "
+     "default and means the language the video is already in; naming one "
+     "pins it and wins over the source, which is the owner's call to make",
      "edit"),
     ("sound",
      "The original sound carried in the file, or silent for the platform to add its own?",
@@ -106,10 +109,33 @@ QUESTIONS = [
 # dono pede de fato, e `approval` virou "no" porque aprovar janela antes de
 # renderizar é mais um turno de espera por uma resposta que foi "pode ir" nas
 # últimas vezes.
+#
+# `hook` deixou de ser `"pt"` em 15/09/2026, e é a única mudança aqui que não é
+# sobre tempo -- é sobre um lote inteiro voltar vazio.
+#
+# A decisão do dono: "o idioma da legenda tem que ser o mesmo que a linguagem
+# do vídeo disponibilizado". O padrão `"source"` é essa frase em forma de valor.
+#
+# O que um idioma FIXO custava: `cut` recusa queimar quando o hook e a legenda
+# estão em línguas diferentes -- e essa recusa está certa, ela existe porque um
+# hook em português sobre uma legenda em inglês foi entregue uma vez. Com o
+# padrão em `pt` e uma fonte em inglês, o agente escrevia o hook em português,
+# a legenda descia em inglês, e a recusa pegava TODOS os clipes do lote.
+# Medido em 15/09: o mesmo link trouxe legenda `en` em 2 de 6 rodadas, e nessas
+# duas o pedido teria terminado em zero clipe.
+#
+# Pinar uma língua continua sendo possível e continua vencendo: `prefs set
+# --key hook --value pt` é a pessoa dizendo o que quer, e o padrão é só o que
+# acontece quando ninguém disse nada.
 DEFAULTS = {"region": "both", "niches": "", "platforms": "tiktok", "payout": "any",
-            "delivery": "cuts", "captions": "yes", "hook": "pt",
+            "delivery": "cuts", "captions": "yes", "hook": "source",
             "sound": "embedded",
             "target_s": 20, "batch": 2, "approval": "no"}
+
+# O valor que quer dizer "a língua da fonte". Nomeado aqui porque quem resolve
+# a língua é o `warden.py`, que é quem sabe qual é a fonte -- e uma string solta
+# repetida nos dois arquivos é a que fica para trás quando um deles muda.
+HOOK_DA_FONTE = "source"
 
 KEYS = [q[0] for q in QUESTIONS]
 GROUPS = {q[0]: q[4] for q in QUESTIONS}

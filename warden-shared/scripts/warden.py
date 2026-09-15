@@ -2362,6 +2362,69 @@ def _som_decidido(rules, stored, override=None):
     return som, "som: original (padrão; a campanha não decide isso)"
 
 
+def lingua_do_hook(stored, lingua_da_fonte=None, medida=None):
+    """(tag de idioma ou "none" ou None, linha a dizer em voz alta).
+
+    A decisão do dono, de 15/09/2026: "o idioma da legenda tem que ser o mesmo
+    que a linguagem do vídeo disponibilizado". Vídeo em inglês, hook e legenda
+    em inglês; em espanhol, espanhol; em português, português.
+
+    O padrão era `pt` FIXO, e o preço disso não era um clipe feio, era um lote
+    vazio. `warden_media.cut` RECUSA queimar quando o hook e a legenda estão em
+    línguas diferentes -- e essa recusa é a regra certa, ela existe porque um
+    hook em português sobre uma legenda em inglês foi entregue uma vez. Com o
+    padrão fixo e uma fonte em inglês, o agente escrevia o hook em português, a
+    legenda descia em inglês, e a recusa pegava TODOS os clipes. Medido em
+    15/09: o mesmo link trouxe legenda `en` em 2 de 6 rodadas.
+
+    Três respostas, e nenhuma delas é um palpite sobre a língua:
+
+      "none"  -> o dono não quer linha nenhuma em cima do quadro;
+      "en"    -> uma tag, vinda da fonte ou pinada pela pessoa;
+      None    -> ninguém leu a língua da fonte ainda, e isto diz isso em vez de
+                 chutar `pt`, que é exatamente o chute que custava o lote.
+
+    A preferência guardada VENCE a fonte. "hook em português num vídeo em
+    inglês" é escolha de quem pediu, e o padrão é só o que acontece quando
+    ninguém disse nada.
+
+    `medida` diz se essa língua foi LIDA da fonte ou se saiu de desempate por
+    ordem de preferência, e ela muda a JUSTIFICATIVA sem mudar a instrução.
+    Medido em 15/09/2026, na imagem construída: o vídeo era em inglês, a
+    legenda escolhida foi a `pt-br` auto-traduzida, e esta função dizia "a
+    língua da fonte, lida do material" -- uma afirmação que ninguém tinha
+    apurado, com cara de medição. A causa da escolha errada foi consertada no
+    `warden_media`; a frase continuava estruturalmente capaz de mentir porque
+    não perguntava se alguém chegou a ler a língua. Agora pergunta.
+
+    `medida=None` -- o campo não veio, uma ficha antiga, um dublê que não o
+    escreve -- conta como NÃO medida. É a única resposta honesta: não saber se
+    foi medido não é a mesma coisa que ter medido.
+    """
+    escolha = (stored or {}).get("hook") or P.DEFAULTS.get("hook")
+    if escolha == "none":
+        return "none", "hook: nenhum (sua preferência guardada)"
+    if escolha and escolha != P.HOOK_DA_FONTE:
+        return escolha, (f"hook e legenda: {escolha} (sua preferência "
+                         f"guardada, e ela vence a língua da fonte)")
+    # A tag vem do outro lado -- `pt`, `en-US`, `pt-BR` -- e o que interessa é a
+    # raiz: `language_clash` compara os dois primeiros caracteres, e um `en-US`
+    # contra um `en` seria uma divergência inventada.
+    raiz = str(lingua_da_fonte or "").strip().split("-")[0].split("_")[0].lower()
+    if not raiz or raiz == "na":
+        return None, ("hook e legenda: a língua da FONTE (padrão) -- e ela "
+                      "ainda não foi lida, então nada aqui decidiu um idioma. "
+                      "Não escreva o gancho até a língua aparecer: um gancho "
+                      "numa língua e a legenda em outra faz `cut` recusar o "
+                      "clipe inteiro.")
+    if medida:
+        return raiz, (f"hook e legenda: {raiz} (padrão: a língua da fonte, "
+                      f"lida do material)")
+    return raiz, (f"hook e legenda: {raiz} (padrão: é a legenda que desceu, "
+                  f"escolhida por ordem de preferência -- a língua do vídeo "
+                  f"NÃO foi medida, então não diga que o vídeo é em {raiz})")
+
+
 def _duracao_decidida(rules, stored):
     """(segundos, linha a dizer em voz alta). O número SAI DAQUI, nunca do modelo.
 
@@ -3135,7 +3198,8 @@ def _dir_do_lote(url):
                     "batch directory")
 
 
-def _padroes_do_lote(rules, stored, quantos=None, segundos=None):
+def _padroes_do_lote(rules, stored, quantos=None, segundos=None, lingua=None,
+                     medida=None):
     """As decisões que o lote toma sozinho, e a linha que anuncia cada uma.
 
     Devolve (dict, [linhas]). Nenhuma delas é uma pergunta: a decisão do dono
@@ -3143,6 +3207,11 @@ def _padroes_do_lote(rules, stored, quantos=None, segundos=None):
     clipe, e só quando o pedido não diz nem quantidade nem duração. Estas
     linhas existem para que o agente repita UMA delas ao dono em vez de abrir
     uma conversa com ele.
+
+    `lingua` é a língua da FONTE, quando já se sabe qual é, e `medida` diz se
+    ela foi lida do material ou se saiu de desempate. As duas entram aqui e
+    nenhuma é adivinhada aqui: quem as lê é `_lote_prep`, do material; quem as
+    repete é `_lote_render`, da ficha da legenda. Ver `lingua_do_hook`.
     """
     settings, _ = P.effective(stored, rules)
     som, diz_som = _som_decidido(rules, stored)
@@ -3154,11 +3223,14 @@ def _padroes_do_lote(rules, stored, quantos=None, segundos=None):
     else:
         n = int(settings.get("batch") or P.DEFAULTS["batch"])
         diz_n = (f"quantidade: {n} clipe(s) (padrão; ninguém disse quantos)")
-    hook = settings.get("hook") or "pt"
+    # O IDIOMA, e ele é um só para o hook e para a legenda de propósito: `cut`
+    # recusa queimar os dois em línguas diferentes, então tratá-los como duas
+    # decisões é criar a divergência que o portão existe para pegar.
+    hook, diz_hook = lingua_do_hook(stored, lingua, medida)
     # A legenda é determinística, e é o serviço contratado numa campanha
     # musical: a campanha vem do detentor dos direitos, entrega o material
-    # oficial e EXIGE legenda em português. Transcrever e queimar é o trabalho,
-    # não uma escolha editorial -- então a ferramenta faz, e o modelo não
+    # oficial e EXIGE legenda -- na língua do material. Transcrever e queimar é
+    # o trabalho, não uma escolha editorial: a ferramenta faz, e o modelo não
     # precisa repetir o texto da letra na conversa para que aconteça.
     #
     # Duas coisas desligam: a preferência `captions` em "no", e a ficha da
@@ -3171,16 +3243,21 @@ def _padroes_do_lote(rules, stored, quantos=None, segundos=None):
         diz_legenda = ("legenda: NÃO queimar (a ficha da campanha diz que o "
                        "material já vem legendado)")
     elif legenda:
-        diz_legenda = ("legenda: queimar em português, transcrita pela "
-                       "ferramenta (padrão)")
+        # O idioma sai da mesma resposta do hook, e não de uma constante: dizer
+        # "queimar em português" sobre um vídeo em inglês era a linha que fazia
+        # o agente escrever o gancho na língua errada.
+        onde = (f"em {hook}" if hook and hook != "none"
+                else "na língua da fonte, assim que ela for lida")
+        diz_legenda = (f"legenda: queimar {onde}, transcrita pela ferramenta "
+                       f"(padrão)")
     else:
         diz_legenda = "legenda: não queimar (sua preferência guardada)"
     padroes = {"n": n, "seconds": duracao, "sound": som, "hook": hook,
+               "language": None if hook in (None, "none") else hook,
                "captions": legenda}
     linhas = [diz_n, diz_duracao,
               diz_som or f"som: {'mudo' if som == 'platform' else 'original'}",
-              f"hook: {hook} (idioma da linha em cima do quadro)",
-              diz_legenda]
+              diz_hook, diz_legenda]
     return padroes, linhas
 
 
@@ -3223,6 +3300,26 @@ def _lote_prep(args):
         die(f"could not write {alvo}: {exc}", code=1)
     print(f"TRANSCRIPT:{alvo}")
     print(f"# the words came from: {transcricao.get('source')}")
+    # A LÍNGUA DA FONTE, lida e não suposta, e ela decide o idioma do gancho e
+    # da legenda a partir daqui (decisão do dono, 15/09/2026). Impressa numa
+    # linha própria porque é o dado que o modelo precisa ANTES de escrever o
+    # gancho: um gancho numa língua e a legenda em outra faz `cut` recusar o
+    # clipe, e o lote todo volta vazio.
+    lingua_da_fonte = transcricao.get("language")
+    # `language_measured` separa "eu li a língua do vídeo" de "escolhi esta
+    # legenda por ordem de preferência". Medido em 15/09/2026, na imagem
+    # construída: vídeo em inglês, legenda `pt-br` auto-traduzida escolhida, e
+    # a linha abaixo afirmando que português era a língua do vídeo. A escolha
+    # errada foi consertada no `warden_media`; o que se conserta aqui é a
+    # AFIRMAÇÃO, que não perguntava se alguém tinha medido.
+    lingua_medida = bool(transcricao.get("language_measured"))
+    lingua_do_video = transcricao.get("source_language")
+    print(f"LANG:{lingua_da_fonte or 'unknown'}"
+          + ("" if lingua_medida else "  (NOT measured: this is the subtitle "
+                                      "that came down, picked by preference "
+                                      "order)"))
+    if lingua_do_video:
+        print(f"SOURCE_LANG:{lingua_do_video}")
 
     # O SRT ao lado, e a ficha de ONDE ele veio. A ficha é o que deixa o
     # `render` aprovar sozinho as linhas: aprovar automaticamente o que uma
@@ -3246,6 +3343,18 @@ def _lote_prep(args):
                       encoding="utf-8") as fh:
                 json.dump({"srt": srt, "published": publicada,
                            "source": transcricao.get("source"),
+                           # A língua viaja na ficha porque o `render` roda num
+                           # processo novo: sem ela, ele teria de readivinhar
+                           # o idioma, e readivinhar é como se chega a um
+                           # gancho em português sobre uma legenda em inglês.
+                           "language": lingua_da_fonte,
+                           # E se ela foi MEDIDA, porque o `render` reconstrói
+                           # o anúncio a partir desta ficha e tem de repeti-lo
+                           # com a mesma honestidade -- uma ficha que só
+                           # carrega a tag faz o `render` afirmar o que o
+                           # `prep` teve o cuidado de não afirmar.
+                           "language_measured": lingua_medida,
+                           "source_language": lingua_do_video,
                            "url": url, "source_id": _marca_da_fonte(url)}, fh,
                           ensure_ascii=False, indent=1)
         except OSError:
@@ -3279,7 +3388,9 @@ def _lote_prep(args):
         print(f"[{stamp}] {','.join(r['signals'])}: {r['text']}")
 
     # 4. Os padrões, uma linha cada, para o modelo REPETIR e não PERGUNTAR.
-    padroes, linhas = _padroes_do_lote(rules, stored, args.n, args.seconds)
+    padroes, linhas = _padroes_do_lote(rules, stored, args.n, args.seconds,
+                                       lingua=lingua_da_fonte,
+                                       medida=lingua_medida)
     print("\n===== O QUE VAI SER FEITO, SEM PERGUNTAR =====")
     for linha in linhas:
         print(linha)
@@ -3293,13 +3404,42 @@ def _lote_prep(args):
     # dizer onde a fala acaba e dizer onde a última frase começa.
     fim = max((seg.get("end") or seg.get("start") or 0 for seg in segmentos),
               default=0)
+    # A língua entra no exemplo do comando, e não como nota de rodapé. O gancho
+    # é a única coisa desta linha que o MODELO escreve, e escrevê-lo na língua
+    # errada é o que faz `cut` recusar o clipe inteiro.
+    idioma = padroes.get("language")
+    em = f"<gancho em {idioma}>" if idioma else "<gancho na língua da fonte>"
     print(f"# then, in the SAME turn, pick {padroes['n']} window(s) on the text "
           f"above and run:\n"
           f"#   warden lote render {url} --windows <a-b,c-d> "
-          f"--hooks '<gancho 1>|<gancho 2>'"
+          f"--hooks '{em} 1|{em} 2'"
           + (f" --campaign {args.campaign}" if args.campaign else "")
           + (f"\n# the words run to about {int(fim // 60)}:{int(fim % 60):02d}, "
              f"so every window has to end before that." if fim else ""))
+    # A INSTRUÇÃO é a mesma nos dois casos; o que muda é a JUSTIFICATIVA.
+    # Escrever o gancho na língua da legenda é o que evita a recusa do `cut`,
+    # e isso vale tenha a língua sido medida ou não -- mas só uma das duas
+    # frases pode dizer "essa é a língua do vídeo", porque só numa delas
+    # alguém leu a língua do vídeo.
+    if idioma and lingua_medida:
+        print(f"# WRITE THE HOOKS IN {idioma.upper()}. The caption burns in "
+              f"{idioma} because that is the language of the video, and `cut` "
+              f"REFUSES a clip whose hook and caption are in different "
+              f"languages -- so a hook in another language does not come back "
+              f"wrong, it comes back as no clip at all.")
+    elif idioma:
+        print(f"# WRITE THE HOOKS IN {idioma.upper()} anyway, and do NOT say "
+              f"this is the video's language: nothing here measured it. "
+              f"{idioma} is the subtitle that came down, chosen by preference "
+              f"order, not by reading the source. The hooks go in {idioma} "
+              f"because the caption burns in {idioma} and `cut` REFUSES a "
+              f"clip whose hook and caption disagree -- that is the whole "
+              f"reason, and it is not a claim about the video."
+              + (f" The video itself is tagged {lingua_do_video}, so that "
+                 f"{idioma} subtitle is very likely an auto-translation."
+                 if lingua_do_video
+                 and str(lingua_do_video).split("-")[0].lower() != idioma
+                 else ""))
     return 0
 
 
@@ -3326,7 +3466,15 @@ def _porque_a_linha_suspeita_trava(pendentes):
 
 
 def _legenda_da_janela(out, resultados, janelas, guardadas):
-    """Transcreve CADA janela e assina o que der. ({janela: srt}, {janela: porquê}).
+    """Transcreve CADA janela e assina o que der.
+
+    Devolve ({janela: srt}, {janela: porquê}, língua ouvida ou None, se ela
+    foi MEDIDA).
+
+    A língua volta junto porque sem legenda publicada ela não existe em lugar
+    nenhum antes daqui: a ficha do `prep` não a traz, e o gancho precisa dela.
+    É a mesma decisão do dono de 15/09/2026 -- o idioma segue a fonte -- pelo
+    caminho em que a fonte não publica legenda.
 
     Existe porque uma fonte SEM legenda publicada entregava o lote inteiro sem
     legenda, em silêncio. O `render` não assinava nada, `queimar` ficava vazio,
@@ -3353,6 +3501,7 @@ def _legenda_da_janela(out, resultados, janelas, guardadas):
     import warden_style as S
     decididas = {t.strip() for t in (guardadas or [])}
     queimar, porques = {}, {}
+    ouvida, ouvida_medida = None, False
     for i, ((caminho, dentro), (de, ate)) in enumerate(zip(resultados, janelas), 1):
         queimar[(de, ate)] = None
         try:
@@ -3364,6 +3513,16 @@ def _legenda_da_janela(out, resultados, janelas, guardadas):
                                   f"({type(exc).__name__}: {exc}), so there is "
                                   f"nothing to burn on it")
             continue
+        # A primeira janela que responder decide a língua do lote. Não é média
+        # nem votação: um lote é de UM vídeo, então as janelas não podem estar
+        # em línguas diferentes -- e se estiverem, é o portão de divergência do
+        # `cut` que tem de falar, não uma heurística daqui.
+        if not ouvida and transcricao.get("language"):
+            ouvida = transcricao.get("language")
+            # Repassado como veio. Se o transcritor não disse que mediu, esta
+            # função não diz por ele: afirmar medição em nome de outro módulo é
+            # a mesma mentira, com um endereço a mais.
+            ouvida_medida = bool(transcricao.get("language_measured"))
         zero = float(de) - float(dentro)
         segmentos = []
         for seg in transcricao.get("segments") or []:
@@ -3398,7 +3557,7 @@ def _legenda_da_janela(out, resultados, janelas, guardadas):
             continue
         S.write_approval(alvo, start=de, end=ate)
         queimar[(de, ate)] = alvo
-    return queimar, porques
+    return queimar, porques, ouvida, ouvida_medida
 
 
 def _aprova_as_janelas(srt, janelas, guardadas):
@@ -3410,10 +3569,10 @@ def _aprova_as_janelas(srt, janelas, guardadas):
 
     Automático porque a legenda vem PUBLICADA pelo detentor dos direitos, e é
     o serviço contratado numa campanha musical: a campanha entrega o material
-    oficial e exige legenda em português, então transcrever e queimar é o
-    trabalho, não uma opinião. A revisão humana linha a linha existia para o
-    que o Whisper inventa; ela não se aplica ao que o dono dos direitos
-    escreveu.
+    oficial e exige legenda -- na língua do material, que é a decisão do dono
+    de 15/09/2026 e não uma língua fixa. Transcrever e queimar é o trabalho,
+    não uma opinião. A revisão humana linha a linha existia para o que o
+    Whisper inventa; ela não se aplica ao que o dono dos direitos escreveu.
 
     O que NÃO é automático continua não sendo: uma linha suspeita -- número,
     palavra repetida, marcador `>>` de auto-legenda -- só é assinada se vier
@@ -3494,6 +3653,56 @@ def _mosaico_do_lote(mosaicos, destino):
         return None
 
 
+def _ficha_da_legenda(out, url, passado=None):
+    """(srt, veio_publicada, língua da fonte, se ela foi MEDIDA).
+
+    O quarto valor existe porque o `render` reconstrói o anúncio a partir desta
+    ficha, e uma ficha que só carrega a tag faz o `render` afirmar o que o
+    `prep` teve o cuidado de não afirmar. Ficha antiga, sem o campo, conta como
+    NÃO medida -- não saber se foi medido não é ter medido.
+
+    Separada do `_lote_render` porque a LÍNGUA saiu daqui e passou a ser
+    necessária antes do download -- ela é metade do que os padrões anunciam --
+    e ler a ficha em dois lugares seria ler duas fichas.
+
+    O suspensório continua aqui. O diretório já é por link, então esta ficha só
+    deveria ser a deste link -- mas o diretório é um ESQUEMA, e foi um esquema
+    de diretório único que queimou a legenda de um link nos clipes de outro.
+    Então a ficha diz de quem ela é, e o render RECUSA a que não bater,
+    nomeando os dois links. Uma ficha antiga, escrita antes de esse campo
+    existir, também não passa: ela não consegue provar de quem é, e queimar sem
+    essa prova é a aposta que este bloco existe para não fazer -- um
+    `warden lote prep` a reescreve em segundos.
+    """
+    if passado:
+        # Passado à mão é uma decisão de quem passou, inclusive sobre a língua:
+        # quem escolheu o arquivo leu o que tem dentro dele.
+        return (passado if os.path.isfile(passado) else None), True, None, None
+    ficha = os.path.join(out, "lote.legenda.json")
+    if not os.path.isfile(ficha):
+        return None, False, None, None
+    try:
+        with open(ficha, encoding="utf-8") as fh:
+            carregado = json.load(fh)
+    except (OSError, ValueError):
+        return None, False, None, None
+    if not isinstance(carregado, dict):
+        return None, False, None, None
+    if carregado.get("source_id") != _marca_da_fonte(url):
+        die(f"the caption card in {ficha} is not this link's and will not be "
+            f"burned: it was written for "
+            f"{carregado.get('url') or '(a link it does not name)'} and this "
+            f"command was asked for {url}. A caption from another video looks "
+            f"finished and says things nobody said. Run `warden lote prep "
+            f"{url}` to write this link's own card, or delete that file.",
+            code=2)
+    srt = carregado.get("srt")
+    if srt and not os.path.isfile(srt):
+        srt = None
+    return (srt, bool(carregado.get("published")), carregado.get("language"),
+            bool(carregado.get("language_measured")))
+
+
 def _lote_render(args):
     """Baixa as janelas, aprova a legenda delas, renderiza e entrega o lote."""
     url = args.url
@@ -3510,9 +3719,17 @@ def _lote_render(args):
     hooks = [h.strip() for h in str(args.hooks or "").split("|")]
     hooks = [h for h in hooks if h] if args.hooks else []
 
+    # A ficha da legenda é lida ANTES de anunciar os padrões, e a ordem é o
+    # ponto: é dela que sai a língua da fonte, e a língua é metade do que o
+    # anúncio tem de dizer. Anunciar primeiro e descobrir o idioma depois era
+    # anunciar um idioma que ninguém tinha lido.
+    srt, publicada, lingua_da_fonte, lingua_medida = _ficha_da_legenda(
+        out, url, args.subtitles)
+
     padroes, linhas = _padroes_do_lote(rules, stored,
                                        args.n if args.n is not None else len(janelas),
-                                       args.seconds)
+                                       args.seconds, lingua=lingua_da_fonte,
+                                       medida=lingua_medida)
     for linha in linhas:
         print(linha, file=sys.stderr)
     if hooks and len(hooks) < len(janelas):
@@ -3533,39 +3750,6 @@ def _lote_render(args):
     _diz_as_janelas(resultados, janelas)
 
     # 2. A legenda das janelas, assinada sozinha quando ela é a publicada.
-    srt, publicada = args.subtitles, False
-    ficha = os.path.join(out, "lote.legenda.json")
-    if not srt and os.path.isfile(ficha):
-        carregado = None
-        try:
-            with open(ficha, encoding="utf-8") as fh:
-                carregado = json.load(fh)
-        except (OSError, ValueError):
-            carregado = None
-        # O suspensório. O diretório já é por link, então esta ficha só deveria
-        # ser a deste link -- mas o diretório é um ESQUEMA, e foi um esquema de
-        # diretório único que queimou a legenda de um link nos clipes de outro.
-        # Então a ficha diz de quem ela é, e o render RECUSA a que não bater,
-        # nomeando os dois links. Uma ficha antiga, escrita antes de este campo
-        # existir, também não passa: ela não consegue provar de quem é, e
-        # queimar sem essa prova é a aposta que este bloco existe para não
-        # fazer -- um `warden lote prep` a reescreve em segundos.
-        if carregado is not None:
-            if carregado.get("source_id") != _marca_da_fonte(url):
-                die(f"the caption card in {ficha} is not this link's and will "
-                    f"not be burned: it was written for "
-                    f"{carregado.get('url') or '(a link it does not name)'} "
-                    f"and this command was asked for {url}. A caption from "
-                    f"another video looks finished and says things nobody "
-                    f"said. Run `warden lote prep {url}` to write this link's "
-                    f"own card, or delete that file.", code=2)
-            srt = carregado.get("srt")
-            publicada = bool(carregado.get("published"))
-    elif srt:
-        publicada = True          # passado à mão é uma decisão de quem passou
-    if srt and not os.path.isfile(srt):
-        srt = None
-
     queimar, porques = {}, {}
     if not padroes["captions"]:
         if srt:
@@ -3586,8 +3770,23 @@ def _lote_render(args):
         # `bool(caption_srt)`. Agora a janela é transcrita com o modelo bom e
         # essa transcrição é o que queima -- com o portão da linha suspeita
         # intacto.
-        queimar, porques = _legenda_da_janela(out, resultados, janelas,
-                                              getattr(args, "keep", None))
+        queimar, porques, ouvida, ouvida_medida = _legenda_da_janela(
+            out, resultados, janelas, getattr(args, "keep", None))
+        # A língua só apareceu AGORA, depois de o anúncio já ter saído dizendo
+        # que ela não tinha sido lida. Refazer a conta e dizer o que mudou é a
+        # única resposta honesta: calar deixaria o gancho ser escrito no escuro,
+        # e é no escuro que ele sai em português sobre uma legenda em inglês.
+        if ouvida and not padroes.get("language"):
+            padroes, linhas = _padroes_do_lote(
+                rules, stored,
+                args.n if args.n is not None else len(janelas),
+                args.seconds, lingua=ouvida, medida=ouvida_medida)
+            print(f"# the source had no published subtitle, so the language "
+                  f"came from transcribing the windows: it is "
+                  f"{str(padroes.get('language') or ouvida).upper()}. Write "
+                  f"the hooks in that language -- `cut` refuses a clip whose "
+                  f"hook and caption disagree.", file=sys.stderr)
+            print(linhas[3], file=sys.stderr)
     for janela, porque in porques.items():
         print(f"# {janela[0]:.1f}-{janela[1]:.1f}s: {porque}", file=sys.stderr)
 
@@ -3611,9 +3810,15 @@ def _lote_render(args):
                       "hook": hooks[i - 1] if i <= len(hooks) else None,
                       "subtitles": legenda,
                       "seconds": padroes["seconds"],
+                      # A língua desce até o `cut`, que a repassa ao portão de
+                      # divergência. Deixá-la de fora era o modelo adivinhando
+                      # o idioma da legenda e o `cut` não tendo contra o que
+                      # comparar o gancho.
+                      "language": padroes.get("language"),
                       "_": f"janela {de:.1f}-{ate:.1f}s da fonte"})
     plano = {"campaign": args.campaign, "sound": padroes["sound"],
              "seconds": padroes["seconds"], "crop": args.crop,
+             "language": padroes.get("language"),
              "clips": clips}
 
     # Mais de três: os três primeiros saem NESTE turno e o resto vai para o
@@ -4392,7 +4597,10 @@ def main(argv=None):
     p.add_argument("--windows", help="render: as janelas escolhidas na fonte, "
                                      "como 181-201.6,745.5-765")
     p.add_argument("--hooks", help="render: os ganchos, um por janela, "
-                                   "separados por | ")
+                                   "separados por |. NA LÍNGUA DA FONTE, que "
+                                   "o `prep` imprime como LANG: -- `cut` "
+                                   "recusa um clipe cujo gancho e legenda "
+                                   "estejam em línguas diferentes")
     p.add_argument("--subtitles", help="render: um SRT já lido e aprovado, em "
                                        "vez do que o `prep` escreveu")
     p.add_argument("--keep", action="append", metavar="LINE",

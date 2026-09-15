@@ -81,6 +81,20 @@ class _MediaFalso:
         self.segmentos_por_url = {}
         # O que o whisper ouve DENTRO de um arquivo de janela, no relógio dele.
         self.segmentos_de_janela = None
+        # A LÍNGUA da fonte. Um campo e não uma constante porque o padrão do
+        # hook passou a segui-la em 15/09/2026: um dublê que só sabe falar
+        # português não consegue mostrar o lote que voltava vazio quando a
+        # legenda descia em inglês (2 de 6 rodadas do mesmo link, medido).
+        self.lingua = "pt"
+        self.lingua_por_url = {}
+        # A língua foi MEDIDA, ou saiu de desempate por ordem de preferência?
+        # Um dublê que sempre diz "medi" não consegue mostrar o defeito de
+        # 15/09/2026: vídeo em inglês, legenda `pt-br` auto-traduzida
+        # escolhida, e a ferramenta afirmando que português era a língua do
+        # vídeo. `source_language` é a língua do VÍDEO quando ela é conhecida,
+        # que é como se descobre que a legenda escolhida é tradução.
+        self.lingua_medida = True
+        self.lingua_do_video = None
         self.chamadas = []
         self.cortes = []
         self._url_do_arquivo = {}
@@ -100,13 +114,18 @@ class _MediaFalso:
         if os.path.basename(path).startswith("janela-"):
             # O caminho de janela: outro arquivo, outro relógio e outro modelo.
             return {"source": "faster-whisper small (only this window)",
-                    "language": "pt",
+                    "language": self.lingua,
+                    "language_measured": self.lingua_medida,
                     "segments": [dict(s) for s in (self.segmentos_de_janela or [])]}
         url = self._url_do_arquivo.get(path)
         publicada = self.publicada_por_url.get(url, self.publicada)
-        fonte = "published subtitles (pt)" if publicada else "whisper base"
+        lingua = self.lingua_por_url.get(url, self.lingua)
+        fonte = (f"published subtitles ({lingua})" if publicada
+                 else "whisper base")
         segmentos = self.segmentos_por_url.get(url, SEGMENTOS)
-        return {"source": fonte, "language": "pt",
+        return {"source": fonte, "language": lingua,
+                "language_measured": self.lingua_medida,
+                "source_language": self.lingua_do_video,
                 "segments": [dict(s) for s in segmentos]}
 
     def to_srt(self, segments):
@@ -290,8 +309,11 @@ class LotePrepEUmaLeituraSo(_ComLoteFalso):
         self.assertIn("quantidade: 2 clipe(s)", bloco)
         self.assertIn("duração: 20s", bloco)
         self.assertIn("som: original", bloco)
-        self.assertIn("hook: pt", bloco)
-        self.assertIn("legenda: queimar em português", bloco)
+        # O idioma deixou de ser fixo em 15/09/2026: ele é o da fonte, e o
+        # dublê publica legenda em `pt`, então é `pt` que tem de aparecer --
+        # vindo da fonte, e não de uma constante. Ver `LinguaDoHook` abaixo.
+        self.assertIn("hook e legenda: pt (padrão: a língua da fonte", bloco)
+        self.assertIn("legenda: queimar em pt", bloco)
         # e diz explicitamente para NÃO pedir confirmação
         self.assertIn("Do not ask them to confirm", saida)
 
@@ -888,6 +910,249 @@ class UmLinkSoltoNaoPrecisaDeCampanha(_ComLoteFalso):
                             if c[0] == "archive_trusted")
                 self.assertEqual(pull[1], URL)
                 self.assertEqual(pull[2], "text")
+
+
+class OIdiomaSegueAFonte(_ComLoteFalso):
+    """A decisão do dono, 15/09/2026: "o idioma da legenda tem que ser o mesmo
+    que a linguagem do vídeo disponibilizado".
+
+    O padrão era `pt` FIXO, e o preço não era um clipe feio: era um lote vazio.
+    `cut` RECUSA queimar quando o hook e a legenda estão em línguas diferentes
+    -- regra certa, ela existe porque um hook em português sobre uma legenda em
+    inglês foi entregue uma vez. Com o padrão fixo e uma fonte em inglês, o
+    agente escrevia o gancho em português, a legenda descia em inglês, e a
+    recusa pegava TODOS os clipes. Medido: o mesmo link trouxe legenda `en` em
+    2 de 6 rodadas.
+    """
+
+    def test_o_padrao_deixou_de_ser_um_idioma_fixo(self):
+        import warden_prefs as P
+        self.assertEqual(P.DEFAULTS["hook"], P.HOOK_DA_FONTE)
+        self.assertNotIn(P.DEFAULTS["hook"], ("pt", "en", "es"))
+        # e continua sendo uma resposta possível da pergunta, senão
+        # `prefs set --key hook --value source` seria recusado
+        pergunta = next(q for q in P.QUESTIONS if q[0] == "hook")
+        self.assertIn(P.HOOK_DA_FONTE, pergunta[2])
+
+    def test_fonte_em_ingles_da_hook_e_legenda_em_ingles(self):
+        self.media.lingua = "en"
+        _code, saida, _erro = self._roda(["lote", "prep", URL])
+        self.assertIn("LANG:en", saida)
+        self.assertIn("hook e legenda: en", saida)
+        self.assertIn("legenda: queimar em en", saida)
+        self.assertIn("WRITE THE HOOKS IN EN", saida)
+        # e o exemplo do próximo comando já vem na língua certa
+        self.assertIn("<gancho em en>", saida)
+
+    def test_fonte_em_portugues_da_hook_e_legenda_em_portugues(self):
+        self.media.lingua = "pt"
+        _code, saida, _erro = self._roda(["lote", "prep", URL])
+        self.assertIn("LANG:pt", saida)
+        self.assertIn("hook e legenda: pt", saida)
+        self.assertIn("WRITE THE HOOKS IN PT", saida)
+
+    def test_a_tag_regional_vira_a_raiz(self):
+        """`en-US` contra `en` seria uma divergência inventada: o portão do
+        `cut` compara os dois primeiros caracteres."""
+        self.media.lingua = "pt-BR"
+        _code, saida, _erro = self._roda(["lote", "prep", URL])
+        self.assertIn("hook e legenda: pt (", saida)
+
+    def test_a_preferencia_da_pessoa_vence_a_fonte(self):
+        """"hook em português num vídeo em inglês" é escolha de quem pediu."""
+        self.media.lingua = "en"
+        self._roda(["prefs", "set", "--key", "hook", "--value", "pt"])
+        _code, saida, _erro = self._roda(["lote", "prep", URL])
+        self.assertIn("hook e legenda: pt (sua preferência guardada", saida)
+        self.assertIn("vence a língua da fonte", saida)
+        # o mesmo com a fonte em português e a pessoa pedindo inglês
+        self._roda(["prefs", "set", "--key", "hook", "--value", "en"])
+        self.media.lingua = "pt"
+        _code, saida, _erro = self._roda(["lote", "prep", URL])
+        self.assertIn("hook e legenda: en (sua preferência guardada", saida)
+
+    def test_sem_lingua_lida_nada_e_chutado(self):
+        """Chutar `pt` aqui é exatamente o que custava o lote."""
+        tag, linha = warden.lingua_do_hook({}, None)
+        self.assertIsNone(tag)
+        self.assertIn("ainda não foi lida", linha)
+        self.assertNotIn("pt", linha.split("--")[0])
+
+    def test_none_continua_desligando_o_hook(self):
+        tag, linha = warden.lingua_do_hook({"hook": "none"}, "en")
+        self.assertEqual(tag, "none")
+        self.assertIn("nenhum", linha)
+
+    def test_a_lingua_desce_ate_o_cut(self):
+        """Sem isto o `cut` não tem contra o que comparar o gancho."""
+        self.media.lingua = "en"
+        self._roda(["lote", "prep", URL])
+        _code, _saida, erro = self._roda(
+            ["lote", "render", URL, "--windows", "10-14", "--hooks", "he bet it all"])
+        self.assertEqual(self.media.cortes[0]["language"], "en")
+
+    def test_o_render_repete_a_lingua_da_ficha_do_prep(self):
+        """O `render` roda num processo novo: sem a ficha ele readivinharia."""
+        self.media.lingua = "es"
+        self._roda(["lote", "prep", URL])
+        ficha = os.path.join(warden._dir_do_lote(URL), "lote.legenda.json")
+        with open(ficha, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["language"], "es")
+        _code, _saida, erro = self._roda(
+            ["lote", "render", URL, "--windows", "10-14", "--hooks", "x"])
+        self.assertIn("hook e legenda: es", erro)
+
+    def test_a_transcricao_do_prep_ja_entrega_a_lingua(self):
+        """Mesmo sem legenda PUBLICADA, o `prep` transcreve a fonte e a língua
+        sai dali -- então o `render` não precisa readivinhar nada."""
+        self.media.publicada = False
+        self.media.lingua = "en"
+        _code, saida, _erro = self._roda(["lote", "prep", URL])
+        self.assertIn("LANG:en", saida)
+        ficha = os.path.join(warden._dir_do_lote(URL), "lote.legenda.json")
+        with open(ficha, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["language"], "en")
+
+    def test_sem_ficha_nenhuma_a_lingua_vem_da_transcricao_da_janela(self):
+        """`render` sem `prep` antes: a língua só aparece depois de transcrever
+        a janela, e o anúncio é REFEITO em voz alta em vez de deixar o gancho
+        ser escrito no escuro.
+
+        O anúncio de antes disse, corretamente, que a língua não tinha sido
+        lida. Deixá-lo de pé depois de ela aparecer seria a ferramenta calando
+        sobre a única coisa que o modelo precisa saber para escrever o gancho.
+        """
+        self.media.publicada = False
+        self.media.lingua = "en"
+        self.media.segmentos_de_janela = [
+            {"start": 0.0, "end": 3.0, "text": "he bet everything on that game"}]
+        _code, _saida, erro = self._roda(
+            ["lote", "render", URL, "--windows", "10-14", "--hooks", "x"])
+        # o primeiro anúncio é honesto sobre não saber
+        self.assertIn("ainda não foi lida", erro)
+        # e o segundo diz o que mudou
+        self.assertIn("the language came from transcribing the windows", erro)
+        self.assertIn("it is EN", erro)
+        self.assertIn("hook e legenda: en", erro)
+        self.assertEqual(self.media.cortes[0]["language"], "en")
+
+
+class ALinguaSoEAFIRMADAQUANDOFOIMEDIDA(_ComLoteFalso):
+    """A instrução não muda; a justificativa sim.
+
+    Medido em 15/09/2026, na imagem construída: o vídeo era em INGLÊS, a
+    legenda escolhida foi a `pt-br` auto-traduzida, e o `prep` imprimiu
+    "The caption burns in pt because that is the language of the video". A
+    escolha errada foi consertada no `warden_media`; a FRASE continuava
+    estruturalmente capaz de mentir, porque ela era afirmada
+    incondicionalmente -- ela nunca perguntava se alguém tinha lido a língua.
+
+    É a regra dura do projeto aplicada a uma frase em vez de a um número: o que
+    não foi medido não é afirmado. Escrever o gancho na língua da legenda
+    continua sendo a instrução nos dois casos, porque é ela que evita a recusa
+    do `cut`.
+    """
+
+    def _prep(self):
+        _code, saida, _erro = self._roda(["lote", "prep", URL])
+        return saida
+
+    def test_medida_pode_dizer_que_e_a_lingua_do_video(self):
+        self.media.lingua = "en"
+        self.media.lingua_medida = True
+        saida = self._prep()
+        self.assertIn("that is the language of the video", saida)
+        self.assertIn("lida do material", saida)
+        self.assertIn("WRITE THE HOOKS IN EN", saida)
+
+    def test_nao_medida_nao_afirma_nada_sobre_o_video(self):
+        """O caso exato de 15/09: vídeo em inglês, legenda pt-br traduzida."""
+        self.media.lingua = "pt-br"
+        self.media.lingua_medida = False
+        self.media.lingua_do_video = "en"
+        saida = self._prep()
+        # as duas afirmações que podiam ser falsas, ausentes
+        self.assertNotIn("that is the language of the video", saida)
+        self.assertNotIn("lida do material", saida)
+        # e a ferramenta diz, em voz alta, o que NÃO apurou
+        self.assertIn("NOT measured", saida)
+        self.assertIn("NÃO foi medida", saida)
+        self.assertIn("do NOT say this is the video's language", saida)
+        # a INSTRUÇÃO continua a mesma, porque é ela que evita a recusa do cut
+        self.assertIn("WRITE THE HOOKS IN PT", saida)
+        self.assertIn("`cut` REFUSES", saida)
+        # e, sabendo a língua do vídeo, nomeia a suspeita em vez de calar
+        self.assertIn("SOURCE_LANG:en", saida)
+        self.assertIn("auto-translation", saida)
+
+    def test_a_frase_nao_pode_voltar_a_ser_incondicional(self):
+        """O guarda: a mesma fonte, os dois valores de `language_measured`, e
+        as saídas TÊM de divergir na justificativa e coincidir na instrução.
+
+        Se alguém reescrever a linha afirmando sempre, este teste cai -- que é
+        a única forma de a correção sobreviver a quem não leu o comentário.
+        """
+        self.media.lingua = "pt"
+        self.media.lingua_medida = True
+        com = self._prep()
+        self.media.lingua_medida = False
+        sem = self._prep()
+        self.assertNotEqual(com, sem)
+        self.assertIn("that is the language of the video", com)
+        self.assertNotIn("that is the language of the video", sem)
+        for saida in (com, sem):
+            self.assertIn("WRITE THE HOOKS IN PT", saida)
+
+    def test_a_ficha_guarda_se_foi_medida_e_o_render_repete_igual(self):
+        """O `render` roda num processo novo. Uma ficha que só carrega a tag
+        faz ele afirmar o que o `prep` teve o cuidado de não afirmar."""
+        self.media.lingua = "pt-br"
+        self.media.lingua_medida = False
+        self.media.lingua_do_video = "en"
+        self._prep()
+        ficha = os.path.join(warden._dir_do_lote(URL), "lote.legenda.json")
+        with open(ficha, encoding="utf-8") as fh:
+            dados = json.load(fh)
+        self.assertFalse(dados["language_measured"])
+        self.assertEqual(dados["source_language"], "en")
+        _code, _saida, erro = self._roda(
+            ["lote", "render", URL, "--windows", "10-14", "--hooks", "x"])
+        self.assertIn("NÃO foi medida", erro)
+        self.assertNotIn("lida do material", erro)
+        # e o hook continua sendo pedido na língua da legenda
+        self.assertEqual(self.media.cortes[0]["language"], "pt")
+
+    def test_ficha_antiga_sem_o_campo_conta_como_nao_medida(self):
+        """Não saber se foi medido não é a mesma coisa que ter medido."""
+        self.media.lingua = "pt"
+        self._prep()
+        ficha = os.path.join(warden._dir_do_lote(URL), "lote.legenda.json")
+        with open(ficha, encoding="utf-8") as fh:
+            dados = json.load(fh)
+        dados.pop("language_measured")
+        with open(ficha, "w", encoding="utf-8") as fh:
+            json.dump(dados, fh)
+        _code, _saida, erro = self._roda(
+            ["lote", "render", URL, "--windows", "10-14", "--hooks", "x"])
+        self.assertNotIn("lida do material", erro)
+        self.assertIn("NÃO foi medida", erro)
+
+    def test_lingua_do_hook_trata_none_como_nao_medida(self):
+        _tag, com = warden.lingua_do_hook({}, "en", medida=True)
+        _tag, sem = warden.lingua_do_hook({}, "en", medida=None)
+        self.assertIn("lida do material", com)
+        self.assertNotIn("lida do material", sem)
+        self.assertIn("NÃO foi medida", sem)
+
+    def test_a_preferencia_pinada_nao_fala_da_lingua_do_video(self):
+        """Quando a pessoa pina um idioma, a fonte não entra na justificativa
+        -- então não há nada a afirmar nem a desmentir sobre o vídeo."""
+        for medida in (True, False):
+            with self.subTest(medida=medida):
+                _tag, linha = warden.lingua_do_hook({"hook": "pt"}, "en",
+                                                    medida=medida)
+                self.assertIn("sua preferência guardada", linha)
+                self.assertNotIn("lida do material", linha)
 
 
 class PrefsNaoTemMaisOQuePerguntarAntesDeUmClipe(_ComLoteFalso):

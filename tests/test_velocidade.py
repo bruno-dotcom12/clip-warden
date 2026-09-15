@@ -781,19 +781,30 @@ class UmQuatroCentoEVinteENoveNaoDerrubaOArchive(unittest.TestCase):
         self.assertIsNone(caminho)
         self.assertIn("429", porque)
 
-    def test_a_requisicao_NAO_e_repetida_depois_do_429(self):
-        """Repetir é o que transforma um "devagar" em bloqueio de verdade."""
+    def test_a_requisicao_de_legenda_NAO_e_repetida_depois_do_429(self):
+        """Repetir é o que transforma um "devagar" em bloqueio de verdade.
+
+        Conta por RÓTULO, não o total. A consulta de metadados (que descobre a
+        língua do vídeo) é outra requisição, com outro propósito, e somá-la aqui
+        faria este teste falhar por uma razão que não é a dele -- foi o que
+        aconteceu quando a regra da língua entrou. O que não pode repetir é a
+        corrida de legenda.
+        """
         self.chamadas = []
 
         def _run(args, timeout, label):
-            self.chamadas.append(args)
+            self.chamadas.append(label)
             erro = M.FonteBloqueada("429")
             erro.apenas_429 = True
             raise erro
         _troca(self, "run", _run)
         M._pull_subs(self.URL, self.dir, self.stem, self.template,
                      ["--no-playlist"])
-        self.assertEqual(len(self.chamadas), 1)
+        legendas = [l for l in self.chamadas if "subtitle" in l]
+        self.assertEqual(len(legendas), 1, self.chamadas)
+        # E a consulta de metadados também não pode virar rajada: uma só.
+        metadados = [l for l in self.chamadas if "metadata" in l]
+        self.assertLessEqual(len(metadados), 1, self.chamadas)
 
     def test_um_bot_check_de_verdade_continua_subindo_inteiro(self):
         """O conserto do 429 não pode ter aberto a porta que `FonteBloqueada`
@@ -921,6 +932,357 @@ class OBLOQUEIOMudaComOENDERECO(unittest.TestCase):
 
 
 # ------------------------------------------------------------------ drive
+
+class ALegendaSegueALinguaDoVIDEO(unittest.TestCase):
+    """Decisão do dono, 15/09/2026: a legenda tem de estar na língua do vídeo.
+
+    NÃO é "preferir português" -- essa era a regra antiga, e ela estava errada
+    como padrão. Um vídeo em inglês quer legenda em inglês; em espanhol,
+    espanhol. A legenda na língua da fonte é a que a fonte publicou; qualquer
+    outra é tradução de máquina, normalmente por cima de transcrição de máquina,
+    que é erro empilhado sobre erro.
+
+    E o defeito que isto conserta é de corrida, medido em 15/09/2026: seis
+    execuções de `lote prep` no MESMO link, cada uma num WARDEN_DIR limpo, deram
+    `pt-br` em quatro e `en` em duas. Não era sorteio -- `sorted()` põe
+    `.en.srt` antes de `.pt-BR.srt`, e o que variava era QUAIS variantes
+    chegavam antes do 429. A escolha seguia a ordem de CHEGADA.
+
+    Custava o clipe inteiro: `cut` recusa queimar hook e legenda em línguas
+    diferentes (regra certa, não se toca), então a rodada "errada" entregava
+    zero clipe. Duas em seis.
+    """
+
+    def setUp(self):
+        self.dir = _temp(self)
+
+    def _legendas(self, *tags):
+        """Escreve as variantes e devolve os caminhos em ordem embaralhada."""
+        caminhos = []
+        for tag in tags:
+            nome = f"source-abc123.{tag}.srt" if tag else "source-abc123.srt"
+            caminho = os.path.join(self.dir, nome)
+            with open(caminho, "w") as fh:
+                fh.write("1\n00:00:00,000 --> 00:00:01,000\noi\n\n")
+            caminhos.append(caminho)
+        return caminhos
+
+    def test_video_em_ingles_com_traducao_pt_escolhe_INGLES(self):
+        """O caso exato da medição: o vídeo é em inglês e o YouTube oferece
+        pt-BR traduzido automaticamente. A legenda em inglês é a original; a
+        portuguesa é ASR traduzido, duas camadas de erro empilhadas."""
+        caminhos = self._legendas("en", "pt-BR")
+        escolhida = M._prefere_idioma(caminhos, prefer=["en"])[0]
+        self.assertEqual(M._tag_do_nome(escolhida), "en")
+
+    def test_video_em_portugues_escolhe_PORTUGUES(self):
+        caminhos = self._legendas("en", "pt-BR")
+        escolhida = M._prefere_idioma(caminhos, prefer=["pt"])[0]
+        self.assertEqual(M._tag_do_nome(escolhida), "pt-br")
+
+    def test_a_variante_regional_casa_pela_RAIZ(self):
+        """`pt` aceita `pt-BR`, `en` aceita `en-US`. Sem isso um vídeo marcado
+        como `en` ignoraria a legenda `en-US` que é dele mesmo."""
+        self.assertEqual(
+            M._tag_do_nome(M._prefere_idioma(
+                self._legendas("pt-BR", "en-US"), prefer=["en"])[0]), "en-us")
+        self.assertEqual(
+            M._tag_do_nome(M._prefere_idioma(
+                self._legendas("es-419", "pt-BR"), prefer=["es"])[0]), "es-419")
+
+    def test_a_escolha_e_A_MESMA_com_a_ordem_de_chegada_EMBARALHADA(self):
+        """O teste que trava a corrida. O 429 fazia as variantes chegarem em
+        ordens diferentes a cada rodada, e a escolha seguia a chegada. Com a
+        preferência decidindo DEPOIS de saber o que chegou, as 24 permutações
+        têm de dar o mesmo arquivo."""
+        import itertools
+        caminhos = self._legendas("en", "pt-BR", "pt", "es")
+        vistos = set()
+        for ordem in itertools.permutations(caminhos):
+            vistos.add(M._prefere_idioma(list(ordem), prefer=["en"])[0])
+        self.assertEqual(len(vistos), 1, f"escolha instável: {vistos}")
+        self.assertEqual(M._tag_do_nome(vistos.pop()), "en")
+
+    def test_sem_a_lingua_do_video_a_escolha_ainda_e_ESTAVEL(self):
+        """Mesmo no plano B -- língua da fonte desconhecida -- duas execuções
+        iguais têm de dar o mesmo resultado. Instabilidade é o defeito; a ordem
+        escolhida é secundária."""
+        import itertools
+        caminhos = self._legendas("en", "pt-BR")
+        vistos = {M._prefere_idioma(list(o))[0]
+                  for o in itertools.permutations(caminhos)}
+        self.assertEqual(len(vistos), 1, f"escolha instável: {vistos}")
+
+    def test_uma_lingua_que_ninguem_conhece_entra_se_for_a_unica(self):
+        caminhos = self._legendas("fr")
+        self.assertEqual(
+            M._tag_do_nome(M._prefere_idioma(caminhos, prefer=["fr"])[0]), "fr")
+
+    def test_a_tag_SAI_DO_NOME_do_arquivo(self):
+        """O segundo bug da medição: o arquivo chamava-se `source-....en.srt`,
+        com a tag no nome, e a saída dizia "no language tag" -- perdendo a única
+        informação que deixaria o modelo perceber o idioma errado."""
+        self.assertEqual(M._tag_do_nome("source-abc123.en.srt"), "en")
+        self.assertEqual(M._tag_do_nome("source-abc123.pt-BR.srt"), "pt-br")
+        self.assertEqual(M._tag_do_nome("/x/y/source-abc.es-419.vtt"), "es-419")
+        # E o que NÃO é tag continua não sendo.
+        self.assertIsNone(M._tag_do_nome("source-abc123.srt"))
+        self.assertIsNone(M._tag_do_nome("source-abc123.orig.srt"))
+        self.assertIsNone(M._tag_do_nome("janela-abc-122.0.mp4"))
+
+    def test_a_legenda_COMO_fonte_nao_perde_a_tag(self):
+        """`--text-first` devolve o `.srt` COMO fonte, então `transcribe` abre
+        um arquivo que JÁ é a legenda. Era aí que "no language tag" nascia."""
+        caminho = self._legendas("en")[0]
+        achado, lang = M._subtitle_beside(caminho)
+        self.assertEqual(achado, caminho)
+        self.assertEqual(lang, "en")
+
+    def test_a_lingua_do_video_e_anotada_e_relida_depois(self):
+        """Quem escolhe legenda depois -- no `transcribe` -- não tem o link para
+        perguntar de novo. Sem a anotação ele voltaria a decidir por ordem fixa
+        em vez de pela língua da fonte."""
+        self._legendas("en", "pt-BR")
+        fonte = os.path.join(self.dir, "source-abc123.mp4")
+        with open(fonte, "wb") as fh:
+            fh.write(b"v")
+        M._marca_lingua(self.dir, "source-abc123", "en")
+        self.assertEqual(M._lingua_marcada(fonte), "en")
+        _achado, lang = M._subtitle_beside(fonte)
+        self.assertEqual(lang, "en", "ignorou a língua anotada do vídeo")
+
+    def test_a_corrida_MEDIDA_nao_reproduz_mais_pelo_pull_subs(self):
+        """A reprodução da medição, pelo caminho de verdade e não pela função
+        de ordenar: seis rodadas do `_pull_subs` no mesmo link, variando QUAIS
+        variantes conseguem baixar antes do 429 -- que foi o que variava na
+        máquina. O vídeo é em inglês; a resposta tem de ser `en` nas seis, e
+        `pt-br` (tradução automática) nunca pode ganhar."""
+        _troca(self, "_host_is_public", lambda host: True)
+        _env(self, "WARDEN_SUB_LANGS", None)
+        url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        # O vídeo é em inglês, e é isso que a extração de metadados responde.
+        campos = {"title": "T", "channel_id": "UC", "uploader_id": "@c",
+                  "channel_url": "u", "uploader_url": "u", "language": "en"}
+        linha = "\t".join(campos[c] for c in M._FACTS_CAMPOS)
+
+        # As seis rodadas da medição: o 429 corta em pontos diferentes, então
+        # cada rodada deixa em disco um conjunto diferente de variantes.
+        rodadas = (["en"], ["pt-BR"], ["en", "pt-BR"], ["pt-BR", "en"],
+                   ["pt-BR", "pt", "en"], ["en", "pt"])
+        escolhas = []
+        for chegaram in rodadas:
+            M._FACTS.clear()
+            pasta = _temp(self)
+            stem = "source-abc123"
+
+            def _run(args, timeout, label, _c=chegaram, _p=pasta):
+                if "metadata" in label:
+                    return linha + "\n"
+                for tag in _c:
+                    with open(os.path.join(_p, f"{stem}.{tag}.srt"), "w") as fh:
+                        fh.write("1\n00:00:00,000 --> 00:00:01,000\nhi\n\n")
+                return ""
+            _troca(self, "run", _run)
+            caminho, _porque = M._pull_subs(
+                url, pasta, stem, os.path.join(pasta, stem + ".%(ext)s"),
+                ["--no-playlist"])
+            escolhas.append(M._tag_do_nome(caminho))
+
+        # Onde o inglês chegou, o inglês venceu -- sem exceção.
+        for chegaram, escolhida in zip(rodadas, escolhas):
+            if "en" in chegaram:
+                self.assertEqual(escolhida, "en", f"chegaram={chegaram}")
+            else:
+                # Só a tradução chegou: ela serve, e a linha de aviso diz que é
+                # tradução. Melhor uma legenda marcada do que transcrever.
+                self.assertEqual(escolhida, "pt-br", f"chegaram={chegaram}")
+
+    def test_O_CAMINHO_REAL_com_vtt_nao_convertido_escolhe_EN(self):
+        """O teste que teria pego o defeito do Rick Astley, e ele olha o DISCO.
+
+        Medido em 15/09/2026 na imagem construída: a pasta de um `lote prep`
+        real tinha `source-....en.vtt`, `source-....pt-BR.vtt` e um `.webm` --
+        o áudio, que não devia ter descido. `--convert-subs srt` converte só no
+        FIM da execução do yt-dlp, então um 429 no meio deixa `.vtt` cru; e
+        `_achadas()` só olhava `.srt`, via a pasta vazia, dizia "este vídeo não
+        publica legenda" e ia transcrever o áudio com duas legendas ao lado.
+
+        Depois `_subtitle_beside` achava os `.vtt` sem `.lingua` nenhum em disco
+        e caía em `SUBTITLE_LANGS`, que começa em `pt-br`. Vídeo em inglês,
+        legenda auto-traduzida, e a frase "that is the language of the video".
+
+        Este teste roda o caminho de verdade, dubla só a rede, e depois LÊ A
+        PASTA -- porque um teste que confia no retorno da função não teria visto
+        nada disto.
+        """
+        _troca(self, "_host_is_public", lambda host: True)
+        _env(self, "WARDEN_SUB_LANGS", None)
+        M._FACTS.clear()
+        self.addCleanup(M._FACTS.clear)
+        url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        pasta = _temp(self)
+        stem = "source-0424974c6853"
+        campos = {"title": "Never Gonna Give You Up", "channel_id": "UC",
+                  "uploader_id": "@rick", "channel_url": "u",
+                  "uploader_url": "u", "language": "en"}
+        linha = "\t".join(campos[c] for c in M._FACTS_CAMPOS)
+
+        def _run(args, timeout, label):
+            if "metadata" in label:
+                return linha + "\n"
+            # O yt-dlp escreve VTT e o 429 impede a conversão para SRT.
+            for tag in ("en", "pt-BR"):
+                with open(os.path.join(pasta, f"{stem}.{tag}.vtt"), "w") as fh:
+                    fh.write("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nhi\n\n")
+            erro = M.FonteBloqueada("429")
+            erro.apenas_429 = True
+            raise erro
+        _troca(self, "run", _run)
+
+        caminho, porque = M._pull_subs(
+            url, pasta, stem, os.path.join(pasta, stem + ".%(ext)s"),
+            ["--no-playlist"])
+
+        # 1. A legenda foi ENCONTRADA, apesar de ser .vtt e do 429.
+        self.assertIsNotNone(caminho, f"não achou a legenda: {porque}")
+        # 2. E é a INGLESA, que é a língua do vídeo.
+        self.assertEqual(M._tag_do_nome(caminho), "en")
+        # 3. O sidecar existe EM DISCO. Olhar a pasta é o ponto do teste.
+        em_disco = sorted(os.listdir(pasta))
+        self.assertIn(stem + ".lingua", em_disco, em_disco)
+        self.assertEqual(M._lingua_marcada(os.path.join(pasta, stem + ".webm")),
+                         "en")
+
+    def test_o_sidecar_e_escrito_MESMO_quando_a_legenda_nao_vem(self):
+        """A língua do vídeo é um fato sobre o LINK, não sobre o download ter
+        dado certo. Escrevê-la só no caminho de sucesso era o que deixava
+        `_subtitle_beside` escolher no escuro justamente quando mais importava.
+        """
+        _troca(self, "_host_is_public", lambda host: True)
+        _env(self, "WARDEN_SUB_LANGS", None)
+        M._FACTS.clear()
+        self.addCleanup(M._FACTS.clear)
+        pasta = _temp(self)
+        stem = "source-abc"
+        campos = {"title": "T", "channel_id": "UC", "uploader_id": "@c",
+                  "channel_url": "u", "uploader_url": "u", "language": "en"}
+        linha = "\t".join(campos[c] for c in M._FACTS_CAMPOS)
+
+        def _run(args, timeout, label):
+            if "metadata" in label:
+                return linha + "\n"
+            return ""          # nenhuma legenda escrita
+        _troca(self, "run", _run)
+
+        caminho, porque = M._pull_subs(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ", pasta, stem,
+            os.path.join(pasta, stem + ".%(ext)s"), ["--no-playlist"])
+        self.assertIsNone(caminho)
+        self.assertIn("publishes no subtitle", porque)
+        self.assertIn(stem + ".lingua", os.listdir(pasta))
+
+    def test_sem_lingua_anotada_a_escolha_e_ANUNCIADA_como_desempate(self):
+        """Cinto e suspensório: sidecar é arquivo, e arquivo some. Sem ele a
+        escolha continua acontecendo -- parar deixaria o dono sem clipe --, mas
+        ela NÃO passa por medição."""
+        import io
+        from contextlib import redirect_stderr
+        self._legendas("en", "pt-BR")
+        fonte = os.path.join(self.dir, "source-abc123.mp4")
+        with open(fonte, "wb") as fh:
+            fh.write(b"v")
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            _achado, _lang = M._subtitle_beside(fonte)
+        aviso = " ".join(buf.getvalue().split())
+        self.assertIn("did not read what language", aviso)
+        self.assertIn("NOT by measurement", aviso)
+        self.assertIn("Do not tell anyone this is the video's language", aviso)
+
+    def test_com_a_lingua_anotada_NAO_ha_aviso_de_desempate(self):
+        """A outra metade: quando a língua foi lida, a frase pode ser afirmada
+        e o aviso não pode poluir a saída."""
+        import io
+        from contextlib import redirect_stderr
+        self._legendas("en", "pt-BR")
+        fonte = os.path.join(self.dir, "source-abc123.mp4")
+        with open(fonte, "wb") as fh:
+            fh.write(b"v")
+        M._marca_lingua(self.dir, "source-abc123", "en")
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            _achado, lang = M._subtitle_beside(fonte)
+        self.assertEqual(lang, "en")
+        self.assertEqual(buf.getvalue().strip(), "")
+
+    def test_o_lang_explicito_do_dono_ainda_ganha_da_anotacao(self):
+        """A anotação é um padrão melhor, não uma ordem. `--lang` é o dono
+        falando, e ele decide."""
+        self._legendas("en", "pt-BR")
+        fonte = os.path.join(self.dir, "source-abc123.mp4")
+        with open(fonte, "wb") as fh:
+            fh.write(b"v")
+        M._marca_lingua(self.dir, "source-abc123", "en")
+        _achado, lang = M._subtitle_beside(fonte, prefer=["pt-BR"])
+        self.assertEqual(lang, "pt-br")
+
+
+class ASaidaNomeiaALinguaEAProcedencia(unittest.TestCase):
+    """O modelo precisa saber em que língua escrever o hook ANTES de renderizar.
+
+    Sem esta linha ele só descobria a mistura ao bater no `cut`, depois de todo
+    o download, com o lote perdido. A linha informa; quem decide é o modelo, e
+    depois dele o `cut` -- cuja recusa continua certa e intocada.
+    """
+
+    def setUp(self):
+        self.dir = _temp(self)
+
+    def _diz(self, tags, lingua_video):
+        import io
+        from contextlib import redirect_stderr
+        caminhos = []
+        for t in tags:
+            nome = f"source-abc.{t}.srt" if t else "source-abc.srt"
+            caminhos.append(os.path.join(self.dir, nome))
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            M._conta_a_legenda(caminhos, lingua_video)
+        return " ".join(buf.getvalue().split())
+
+    def test_quando_bate_com_o_video_diz_que_e_a_original(self):
+        linha = self._diz(["en"], "en")
+        self.assertIn("caption language: en", linha)
+        self.assertIn("the video's own language", linha)
+
+    def test_quando_NAO_bate_diz_que_e_TRADUCAO_e_por_que_isso_importa(self):
+        linha = self._diz(["pt-BR"], "en")
+        self.assertIn("TRANSLATION", linha)
+        self.assertIn("two layers of error", linha)
+        self.assertIn("'en'", linha)
+
+    def test_a_linha_manda_escrever_o_hook_na_mesma_lingua(self):
+        linha = self._diz(["en", "pt-BR"], "en")
+        self.assertIn("Write the hook in en", linha)
+        self.assertIn("refuses to burn a hook and a caption in different", linha)
+
+    def test_a_linha_nomeia_as_outras_que_estao_em_disco(self):
+        linha = self._diz(["en", "pt-BR"], "en")
+        self.assertIn("Also on disk: pt-br", linha)
+
+    def test_sem_tag_nenhuma_ela_diz_que_o_idioma_e_desconhecido(self):
+        linha = self._diz([None], "en")
+        self.assertIn("no language tag", linha)
+        self.assertIn("unknown", linha)
+
+    def test_ela_NAO_fala_mais_em_preferir_portugues(self):
+        """A regra antiga saiu do código; a mensagem não pode continuar
+        ensinando ela ao modelo."""
+        for linha in (self._diz(["en"], "en"), self._diz(["pt-BR"], "en"),
+                      self._diz(["es"], "es")):
+            self.assertNotIn("default hook language is pt", linha)
+            self.assertNotIn("not Portuguese", linha)
+
 
 class ADrivePastaBaixaSoOQueVaiSerUsado(unittest.TestCase):
     """671 MB em 87s para usar um arquivo.

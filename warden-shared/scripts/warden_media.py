@@ -1299,8 +1299,48 @@ SUB_LANGS = os.environ.get("WARDEN_SUB_LANGS") or SUB_LANGS_PADRAO
 SUB_LANGS_MAX = 3
 
 
-def _sub_langs_para(url):
+def lingua_do_video(url):
+    """A língua em que o vídeo FOI FEITO, lida do link, ou None.
+
+    É a pergunta que decide tudo neste caminho desde a regra do dono de
+    15/09/2026: **a legenda tem de estar na língua do vídeo**. Não é "preferir
+    português" -- um vídeo em inglês quer legenda em inglês, um em espanhol quer
+    em espanhol. A legenda na língua da fonte é a que a fonte publicou; qualquer
+    outra é tradução de máquina, em geral por cima de transcrição de máquina.
+
+    Sai de `_facts`, que é UMA extração cacheada por link e traz título, canal e
+    língua na mesma resposta. Falhar aqui devolve None, nunca exceção.
+    """
+    try:
+        lingua = (_facts(url) or {}).get("language") or ""
+    except Exception:
+        # Inclusive `FonteBloqueada`. Se o endereço está recusado, quem vai
+        # dizer isso é a corrida da legenda, com a mensagem honesta inteira --
+        # não uma consulta de idioma vazando por baixo dela.
+        return None
+    lingua = lingua.strip()
+    if not lingua or lingua.upper() == "NA":
+        return None
+    # O campo vem do lado de lá: `pt`, `en-US`, e nada garante que seja só isso.
+    # Ele entra numa linha de comando, então passa por um filtro de formato de
+    # tag de idioma antes -- não por confiança, por formato. E sem `.*`: um
+    # curinga vindo do outro lado seria o 429 medido, entregue de graça.
+    if not re.fullmatch(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8}){0,2}", lingua):
+        return None
+    return lingua
+
+
+_NAO_DITO = object()
+
+
+def _sub_langs_para(url, lingua=_NAO_DITO):
     """As línguas a pedir para ESTE link, incluindo a original do vídeo.
+
+    `lingua` já detectada pode ser passada, e quem chama as duas coisas DEVE
+    passar. Medido em 15/09/2026: `_facts` não memoriza falha (de propósito --
+    uma recusa é estado da rede, não fato sobre o link), então chamar
+    `lingua_do_video` e depois `_sub_langs_para` disparava DUAS extrações contra
+    um endereço que acabara de recusar a primeira. A rajada nasce assim.
 
     `WARDEN_SUB_LANGS` sobrescreve tudo e nem pergunta: quem definiu a variável
     decidiu, e uma detecção que passasse por cima dela seria o agente discutindo
@@ -1324,21 +1364,9 @@ def _sub_langs_para(url):
         # O dono decidiu, inclusive sobre o teto: se ele quer seis línguas, são
         # seis. O 429 é um risco que ele escolheu, não um que o agente impôs.
         return os.environ["WARDEN_SUB_LANGS"]
-    try:
-        lingua = (_facts(url) or {}).get("language") or ""
-    except Exception:
-        # Inclusive `FonteBloqueada`. Se o endereço está recusado, quem vai
-        # dizer isso é a corrida da legenda, com a mensagem honesta inteira --
-        # não uma consulta de idioma vazando por baixo dela.
-        lingua = ""
-    lingua = lingua.strip()
-    if not lingua or lingua.upper() == "NA":
-        return SUB_LANGS
-    # O campo vem do lado de lá: `pt`, `en-US`, e nada garante que seja só isso.
-    # Ele entra numa linha de comando, então passa por um filtro de formato de
-    # tag de idioma antes -- não por confiança, por formato. E sem `.*`: um
-    # curinga vindo do outro lado seria o 429 medido, entregue de graça.
-    if not re.fullmatch(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8}){0,2}", lingua):
+    if lingua is _NAO_DITO:
+        lingua = lingua_do_video(url)
+    if not lingua:
         return SUB_LANGS
     pedidos = [lingua]
     base = lingua.split("-")[0].lower()
@@ -1362,13 +1390,48 @@ def _pull_subs(url, out_dir, stem, template, playlist_args):
     acontecia quando as duas coisas vinham no mesmo comando.
     """
     def _achadas():
-        return [f for f in sorted(os.listdir(out_dir))
-                if f.startswith(stem) and f.lower().endswith(".srt")]
+        """As legendas em disco, EM ORDEM DE PREFERÊNCIA DE IDIOMA.
 
-    # A língua ORIGINAL do vídeo, e não só as nossas. Ver `_sub_langs_para`:
-    # um vídeo em inglês pagava 220s de transcrição com a legenda publicada ao
-    # lado, porque a lista só tinha português.
-    langs = _sub_langs_para(url)
+        `sorted()` aqui era o bug: alfabeticamente `.en.srt` vem antes de
+        `.pt-BR.srt`, então o inglês ganhava sempre que conseguia baixar, e
+        "sempre que conseguia" variava com o 429. Ver `_prefere_idioma`.
+
+        E `.vtt` CONTA, o que era o segundo bug e o mais caro. Medido em
+        15/09/2026 na imagem construída: a pasta de um `lote prep` real tinha
+
+            source-0424974c6853.en.vtt
+            source-0424974c6853.pt-BR.vtt
+            source-0424974c6853.webm      <- o áudio, que não devia ter descido
+
+        `--convert-subs srt` converte no FIM da execução do yt-dlp. Quando a
+        execução não chega ao fim -- 429 numa variante, timeout, qualquer coisa
+        -- os `.vtt` ficam em disco sem conversão. Esta função só olhava `.srt`,
+        então via uma pasta vazia, respondia "este vídeo não publica legenda", e
+        o caminho barato ia baixar o ÁUDIO para transcrever com duas legendas
+        publicadas ali do lado. Depois `_subtitle_beside` achava os `.vtt` e
+        escolhia sozinho -- sem língua anotada, em português, que é como o vídeo
+        do Rick Astley virou `LANG:pt-br`.
+
+        `_read_srt` já lê VTT (tem o tratamento dos parâmetros de cue), então
+        aceitar a extensão é o conserto inteiro.
+        """
+        brutos = [f for f in sorted(os.listdir(out_dir))
+                  if f.startswith(stem) and f.lower().endswith((".srt", ".vtt"))]
+        return _prefere_idioma(brutos, prefer=[lingua] if lingua else None)
+
+    # A língua do VÍDEO manda, e ela manda duas vezes: no que é pedido e, mais
+    # importante, no que é ESCOLHIDO entre o que chegou.
+    lingua = lingua_do_video(url)
+    langs = _sub_langs_para(url, lingua=lingua)
+    # ANOTADA AGORA, antes de qualquer coisa poder falhar.
+    #
+    # Ela estava sendo escrita só no fim, no caminho de sucesso -- então
+    # bastava a corrida da legenda falhar (ou, pelo bug acima, PARECER ter
+    # falhado) para o `.lingua` nunca existir. E é justamente aí que ele mais
+    # importa: é o que impede `_subtitle_beside` de escolher no escuro depois.
+    # A língua do vídeo é um fato sobre o link, não sobre o download ter dado
+    # certo.
+    _marca_lingua(out_dir, stem, lingua)
     try:
         run(_ytdlp() + [*playlist_args, "--restrict-filenames", "--skip-download",
              "--write-auto-subs", "--write-subs", "--sub-langs", langs,
@@ -1427,7 +1490,88 @@ def _pull_subs(url, out_dir, stem, template, playlist_args):
         # `langs`, não `SUB_LANGS`: a frase tem de dizer o que foi PEDIDO nesta
         # corrida, senão ela mente justamente quando a língua original entrou.
         return None, "this video publishes no subtitle in " + langs
+    _conta_a_legenda(achadas, lingua)
     return os.path.join(out_dir, achadas[0]), None
+
+
+def _marca_lingua(out_dir, stem, lingua):
+    """Anota a língua do vídeo ao lado do stem. Falhar aqui não custa nada."""
+    if not lingua:
+        return
+    try:
+        with open(os.path.join(out_dir, stem + ".lingua"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(lingua.strip() + "\n")
+    except OSError:
+        pass
+
+
+def _lingua_marcada(path):
+    """A língua anotada para este arquivo, ou None. Nunca levanta.
+
+    Procura pelo stem do arquivo e vai encurtando: `source-abc.en.srt` e
+    `source-abc.mp4` têm de achar o mesmo `source-abc.lingua`.
+    """
+    pasta = os.path.dirname(path) or "."
+    raiz = os.path.basename(path)
+    for _ in range(4):
+        raiz = os.path.splitext(raiz)[0]
+        if not raiz:
+            break
+        try:
+            with open(os.path.join(pasta, raiz + ".lingua"),
+                      encoding="utf-8") as fh:
+                marcada = fh.read().strip()
+            if marcada:
+                return marcada
+        except OSError:
+            pass
+        if "." not in raiz:
+            break
+    return None
+
+
+def _conta_a_legenda(achadas, lingua_video=None):
+    """Diz em voz alta qual idioma a legenda tem e DE ONDE ele veio.
+
+    Sai sempre, não só quando há problema, e isso é de propósito: o modelo
+    precisa saber em que língua escrever o hook ANTES de renderizar, e a regra
+    do dono (15/09/2026) é que o hook segue a língua do vídeo. `cut` recusa
+    queimar hook e legenda em línguas diferentes -- a regra está certa e não se
+    toca --, e sem esta linha o modelo só descobria a mistura ao bater no `cut`,
+    depois de todo o download, com o lote inteiro perdido.
+
+    A procedência é inferida, e só o que dá para afirmar é afirmado: quando a
+    tag casa com a língua do vídeo, é a legenda da própria fonte; quando não
+    casa, é tradução. Uma legenda traduzida automaticamente a partir de ASR é
+    erro de reconhecimento somado a erro de tradução, e quem lê precisa saber
+    que está lendo isso.
+    """
+    if not achadas:
+        return
+    escolhida = _tag_do_nome(achadas[0])
+    outras = [t for t in (_tag_do_nome(a) for a in achadas[1:]) if t]
+    if escolhida is None:
+        print("  (the published subtitle that came down carries no language "
+              "tag in its name, so the language it is in is unknown. Read a "
+              "line of it before writing the hook.)", file=sys.stderr)
+        return
+    raiz = escolhida.split("-")[0].split("_")[0]
+    raiz_video = (lingua_video or "").split("-")[0].split("_")[0].lower()
+    if not raiz_video:
+        origem = ("published by the source; this video does not say what "
+                  "language it is in, so that is the tag, not a match")
+    elif raiz == raiz_video:
+        origem = "the video's own language, as published by the source"
+    else:
+        origem = (f"a TRANSLATION: this video is in {lingua_video!r}, so this "
+                  f"caption is machine-translated, usually on top of machine "
+                  f"transcription -- two layers of error")
+    print(f"  (caption language: {escolhida} -- {origem}."
+          + (f" Also on disk: {', '.join(outras)}." if outras else "")
+          + f" Write the hook in {escolhida}: `cut` refuses to burn a hook and "
+            f"a caption in different languages, and that refusal is correct.)",
+          file=sys.stderr)
 
 
 def _pull_text_first(url, out_dir, stem, template, playlist_args):
@@ -2136,8 +2280,17 @@ def transcribe(path, model_size=None, window=None, prefer_lang=None,
     if window is None:
         sidecar, lang = _subtitle_beside(path, prefer=prefer_lang)
         if sidecar:
+            # `language_measured` diz se a língua da FONTE foi lida do material
+            # ou se saiu de desempate. Quem imprime a frase para o dono precisa
+            # disto: "a legenda está em X porque essa é a língua do vídeo" só
+            # pode ser dito quando alguém leu a língua do vídeo. Em 15/09/2026
+            # essa frase foi impressa sobre um vídeo em inglês com legenda
+            # auto-traduzida para pt-BR, e a mentira tinha cara de medição.
+            medida = bool(prefer_lang) or _lingua_marcada(path) is not None
             return {"source": f"published subtitles ({lang or 'no language tag'})",
                     "path": sidecar, "language": lang,
+                    "language_measured": medida,
+                    "source_language": _lingua_marcada(path),
                     "segments": _read_srt(sidecar)}
     try:
         from faster_whisper import WhisperModel
@@ -2255,6 +2408,99 @@ def scan(path, progress=None):
 # em português. Escolher por ordem alfabética é o que não pode voltar.
 SUBTITLE_LANGS = ("pt-br", "pt_br", "pt-BR", "pt", "en")
 
+# Uma tag de idioma no NOME de um arquivo de legenda: `source-abc.pt-BR.srt`.
+_TAG_IDIOMA = re.compile(r"^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{1,8}){0,2}$")
+
+
+def _tag_do_nome(nome):
+    """`source-abc.pt-BR.srt` -> `pt-br`. None quando não há tag no nome.
+
+    Medido em 15/09/2026 na imagem construída: quando o caminho barato devolve
+    a legenda COMO fonte -- `SOURCE_TEXT=source-abc.en.srt`, que é o que
+    `--text-first` faz --, `transcribe` dizia "published subtitles (no language
+    tag)" com a tag `en` escrita no nome do arquivo que ela acabara de abrir.
+
+    Isso não é cosmético. Essa linha é a única coisa que diz ao modelo em que
+    idioma está o texto que ele vai queimar, e sem ela ele monta um hook em
+    português sobre legenda em inglês -- que é o que `cut` recusa, e que já saiu
+    publicado uma vez.
+
+    O filtro é de FORMATO: `orig` (quatro letras) não é tag, `0` (de `122.0`)
+    não é tag, e um nome sem ponto nenhum não tem tag.
+    """
+    raiz = os.path.splitext(os.path.basename(nome or ""))[0]
+    if "." not in raiz:
+        return None
+    candidato = raiz.rsplit(".", 1)[-1]
+    return candidato.lower() if _TAG_IDIOMA.fullmatch(candidato) else None
+
+
+def _prefere_idioma(caminhos, prefer=None):
+    """Ordena legendas pela LÍNGUA DO VÍDEO, nunca por nome de arquivo.
+
+    A regra, decidida pelo dono em 15/09/2026: *o idioma da legenda tem que ser
+    o mesmo que a linguagem do vídeo disponibilizado*. Não é "preferir
+    português" -- essa era a regra antiga e ela estava errada como padrão. Um
+    vídeo em inglês quer legenda em inglês; em espanhol, espanhol.
+
+    `prefer` é a língua da fonte (de `lingua_do_video` ou do `.lingua` anotado),
+    e é a primeira escolha. Uma variante regional casa pela raiz: `pt` aceita
+    `pt-BR`, `en` aceita `en-US`. Só depois disso entra qualquer outra que
+    exista -- e `_conta_a_legenda` diz em voz alta que caiu no plano B, porque
+    legenda fora da língua da fonte é tradução de máquina em cima de
+    transcrição de máquina.
+
+    Sem língua conhecida, o desempate cai em `SUBTITLE_LANGS`, que continua
+    sendo uma preferência razoável para este dono -- mas é o ÚLTIMO recurso,
+    não a regra.
+
+    LEIA ANTES DE SIMPLIFICAR. Este projeto já consertou este bug uma vez, em
+    `_subtitle_beside`, e deixou o mesmo defeito de pé em `_pull_subs`, ao lado
+    -- onde ele voltou a custar clipe.
+
+    Medido em 15/09/2026, seis execuções de `lote prep` no MESMO link, cada uma
+    num WARDEN_DIR limpo, mesma máquina e mesma rede: o idioma da legenda
+    escolhida saiu ALEATÓRIO entre as rodadas -- `pt-br` em quatro, `en` em
+    duas. A causa não é sorteio: `sorted()` sobre os nomes põe
+    `source-abc.en.srt` antes de `source-abc.pt-BR.srt`, então sempre que o
+    `en` conseguia baixar, ele ganhava. O que variava entre as rodadas era
+    QUAIS variantes chegavam antes do 429 -- e a escolha seguia a ordem de
+    CHEGADA, não a preferência.
+
+    O custo é o clipe inteiro, não um detalhe de idioma: o padrão do dono é
+    hook em português, e `cut` RECUSA queimar hook e legenda em idiomas
+    diferentes. Essa regra está certa e não se toca -- "A Portuguese hook over
+    an English caption went out once" --, o conserto é não chegar lá misturado.
+    Duas rodadas em seis entregavam zero clipe.
+
+    Por isso a ordenação acontece DEPOIS de saber o que chegou, sobre o que
+    existe em disco. O desempate final é pelo nome -- não porque o nome
+    signifique alguma coisa, mas porque duas execuções iguais têm de dar o
+    mesmo resultado.
+    """
+    ordem = [str(p).lower() for p in (prefer or []) if p]
+    ordem += [l.lower() for l in SUBTITLE_LANGS if l.lower() not in ordem]
+
+    def _chave(caminho):
+        nome = os.path.basename(caminho)
+        tag = _tag_do_nome(caminho)
+        if tag is None:
+            # Sem tag no nome: nem preferida nem recusada. Fica depois das
+            # conhecidas e antes de um idioma que ninguém pediu.
+            return (len(ordem), "", nome)
+        if tag in ordem:
+            return (ordem.index(tag), "", nome)
+        # Variante regional conta pela raiz: `pt-PT` vale como `pt`. É assim que
+        # um vídeo em espanhol usa a legenda em espanhol dele sem que `es-419`
+        # precise estar escrito em lugar nenhum.
+        raiz = tag.split("-")[0].split("_")[0]
+        for i, conhecido in enumerate(ordem):
+            if conhecido.split("-")[0].split("_")[0] == raiz:
+                return (i, tag, nome)
+        return (len(ordem) + 1, tag, nome)
+
+    return sorted(caminhos, key=_chave)
+
 
 def _subtitle_beside(path, prefer=None):
     """A legenda publicada ao lado do vídeo, na língua certa, ou None.
@@ -2267,7 +2513,27 @@ def _subtitle_beside(path, prefer=None):
     português, e é um conserto de dez linhas.
 
     Devolve (caminho, língua) para que quem chama possa dizer qual escolheu.
+
+    O CASO EM QUE O PRÓPRIO ARQUIVO É A LEGENDA vem primeiro, e é um conserto de
+    15/09/2026. O caminho barato devolve o `.srt` COMO fonte -- é o que
+    `--text-first` faz de propósito --, e aí `path` já é `source-abc.en.srt`. O
+    código abaixo então montava `base = "source-abc.en"`, encontrava o próprio
+    arquivo, calculava a tag como a sobra depois do `base` (vazia) e respondia
+    "sem língua no nome" com `en` escrito no nome que ele acabara de ler. A
+    linha que o modelo lê para saber em que idioma está o texto que vai queimar
+    dizia "no language tag" justamente quando havia tag.
     """
+    if str(path).lower().endswith((".srt", ".vtt")) and os.path.isfile(path):
+        return path, _tag_do_nome(path)
+    # A língua da FONTE decide, e ela foi anotada no download. Sem `prefer`
+    # explícito (`--lang`), é ela que manda -- não uma ordem fixa.
+    sabemos_a_lingua = True
+    if not prefer:
+        marcada = _lingua_marcada(path)
+        if marcada:
+            prefer = [marcada]
+        else:
+            sabemos_a_lingua = False
     stem = os.path.splitext(path)[0]
     folder = os.path.dirname(path) or "."
     base = os.path.basename(stem)
@@ -2283,11 +2549,33 @@ def _subtitle_beside(path, prefer=None):
         found.append((os.path.join(folder, name), tag or None))
     if not found:
         return None, None
-    order = [str(p).lower() for p in (prefer or []) if p] + list(SUBTITLE_LANGS)
-    for want in order:
-        for path_, lang in found:
-            if lang == want.lower():
-                return path_, lang
+    # A MESMA ordenação que `_pull_subs` usa, e ela é a mesma de propósito: as
+    # duas escolhem legenda, e ter duas regras de preferência foi como o defeito
+    # consertado aqui continuou de pé lá. Ver `_prefere_idioma`.
+    por_caminho = dict(found)
+    ordenadas = _prefere_idioma([p for p, _l in found], prefer=prefer)
+    if not sabemos_a_lingua and len([p for p in ordenadas if _tag_do_nome(p)]) > 1:
+        # NÃO escolher português em silêncio. Medido em 15/09/2026: sem o
+        # `.lingua` em disco, esta função caía em `SUBTITLE_LANGS`, cujo
+        # primeiro item é `pt-br` -- e um vídeo em inglês saiu com legenda
+        # auto-traduzida e a frase "that is the language of the video", que era
+        # falsa. O último recurso tinha virado a regra, num lugar onde ninguém
+        # olhava.
+        #
+        # O desempate continua existindo, porque parar aqui deixaria o dono sem
+        # clipe nenhum. O que muda é que ele não passa por medição: quem consome
+        # é avisado, em voz alta, de que a língua da fonte NÃO foi lida.
+        print(f"  (warden did not read what language "
+              f"{os.path.basename(path)} is in -- the `.lingua` note from the "
+              f"download is not beside it. Subtitles on disk: "
+              f"{', '.join(sorted(t for _p, t in found if t))}. Falling back to "
+              f"{_tag_do_nome(ordenadas[0])!r} by preference order, NOT by "
+              f"measurement. Do not tell anyone this is the video's language; "
+              f"if the hook matters, pass --lang.)", file=sys.stderr)
+    for caminho in ordenadas:
+        lang = por_caminho.get(caminho)
+        if lang and _tag_do_nome(caminho):
+            return caminho, lang
     if len(found) == 1:
         return found[0]
     # Mais de uma legenda e nenhuma nas línguas que sabemos comparar. Escolher a

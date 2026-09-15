@@ -29,10 +29,17 @@ asked, and is said in one clause alongside the delivery:
 | how many | 2 |
 | how long | 20s, inside the campaign's limits |
 | sound | what the campaign says, else the original |
-| hook | Portuguese |
+| language of hook and captions | **the video's own language** -- an English source gets English, a Spanish one Spanish. Never translated unless they ask |
 | captions | burn them; if the footage already carries burned captions, do not burn a second set — `cut` measures that, you do not ask |
 | the moments | you choose them; no approval round trip |
 | bars, for an edit on the beat | the count closest to the duration asked, and you say which you took |
+
+**Hook and caption are always in the SAME language, and that language is the
+video's.** `cut` refuses to burn a hook in one language over a caption in
+another, and it is right to: a Portuguese hook over an English caption went out
+once. So read which language the words came back in -- `lote prep` says so -- and
+write the hook in that one. If they ask for another language, that is their
+call and it beats the default.
 
 **A music campaign that demands Portuguese captions is the job, not a problem.**
 That campaign comes from the rights holder, ships its own official footage and
