@@ -815,6 +815,24 @@ def cmd_check(args):
     return 1 if verdict(findings) == REPROVA else 0
 
 
+def _monta_legenda(rules, hook):
+    """(texto, limite). A legenda que a campanha exige, montada uma vez só.
+
+    Extraída de `cmd_package` quando `warden tiktok` passou a precisar da mesma
+    coisa: o rascunho sobe sem legenda -- o endpoint de inbox do TikTok não tem
+    campo para ela -- então quem publica cola este texto, e ele tem de ser o
+    MESMO que o `package` imprime. Duas montagens divergem no dia em que uma das
+    duas for corrigida.
+    """
+    parts = [hook.strip()] if hook else []
+    parts += [t for t in R.get(rules, "caption.required_text", [])]
+    tail = " ".join(R.get(rules, "caption.required_mentions", [])
+                    + R.get(rules, "caption.required_hashtags", []))
+    if tail:
+        parts.append(tail)
+    return "\n".join(p for p in parts if p), R.get(rules, "caption.max_len")
+
+
 def cmd_package(args):
     """The caption, assembled from the campaign's own requirements.
 
@@ -822,14 +840,7 @@ def cmd_package(args):
     everything after it is what the brief demands, in the brief's own spelling.
     """
     rules = load_campaign(args.campaign)
-    parts = [args.hook.strip()] if args.hook else []
-    parts += [t for t in R.get(rules, "caption.required_text", [])]
-    tail = " ".join(R.get(rules, "caption.required_mentions", [])
-                    + R.get(rules, "caption.required_hashtags", []))
-    if tail:
-        parts.append(tail)
-    caption = "\n".join(p for p in parts if p)
-    max_len = R.get(rules, "caption.max_len")
+    caption, max_len = _monta_legenda(rules, args.hook)
     print(caption)
     if max_len and len(caption) > max_len:
         print(f"\n[{len(caption)} characters, over the {max_len} this campaign allows]",
@@ -841,6 +852,58 @@ def cmd_package(args):
     days = R.get(rules, "posting.min_days_live")
     if days:
         print(f"[leave it up for at least {days} days]", file=sys.stderr)
+    return 0
+
+
+def cmd_tiktok(args):
+    """Sobe o clipe para a CAIXA DE ENTRADA do TikTok, e entrega a legenda.
+
+    O que este comando faz e o que ele NÃO faz, porque a diferença decide o que
+    o agente pode prometer:
+
+    Ele sobe o arquivo. O rascunho aparece na **Caixa de entrada** do app --
+    a notificação --, NÃO na aba Rascunhos do perfil. Isso foi medido em
+    14/09/2026 e custou tempo ao dono, que procurou em Rascunhos e concluiu que
+    não tinha chegado.
+
+    Ele NÃO põe legenda nem hashtag. O endpoint de inbox não tem campo para
+    isso: os únicos campos do corpo são `source_info.source`, `video_size`,
+    `chunk_size` e `total_chunk_count`. Pré-preencher legenda existe só no
+    Direct Post, que exige o escopo `video.publish` e auditoria do app. Então a
+    legenda é impressa aqui para a pessoa colar, e dizer o contrário seria
+    prometer o que a API não faz.
+    """
+    T = _tiktok()
+    caminho = args.file
+    if not os.path.isfile(caminho):
+        die(f"{caminho} is not a file", code=2)
+    legenda = None
+    if args.campaign:
+        rules = load_campaign(args.campaign)
+        legenda, limite = _monta_legenda(rules, args.hook or "")
+        if limite and len(legenda) > limite:
+            die(f"the caption this campaign requires is {len(legenda)} "
+                f"characters and it allows {limite}. Shorten the hook before "
+                f"posting, not after.", code=2)
+    try:
+        saida = T.envia(caminho, progresso=lambda m: print(f"  {m}", file=sys.stderr),
+                        espera=args.wait)
+    except T.TikTokIndisponivel as exc:
+        die(str(exc), code=2)
+    except Exception as exc:
+        die(f"{type(exc).__name__}: {exc}", code=1)
+    estado = saida.get("status")
+    if estado == "SEND_TO_USER_INBOX":
+        print("the clip is in the TikTok INBOX -- the notification, NOT the "
+              "Drafts tab of the profile. Open it there to publish.")
+    else:
+        print(f"uploaded; TikTok last reported {estado}. It usually reaches "
+              f"SEND_TO_USER_INBOX within a minute; check the inbox.")
+    if legenda:
+        print("\nPaste this as the caption (the API cannot set it):")
+        print("---")
+        print(legenda)
+        print("---")
     return 0
 
 
@@ -1122,6 +1185,15 @@ def cmd_status(args):
               "absent (only needed if this address is already refused)"))
     except Exception as exc:
         print(f"yt-dlp downloader: could not be read ({type(exc).__name__})")
+    # A ponta do TikTok. Uma linha, porque a pergunta "dá para mandar pro
+    # rascunho?" tem de ser respondida ANTES de alguém renderizar um clipe
+    # contando com isso -- e a resposta depende de um token que não vem na
+    # imagem e não pode vir: ele é de uma conta, não do agente.
+    try:
+        ok, porque = _tiktok().status_conta()
+        print("tiktok draft upload: " + ("ready -- " if ok else "NOT set up -- ") + porque)
+    except Exception as exc:
+        print(f"tiktok draft upload: could not be read ({type(exc).__name__})")
     # The models arrive after boot rather than inside the image, so whether they
     # are here yet is a real question with a real answer, not a constant.
     # "ainda baixando" e "nunca baixou" eram a mesma linha, e são coisas
@@ -1153,6 +1225,11 @@ def cmd_status(args):
 def _media():
     import warden_media
     return warden_media
+
+
+def _tiktok():
+    import warden_tiktok
+    return warden_tiktok
 
 
 def cmd_fetch(args):
@@ -1221,6 +1298,12 @@ def cmd_trusted(args):
             die("check needs a url: `warden trusted check <url>`")
         try:
             ok, reason = _media().trusted_check(args.value, entries)
+        except _media().FonteBloqueada as exc:
+            # Código 2, nunca 1. Sair 1 aqui seria indistinguível de "NOT
+            # trusted", e é o agente quem lê o código: ele concluiria que a
+            # fonte do dono não é de confiança por causa de uma recusa de rede,
+            # e ofereceria `warden trusted add` para um canal que já está lá.
+            die(str(exc), code=2)
         except Exception as exc:
             die(f"{type(exc).__name__}: {exc}", code=1)
         if ok:
@@ -2518,6 +2601,15 @@ def main(argv=None):
     p.add_argument("--campaign", required=True)
     p.add_argument("--hook", default="")
     p.set_defaults(func=cmd_package)
+
+    p = sub.add_parser("tiktok",
+                       help="upload a finished clip to the TikTok inbox as a draft")
+    p.add_argument("file")
+    p.add_argument("--campaign", help="also print the caption this campaign requires")
+    p.add_argument("--hook", default="", help="the owner's line, first in the caption")
+    p.add_argument("--wait", type=float, default=180,
+                   help="seconds to wait for TikTok to finish processing (default 180)")
+    p.set_defaults(func=cmd_tiktok)
 
     p = sub.add_parser("log")
     p.add_argument("--campaign", required=True)

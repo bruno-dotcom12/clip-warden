@@ -29,6 +29,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 
@@ -111,6 +112,21 @@ class _GuardedRedirect(urllib.request.HTTPRedirectHandler):
 # One opener for both readers, so the redirect guard cannot be forgotten at a
 # call site. Built once; urllib openers are thread-safe for our use.
 _OPENER = urllib.request.build_opener(_GuardedRedirect())
+
+# The name this agent answers to, on EVERY request the opener makes.
+#
+# Measured 15/09/2026, and it is a real source failing rather than a courtesy:
+# `fetch_text` set a User-Agent, the direct video download did not, and urllib's
+# default is `Python-urllib/3.x`. Wikimedia refuses that outright -- the same
+# link is 403 through this opener and 200 through curl with any real name -- and
+# it is far from alone; a CDN blocking the default Python agent is ordinary.
+#
+# It reached the owner as `HTTPError: HTTP Error 403: Forbidden`, with no link
+# and no cause, on the exact path an archive of "a Google Drive, or any other
+# site" depends on. Set on the opener rather than at the call site, because the
+# call site is what was forgotten.
+_OPENER.addheaders = [
+    ("User-Agent", "clip-warden/1.0 (+https://github.com/plow-pbc/plow-agents)")]
 
 
 def have(binary):
@@ -494,13 +510,25 @@ def video_title(url):
     the archive -- cut it anyway?' is a question the owner can answer; 'that link'
     is not.
 
-    A blocked address still raises through here, and that is deliberate rather
-    than an oversight: `authorize` matches ids against the campaign's own list
-    and does not need a title to decide, so swallowing the refusal would let it
-    answer "authorised" for a link nothing could read. The owner hears about
-    the block at the one place it is certain -- the download.
+    A blocked address gives None here, like any other unreadable link, and the
+    first draft of this fix had it raise instead. That was wrong, and measured
+    wrong: `authorize` calls this on its first line, so the refusal escaped to
+    `cmd_authorize`, which exits 1 -- and exit 1 is the documented signal for
+    "NOT in the campaign's archive" (README, warden-shared/SKILL.md). A network
+    refusal was being reported as a verdict about the archive, and the persona
+    then asks the owner for permission to cut outside it. The same invented
+    cause, one layer up.
+
+    Whether a link is authorised is decided LOCALLY, by matching ids against the
+    campaign's own list; the title is how the agent names the video, not how it
+    decides. So a title that cannot be read costs a name, not a verdict, and the
+    refusal is reported where it is unambiguous -- the download.
     """
-    titulo = (_facts(url).get("title") or "").strip()
+    try:
+        achado = _facts(url)
+    except FonteBloqueada:
+        return None
+    titulo = (achado.get("title") or "").strip()
     return titulo if titulo and titulo != "NA" else None
 
 
@@ -606,6 +634,15 @@ def trusted_check(url, entries):
     if channels and "youtube" in host:
         try:
             facts = _channel_facts(url)
+        except FonteBloqueada:
+            # Sobe inteira. Achatada aqui, ela virava `ok=False`, e `cmd_trusted`
+            # imprimia "NOT trusted: ... FonteBloqueada" e saía 1 -- então o
+            # agente dizia ao dono que o canal DELE não é de confiança e se
+            # oferecia para adicioná-lo, por causa de uma recusa de rede.
+            # Um veredito inventado sobre a fonte é o defeito que este arquivo
+            # inteiro existe para impedir; produzi-lo aqui seria o mesmo erro
+            # com outra fantasia.
+            raise
         except Exception as exc:
             return False, ("could not read the video's channel to check it against "
                            f"your trusted list: {type(exc).__name__}")
@@ -1088,7 +1125,28 @@ def _download_one(url, out_dir, mode="video"):
                                  os.path.splitext(parsed.path)[1].lower() or ".mp4")
         target = os.path.join(out_dir, name)
         written = 0
-        with _OPENER.open(url, timeout=TIMEOUT_FETCH) as response, \
+        try:
+            resposta = _OPENER.open(url, timeout=TIMEOUT_FETCH)
+        except urllib.error.HTTPError as exc:
+            # O código nu -- "HTTP Error 403: Forbidden" -- não diz qual link
+            # nem o que fazer, e esta é a porta por onde entra todo acervo que
+            # não é YouTube. Um 403 aqui quase sempre é o host recusando um
+            # cliente automático, não o dono sem permissão, e os dois têm
+            # conserto diferente.
+            if exc.code in (401, 403):
+                raise RuntimeError(
+                    f"{url} answered {exc.code}: the host refused this "
+                    f"download. If the file is private -- a Drive link shared "
+                    f"with nobody, an S3 object behind a signature -- make it "
+                    f"readable by link and send it again. If it is public in a "
+                    f"browser, the host is refusing automated clients, and the "
+                    f"way through is a direct file link rather than a page.")
+            if exc.code == 404:
+                raise RuntimeError(
+                    f"{url} answered 404: there is no file at that address. "
+                    f"Check the link, rather than assuming the source is gone.")
+            raise RuntimeError(f"{url} answered {exc.code}: {exc.reason}")
+        with resposta as response, \
                 open(target, "wb") as fh:
             while True:
                 chunk = response.read(1 << 20)

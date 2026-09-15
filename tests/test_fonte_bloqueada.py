@@ -528,19 +528,53 @@ class UmaExtracaoPorLink(unittest.TestCase):
         self.assertIn("outgoing address", str(caso.exception))
         self.assertNotIn(self.URL, warden_media._FACTS)
 
-    def test_o_bloqueio_tambem_atravessa_titulo_e_canal(self):
-        """Os dois leitores de `_facts`. `video_title` deixar subir é
-        deliberado: `authorize` casa ids contra a lista da campanha e não
-        precisa do título, então engolir a recusa o deixaria responder
-        "autorizado" para um link que ninguém conseguiu ler."""
+    def test_o_canal_deixa_o_bloqueio_subir_mas_o_titulo_nao(self):
+        """Os dois leitores de `_facts`, e eles divergem DE PROPÓSITO.
+
+        A versão anterior deste teste travava `video_title` levantando também, e
+        isso estava errado: `authorize` chama `video_title` na primeira linha,
+        então a recusa escapava para `cmd_authorize`, que sai 1 -- e sair 1 é o
+        sinal documentado de "NÃO está no acervo da campanha". Uma recusa de
+        rede virava veredito sobre o acervo, e a persona então pede ao dono
+        permissão para cortar fora dele. A mesma causa inventada, uma camada
+        acima.
+
+        Quem decide autorização é a lista local de ids; o título é como o agente
+        NOMEIA o vídeo. Então um título ilegível custa um nome, não um veredito
+        -- e a recusa é relatada onde é inequívoca, no download.
+
+        `_channel_facts` é o oposto e continua levantando: ali a alternativa
+        seria devolver lista vazia, que casaria com nenhuma entrada confiável e
+        diria ao dono que o canal dele não é de confiança.
+        """
+        self._responde(erro=warden_media.FonteBloqueada(
+            warden_media._porque_bloqueou("yt-dlp metadata lookup")))
+        # O título: sem nome, sem exceção, sem veredito.
+        self.assertIsNone(warden_media.video_title(self.URL))
+        # O canal: sobe inteira, e chega como bloqueio de endereço.
+        with self.assertRaises(warden_media.FonteBloqueada) as caso:
+            warden_media._channel_facts(self.URL)
+        self.assertIn("outgoing address", str(caso.exception))
+
+    def test_trusted_check_nao_converte_bloqueio_em_nao_confiavel(self):
+        """O portão que a auditoria pegou: `trusted_check` capturava tudo e
+        devolvia `ok=False`, então `cmd_trusted` imprimia "NOT trusted" e saía 1.
+        O agente dizia ao dono que o canal DELE não é de confiança -- e oferecia
+        `warden trusted add` para um canal já na lista -- por causa de uma
+        recusa de rede."""
         self._responde(erro=warden_media.FonteBloqueada(
             warden_media._porque_bloqueou("yt-dlp metadata lookup")))
         with self.assertRaises(warden_media.FonteBloqueada):
-            warden_media.video_title(self.URL)
-        with self.assertRaises(warden_media.FonteBloqueada) as caso:
-            warden_media._channel_facts(self.URL)
-        # E chega como bloqueio, não convertido no "não consegui checar".
-        self.assertIn("outgoing address", str(caso.exception))
+            warden_media.trusted_check(self.URL, ["@umcanalqualquer"])
+
+    def test_uma_falha_comum_no_canal_continua_sendo_nao_sei(self):
+        """E a outra metade continua valendo: falha COMUM não vira bloqueio, e
+        também não vira "não confiável" -- vira "não consegui checar"."""
+        self._responde(erro=RuntimeError("yt-dlp metadata lookup failed:\n  gone"))
+        ok, porque = warden_media.trusted_check(self.URL, ["@umcanalqualquer"])
+        self.assertFalse(ok)
+        self.assertIn("could not read", porque)
+        self.assertNotIn("outgoing address", porque)
 
     def test_uma_falha_comum_continua_sendo_dicionario_vazio(self):
         """A outra metade: só a bloqueada sobe. Um vídeo apagado continua sendo
