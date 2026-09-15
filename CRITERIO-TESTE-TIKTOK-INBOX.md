@@ -103,3 +103,65 @@ reconferir **uma vez algumas horas mais tarde**. Só então é C2.
 O log cru de toda requisição e resposta fica em `log-tiktok.txt`, no diretório
 temporário da sessão. O relatório final só pode afirmar o que estiver nesse log
 ou o que o dono viu no celular e descreveu.
+
+---
+
+# Adendo: o resultado, 14/09/2026
+
+**Resultado A. Hipótese CONFIRMADA. Conclusivo.**
+
+## O que foi lido do log
+
+App em modo sandbox, nunca auditado, client key `sbawmkiukayqqc1740`.
+
+Escopo concedido na autorização: `user.info.basic,video.upload`. **Sem
+`video.publish`.** O `user.info.basic` vem junto do Login Kit e não é
+desmarcável; dá acesso a avatar e nome de exibição, nada mais.
+
+- 16:50:48 — `POST /v2/post/publish/inbox/video/init/` → **HTTP 200**,
+  `publish_id: v_inbox_file~v2.7685480798933239816`. Nenhum erro de auditoria,
+  nenhum erro de sandbox.
+- 16:50:51 — `PUT` do arquivo, 8.933.576 bytes em um chunk → **HTTP 201**.
+- 16:50:57 — status `PROCESSING_UPLOAD`, `uploaded_bytes: 8933576`.
+- ~16:51:12 — status `SEND_TO_USER_INBOX`.
+- 17:34:17 — status `SEND_TO_USER_INBOX`, sem erro.
+
+## O que o dono viu e relatou
+
+O rascunho chegou **na caixa de entrada** do app, não na aba Rascunhos do
+perfil. Ao abrir, o vídeo já estava lá, com o fluxo normal de postagem
+(legenda, hashtags, localização).
+
+Publicou. Entrou em **outra conta** e **viu o vídeo**.
+
+## O que isso decide
+
+A trava de `SELF_ONLY` para cliente não auditado **não alcança o fluxo de
+inbox**. Era inferência por convergência de quatro evidências; agora é medição.
+
+Também cai a leitura pessimista do aviso do sandbox. *"Sandbox mode does not
+offer access to Content Posting API for public videos"* não impede o envio para
+rascunhos, e não impede o vídeo de sair público depois. Provado no ambiente
+**mais** restrito que existe: um app em produção não pode ser mais travado que
+um em sandbox.
+
+A frase do FAQ de App Review — *"All content posted by unaudited clients will be
+restricted to private viewing mode"* — **não descreve o fluxo de inbox**. Quem
+posta ali é a pessoa, não o cliente da API.
+
+## O que este teste NÃO provou, e continua não provado
+
+- **Quanto tempo o rascunho levou para aparecer.** Às 17:33 o dono relatou não
+  encontrá-lo; depois encontrou. Não dá para separar demora de entrega de ter
+  olhado antes na aba errada. Fica como desconhecido, não como "foi rápido".
+- **Confiabilidade ao longo do tempo.** Um envio não mede isso, e há relato
+  público de a entrega parar sozinha e voltar sozinha (postiz-app #1338).
+- **App Review.** Continua sendo portão separado, e é o que limita o alcance a
+  10 contas enquanto não for aprovado. Ver [[tiktok-dois-portoes]].
+- **O teto de 5 rascunhos pendentes em 24h.** Não foi tocado.
+
+## Consequência para o README
+
+O README hoje afirma: *"the platform's posting API locks an unaudited app's
+uploads to private, so a clip it published would be a clip nobody sees."* Isso
+é verdade para o Direct Post e **falso para o inbox**. Precisa ser corrigido.
