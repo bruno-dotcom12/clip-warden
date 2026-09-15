@@ -883,3 +883,150 @@ artefato).
 - A detecção de suspeita é por classe de erro, não por sentido. "Em 1500" seria
   aceita do mesmo jeito que "Em 1826", se alguém repetir a linha de volta. O que
   ela garante é que ninguém assina sem olhar.
+
+---
+
+## FASE 8 — Teste final
+
+Fluxo completo do zero, num vídeo que nenhuma fase anterior tinha tocado: um
+vlog de 23 minutos que **não publica legenda**. Isso não foi escolha, foi o que
+o vídeo é — e acabou sendo o teste mais útil, porque exercita o caminho
+alternativo.
+
+### Os tempos, do link aos arquivos
+
+| Etapa | Duração |
+|---|---|
+| Portão da fonte | 1s |
+| As palavras — **sem legenda publicada, caiu no áudio** (19 MB) | 7s |
+| **Transcrição de 23 min de áudio** | **220s** |
+| As duas janelas, um comando | 32s |
+| Aprovar as duas legendas | 2s |
+| Primeiro corte | 29s |
+| Segundo corte | 26s |
+| **Total até os dois** | **~5min57s** |
+
+**Isso está acima do alvo da FASE 1, e a razão é uma só: este vídeo não publica
+legenda.** Os 69s e 104s medidos na FASE 1 valem quando a fonte publica — e
+então a transcrição de 3min40s some da conta. O caminho alternativo funcionou
+como projetado (baixou o áudio, 19 MB, não o vídeo de 382 MB), mas ele custa o
+que custa.
+
+### O edit
+
+8 planos de 4 batidas, emendados, cada um começando onde uma fala começa:
+
+| | |
+|---|---|
+| Planos | 8 em 20,8s = **7,7 cenas por 20s** |
+| Trocas na batida | 7, **erro máximo 0ms** |
+| Legenda | 15 cues, até 2 linhas, destaque palavra a palavra |
+| Trilha | entrando no drop, comprimento em barras inteiras |
+| Barra preta | **nenhuma** |
+| Render | 36s |
+
+### O que os portões pegaram sozinhos, nesta corrida
+
+Nenhum destes fui eu que notei. A ferramenta parou e disse:
+
+1. **Hook recusado** — "this footage already carries burned text along the TOP
+   (8/8 frames, 3.7x)". O vlog tem gráficos no topo; um hook ali seriam dois
+   textos na mesma faixa.
+2. **Dois cortes reprovados por cue pendurada** — "1 caption cue(s) end on a
+   word that needs what comes next". Tive que escolher outras janelas.
+3. **Aprovação recusada quatro vezes** — janela fora do aprovado, e depois duas
+   linhas com números ("pages 36 to 57", "level 16"). Só passou depois de eu
+   repetir cada linha de volta com `--keep`, que é o portão da FASE 7 fazendo
+   exatamente o que foi escrito para fazer.
+4. **Um erro meu de aritmética de relógio**, quando calculei o `--start` no
+   relógio da fonte em vez do relógio do arquivo de janela. O portão da janela
+   aprovada pegou.
+
+### Os mosaicos, olhados item por item
+
+**`f8-01`** (a pergunta para a mãe, 20,0s, 11 cues):
+legenda em 2 linhas ✓, destaque acompanha a fala ✓, rosto livre ✓, **sem tarja
+preta** ✓. **REPROVA** no item 7: aos 1,2s a cartela do próprio vlog
+("AN PAUL VL") está cortada nos dois lados, e aos 18,8s a marca d'água do canal
+("os Every V") está cortada na margem direita.
+
+**`f8-02`** (a história do Pokémon, 20,0s, 11 cues):
+todos os oito itens ✓. Este é o clipe limpo da rodada.
+
+**`f8-edit`** (8 planos, 20,8s, 15 cues):
+oito cenas distintas ✓, trocas na batida ✓, legenda ✓, sem tarja ✓, rosto livre
+✓. **REPROVA** no item 7: aos 16,9s e 19,5s a página manuscrita que está sendo
+filmada aparece cortada nas duas margens.
+
+**Dois de três reprovam no mosaico, com todos os números verdes.** É exatamente
+para isso que o mosaico existe, e é a razão de ele ser um portão e não um
+relatório.
+
+### A entrega
+
+Não posso fechar esta parte, e digo por quê: confirmar que os dois chegaram sem
+você cobrar exige uma conversa de verdade, e escrever no seu chat como se fosse
+você não é coisa que eu vá fazer com você dormindo.
+
+O que dá para provar sem isso, e está provado:
+
+```
+$ warden delivered
+22 clip(s) rendered and cleared, and NOT confirmed as sent
+$ warden delivered .../f8-01.mp4
+NOT confirming f8-01.mp4: no attachment has left this machine since it was
+cleared. A `MEDIA:` line written anywhere but the LAST message of a turn
+attaches nothing, silently -- that is how two clips were lost.
+```
+
+A contabilidade existe, sabe o que está devendo, e **recusa riscar sem prova**.
+
+### Auditoria da FASE 8
+
+**Duas palavras entraram na lista de fim-de-cue, achadas olhando.** Os dois
+primeiros mosaicos mostraram "I know typically Jake is / Pam's **favorite**" (a
+palavra que falta é "son") e "when I was in / **elementary**" ("school").
+Nenhuma é preposição, artigo ou conjunção, então a regra escrita não as pegava.
+Entraram do mesmo jeito que `when` tinha entrado antes: alguém olhou um clipe.
+Depois disso o reflow passou a quebrar em outro ponto e as duas frases saíram
+inteiras.
+
+**E o limite disso está à vista.** No mesmo edit sobrou "Mae came over to
+Brendan / **and they started**" — um verbo pedindo complemento. Não dá para
+listar todo adjetivo e todo verbo; o que pega essa classe é alguém olhando o
+mosaico, e o projeto já diz isso em voz alta. Não fiquei perseguindo a lista.
+
+**Limpei o que sujei.** As 18 entradas de teste que criei no livro-caixa de
+entregas foram removidas — não marcadas como entregues, removidas, porque elas
+não foram entregues e escrever que foram seria a mentira que esse livro existe
+para impedir. As 4 que sobraram são das suas conversas e não são minhas para
+mexer.
+
+**A suíte: 390 testes, todos passando.**
+
+---
+
+## O que ainda está aberto
+
+Em ordem de quanto custa:
+
+1. **Nenhuma conversa de verdade foi medida.** As FASES 2, 3 e 4 mudaram como o
+   agente fala, entrega e espera — e as três só fecham numa conversa. O
+   instrumento existe (`warden voz` sai 1 acima de quatro mensagens), mas o
+   número sai na sua próxima conversa, não aqui.
+2. **O agente ainda escolhe os planos do edit à mão.** A ferramenta emenda, mede
+   e reprova; escolher ONDE cortar, com cada plano começando numa fala, continua
+   sendo trabalho de leitura.
+3. **Legenda de fala e trocas de cena visíveis brigam entre si.** Planos do
+   mesmo trecho dão fala coerente e cortes invisíveis; planos espalhados dão o
+   contrário. O que funciona é o meio-termo, e ele exige escolher bem.
+4. **A lista de palavras que não fecham cue é uma lista.** Duas entraram nesta
+   sessão, uma terceira classe (verbo pedindo complemento) ficou de fora.
+5. **`faster-whisper` com `int8`** não foi ligado: 1m42s contra 6m58s, número
+   oficial. Só importa quando a fonte não publica legenda — que foi o caso do
+   teste final, onde custou 3min40s.
+6. **A cor da nossa legenda continua amarela**, que é o que a faz ser confundida
+   com a de outro vídeo. É decisão sua.
+7. **Dois nomes de arquivo de janela em formatos diferentes** (`--window` usa
+   milissegundos, `--windows` usa segundos). Funciona, porque o caminho é sempre
+   copiado da saída, mas é feio.

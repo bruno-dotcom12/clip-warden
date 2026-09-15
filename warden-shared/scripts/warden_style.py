@@ -194,11 +194,20 @@ whose which
 i he she it we they you
 eu ele ela eles elas você voce vocês voces nós
 so very too quite muito mais bem tão tao
+favorite favourite favorito favorita elementary primary secondary
 """.split())
 
 # `when` estava faltando e o contact sheet de um render de teste mostrou: a cue
 # saiu "My Pokemon journey started / when". A lista é uma lista, e a única forma
 # de descobrir o que falta nela é olhar um clipe.
+#
+# 15/09, olhando dois mosaicos do teste final, mais dois: "I know typically Jake
+# is / Pam's **favorite**" (a palavra que falta é "son") e "My Pokemon journey
+# started when I was in / **elementary**" ("school"). Nenhuma das duas é
+# preposição, artigo ou conjunção -- são adjetivos que pedem o substantivo -- e
+# por isso a regra escrita não as pegava. Não dá para listar todo adjetivo;
+# entram as que apareceram, pelo mesmo motivo e do mesmo jeito que `when`
+# entrou. O que pega o resto continua sendo alguém olhando o mosaico.
 
 # Expressões que não se partem no meio, custe o que custar.
 #
