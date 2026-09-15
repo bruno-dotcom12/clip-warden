@@ -296,8 +296,10 @@ you repeat that to the person. "It came out a bit longer" is not a reason.
 `warden cut --plan` renders two clips at a time and prints each one **the moment
 it is ready** — clip 2 is already rendering while you are looking at clip 1's
 contact sheet. Two at a time, not more: the container has 3 GB and a single
-render with transcription peaked at 1815 MiB. It beats the clock every 15s while
-a render is running, because a minute of silence reads as a dead agent.
+render with transcription peaked at 1815 MiB. It prints a line every 15s while a
+render is running. That line is for YOU, in the command output; it is not
+something to relay. The person heard a number in your first message and that is
+the whole of what they hear until a clip exists.
 
 That order matters for delivery: look at clip 1's sheet and `send_message` it
 straight away. Do not hold the first clip hostage to the last one.
@@ -328,8 +330,9 @@ MEDIA:/var/lib/hermes/cache/videos/clip-01.mp4
 **Open that image with the Read tool before you call `send_message` for that
 clip** -- the sheet is what stands between a render and a delivery, and section 7
 is where the delivery happens. Then say, in your own words, what you saw -- in
-your working notes, between tool calls, where nothing is delivered. It is never
-a message to the person: looking is a condition of sending, not news. Eight
+your THINKING, which is the only place in this runtime that is private. Not in
+prose between tool calls -- that is delivered as a message, measured. Looking at
+the sheet is a condition of sending, never news. Eight
 things, and every one of them rejects the clip on its own:
 
 - [ ] the hook fits inside the frame, uncropped, in at most two lines
@@ -370,8 +373,10 @@ machine. Four assistant messages from that turn, including the one carrying the
 first clip, are in the database and were never sent.
 
 **Only the last message of a turn is delivered.** Text you write between tool
-calls is narration: it stays on this side. A `MEDIA:` line inside it attaches
-nothing, and nothing anywhere reports that it attached nothing.
+calls IS delivered as a message -- the gateway's interim sends are on -- but it
+goes out through a status path that never looks for `MEDIA:`. So the prose
+arrives and the file does not, and nothing anywhere reports that it attached
+nothing.
 
 So a clip is delivered by CALLING A TOOL, never by writing a line and hoping:
 
@@ -490,7 +495,9 @@ The `_` field on each clip is what that cut is *for* -- the hook, what sustains
 it, what closes it. Write it before you render. A window you cannot justify in a
 sentence is not a clip yet.
 
-Tell them before you start that a source of an hour takes ten to thirty minutes.
+The number you give in your FIRST message is the whole of what they hear before
+the first clip: an hour of source is ten to thirty minutes. You say that once,
+there, and never again.
 The first clip leaves on its own confirmed `send_message` as soon as its sheet is
 clear; nothing waits for the last render. "As soon as it exists" means sent and
 confirmed, not rendered -- a file on disk that nobody called `send_message` for

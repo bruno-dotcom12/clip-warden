@@ -49,8 +49,10 @@ you did not get.
 | `warden discover` | the public campaign directories, as text |
 | `warden prefs ask --group search\|edit` / `set` / `show` | what this owner wants |
 | `warden archive --campaign <id> --text-first` | **start here.** the words only: published subtitle, or audio. No video. |
-| `warden archive --campaign <id> --window <a>-<b>` | then this: only the seconds you chose, with the origin card beside it |
-| `warden archive --campaign <id>` | the WHOLE file, 361 MB. The exception -- `warden-clip` 4c says when |
+| `warden archive --trusted <url> --text-first` | the same, for a bare link the owner vouched for. One of the two gates is required |
+| `warden archive … --windows <a>-<b>,<c>-<d>` | the whole batch of windows in one run: 31s against 38s for two |
+| `warden archive … --window <a>-<b>` | one window, with the origin card beside it |
+| `warden archive --campaign <id>` | the WHOLE file, 382 MB. The exception -- `warden-clip` 4c says when |
 | `warden cut … --seconds <n>` / `--any-length` | the duration the person said. One of the two is **required**: no default, like sound |
 | `warden delivered [<clip>]` | confirm a send that came back; with no path, **exit 1 while any cleared clip is still unsent** |
 | `warden authorize <url> --campaign <id>` | is this link in the campaign's archive? exit 1 = no |
@@ -62,5 +64,9 @@ you did not get.
 | `warden check <clip> --campaign <id> --caption -` | the gate; exit 1 means do not post |
 | `warden package --campaign <id> --hook "..."` | the caption the campaign requires |
 | `warden log --campaign <id> ...` | this install's own count, which the cap reads |
+| `warden captions review <srt> --start --end` | the lines that would burn; `--approve` signs exactly that window |
+| `warden tracks add <file>` / `list` | the owner's own audio, kept by name so it is never asked for twice |
+| `warden style extract <clip>` / `check <render>` | the measured style of an approved clip, and whether a new one is inside it |
+| `warden voz [--since <ts>]` | how many messages each request actually cost the person; **exit 1 above four** |
 
 Every one of them accepts `--help`. None of them needs a path you have to guess.

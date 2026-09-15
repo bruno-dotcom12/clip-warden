@@ -10,6 +10,7 @@ import os
 from datetime import datetime, timedelta, timezone
 import re
 import shutil
+import io
 import sys
 import tempfile
 import unittest
@@ -4815,3 +4816,111 @@ class UmComandoBaixaTodasAsJanelasDoLote(unittest.TestCase):
             [(100.0, 120.0), (745.5, 765.0)], trusted=["youtube.com"])
         saida = self.args[0][self.args[0].index("-o") + 1]
         self.assertIn("%(section_start)s", saida)
+
+
+class AContagemDeMensagensEUmNumeroNaoUmaImpressao(unittest.TestCase):
+    """"Ele fala demais" era impressão. `warden voz` é o número.
+
+    Medido em 15/09 no banco de conversas: 57 mensagens do agente para três
+    pedidos, 16 delas entre um link e um clipe. A persona fixa três mensagens
+    para uma tarefa de dois cortes e quatro como teto.
+
+    E a contagem óbvia está errada, que é por que este comando existe em vez de
+    um `grep` no log do gateway: o log registra UMA linha de envio por turno, o
+    que faz parecer que só a última mensagem sai. `interim_assistant_messages`
+    vem ligada, então cada prosa escrita entre chamadas de ferramenta chega ao
+    celular. O que não viaja do meio do turno é o anexo.
+    """
+
+    def setUp(self):
+        import warden as W
+        self.W = W
+        self.dir = _temp(self, prefix="warden-voz-")
+        self.db = os.path.join(self.dir, "state.db")
+        self._antigo = W.CONVERSAS_DB
+        W.CONVERSAS_DB = self.db
+        self.addCleanup(setattr, W, "CONVERSAS_DB", self._antigo)
+
+    def _banco(self, linhas):
+        import sqlite3
+        con = sqlite3.connect(self.db)
+        con.execute("create table messages (timestamp real, role text, "
+                    "content text)")
+        con.executemany("insert into messages values (?,?,?)", linhas)
+        con.commit()
+        con.close()
+
+    def _rodar(self):
+        class _Args:
+            since = None
+        saida = io.StringIO()
+        antigo = sys.stdout
+        sys.stdout = saida
+        try:
+            code = self.W.cmd_voz(_Args())
+        finally:
+            sys.stdout = antigo
+        return code, saida.getvalue()
+
+    def test_tres_mensagens_para_dois_cortes_passa(self):
+        self._banco([
+            (100.0, "user", "me faz 2 cortes desse video"),
+            (101.0, "assistant", "Peguei. Te mando os dois em uns dois minutos."),
+            (160.0, "assistant", "Primeiro corte.\nMEDIA:/x/a.mp4"),
+            (200.0, "assistant", "Segundo corte.\nMEDIA:/x/b.mp4"),
+        ])
+        code, saida = self._rodar()
+        self.assertEqual(code, 0, saida)
+        self.assertIn("3 message(s), 2 with a file", saida)
+        self.assertIn("[ok]", saida)
+
+    def test_dezesseis_mensagens_reprova_e_sai_um(self):
+        linhas = [(100.0, "user", "https://exemplo.invalid/v")]
+        for i in range(16):
+            linhas.append((101.0 + i, "assistant", f"narrando o passo {i}"))
+        self._banco(linhas)
+        code, saida = self._rodar()
+        self.assertEqual(code, 1, saida)
+        self.assertIn("16 message(s)", saida)
+        self.assertIn("DEMAIS", saida)
+
+    def test_nomeia_as_mensagens_que_sobraram(self):
+        # Contar não basta: quem lê tem de ver QUAIS mensagens não deviam ter
+        # existido, ou o número não ensina nada.
+        self._banco([
+            (100.0, "user", "me faz 2 cortes"),
+            (101.0, "assistant", "Peguei."),
+            (102.0, "assistant", "Vídeo baixado."),
+            (103.0, "assistant", "Vou transcrever agora."),
+            (104.0, "assistant", "Achei um momento forte."),
+            (105.0, "assistant", "Primeiro corte.\nMEDIA:/x/a.mp4"),
+        ])
+        code, saida = self._rodar()
+        self.assertEqual(code, 1, saida)
+        self.assertIn("Vídeo baixado.", saida)
+        self.assertIn("Vou transcrever agora.", saida)
+        # A que carrega o arquivo nunca é apontada como excesso.
+        self.assertNotIn("       - Primeiro corte.", saida)
+
+    def test_o_despertar_de_um_processo_de_fundo_nao_e_um_pedido(self):
+        # Senão o render que termina sozinho abre uma "tarefa" nova e a conta
+        # do pedido real fica artificialmente baixa.
+        self._banco([
+            (100.0, "user", "me faz 2 cortes"),
+            (101.0, "assistant", "Peguei."),
+            (102.0, "user", "[IMPORTANT: Background process proc_x completed"),
+            (103.0, "assistant", "narrando"),
+            (104.0, "assistant", "narrando mais"),
+            (105.0, "assistant", "narrando ainda"),
+            (106.0, "assistant", "Primeiro corte.\nMEDIA:/x/a.mp4"),
+        ])
+        code, saida = self._rodar()
+        self.assertEqual(code, 1, saida)
+        self.assertIn("5 message(s)", saida)
+
+    def test_sem_banco_diz_que_nao_da_para_medir_daqui(self):
+        # Zero não é uma medida. Devolver zero aqui seria dizer "o agente não
+        # falou nada" sobre uma conversa que este comando não consegue ler.
+        self.W.CONVERSAS_DB = os.path.join(self.dir, "nao-existe.db")
+        with self.assertRaises(SystemExit):
+            self._rodar()

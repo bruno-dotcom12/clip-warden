@@ -82,10 +82,22 @@ Contadas no banco de conversas, nas três conversas juntas.
 | | Quantidade |
 |---|---|
 | Mensagens escritas pelo agente | **57** |
-| Que de fato saíram da máquina | 20 |
-| Que ficaram no caminho (escritas entre chamadas de ferramenta) | 37 |
+| Que chegaram ao celular da pessoa | **57** |
+| Que carregavam um arquivo que chegou | 5 |
 
-Das 20 que saíram:
+**Correção de uma medição anterior deste mesmo arquivo.** Eu havia escrito que
+só 20 saíram e 37 ficaram no caminho, a partir do log do gateway, que registra
+uma linha de envio por turno. Estava errado, e o número que você contou no
+celular — 12 a 16 entre o link e o primeiro clipe — é o certo. O gateway tem uma
+opção chamada `interim_assistant_messages` que **vem ligada por padrão** e não
+está desligada nesta instalação: cada texto que o agente escreve entre duas
+chamadas de ferramenta é entregue como mensagem. Confirmado no código do
+gateway.
+
+O que **não** é entregue no meio do turno é o ANEXO: a extração de `MEDIA:` só
+acontece no envio final do turno. Texto vai, arquivo não.
+
+Das 20 que foram a última do turno:
 
 | O que a mensagem fazia | Quantas |
 |---|---|
@@ -133,8 +145,9 @@ Verificado de três formas:
   gateway extrai o anexo daí.
 
 E o detalhe que decide tudo: **o gateway só extrai anexo da última mensagem do
-turno.** As outras mensagens chegam como texto, mas qualquer `MEDIA:` dentro
-delas não anexa nada — e nada em lugar nenhum avisa que não anexou.
+turno.** As mensagens do meio do turno chegam como texto — passam por um caminho
+de "status", que não olha para `MEDIA:` — então qualquer `MEDIA:` dentro delas
+não anexa nada, e nada em lugar nenhum avisa que não anexou.
 
 Foi exatamente isso que aconteceu:
 

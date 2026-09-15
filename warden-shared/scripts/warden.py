@@ -666,6 +666,99 @@ def cmd_log(args):
     return 0
 
 
+# ------------------------------------------------------------------ a voz
+
+# O caminho do banco de conversas do runtime. Só é lido, nunca escrito.
+CONVERSAS_DB = os.environ.get("WARDEN_CONVERSAS_DB",
+                              "/var/lib/hermes/state.db")
+
+# Quantas mensagens uma tarefa de dois cortes pode custar. A persona fixa três:
+# recebi, primeiro corte, segundo corte. Quatro ainda é aceitável quando a
+# pessoa teve de decidir alguma coisa. Cinco não é.
+VOZ_ALVO = 3
+VOZ_TETO = 4
+
+
+def _conversas(desde=None):
+    """(mensagens do agente, mensagens da pessoa) do banco de conversas.
+
+    Leitura pura, em modo somente-leitura, e num banco que pertence ao runtime
+    e não a este comando. Um banco ausente não é erro: é "não dá para medir
+    daqui", e dizer isso é melhor que devolver zero como se fosse uma medida.
+    """
+    import sqlite3
+    if not os.path.isfile(CONVERSAS_DB):
+        raise RuntimeError(
+            f"{CONVERSAS_DB} is not here, so the messages cannot be counted "
+            f"from this machine. Point WARDEN_CONVERSAS_DB at the runtime's "
+            f"state.db if it lives somewhere else.")
+    con = sqlite3.connect(f"file:{CONVERSAS_DB}?mode=ro", uri=True)
+    try:
+        corte = float(desde or 0)
+        linhas = con.execute(
+            "select timestamp, role, coalesce(content, '') from messages "
+            "where role in ('user', 'assistant') and timestamp >= ? "
+            "order by timestamp", (corte,)).fetchall()
+    finally:
+        con.close()
+    return linhas
+
+
+def cmd_voz(args):
+    """Conta o que a pessoa REALMENTE recebeu, por pedido dela.
+
+    Existe porque "o agente fala demais" era uma impressão e virou um número:
+    nas três conversas de 15/09 foram 57 mensagens do agente para três pedidos,
+    16 delas entre um link e um clipe.
+
+    E porque a contagem óbvia está errada. O log do gateway registra UMA linha
+    de envio por turno, o que faz parecer que só a última mensagem do turno
+    sai. Não é o caso: `interim_assistant_messages` vem ligada, então cada
+    texto escrito entre duas chamadas de ferramenta é entregue como mensagem.
+    O que NÃO viaja do meio do turno é o anexo. Então aqui se conta prosa, toda
+    ela, que é o que aparece no celular.
+    """
+    try:
+        linhas = _conversas(getattr(args, "since", None))
+    except RuntimeError as exc:
+        die(str(exc), code=2)
+    if not linhas:
+        print("no conversation in that window")
+        return 0
+
+    # Um PEDIDO é uma mensagem da pessoa que não é resposta a um processo de
+    # fundo: o despertar de um render terminado não é ela falando.
+    tarefas = []
+    for ts, papel, texto in linhas:
+        if papel == "user":
+            if texto.startswith("[IMPORTANT:"):
+                continue
+            tarefas.append({"em": ts, "pediu": texto.strip(), "msgs": []})
+        elif tarefas and texto.strip():
+            tarefas[-1]["msgs"].append((ts, texto))
+
+    pior = 0
+    for t in tarefas:
+        n = len(t["msgs"])
+        pior = max(pior, n)
+        com_arquivo = sum(1 for _, m in t["msgs"] if "MEDIA:" in m)
+        quando = datetime.fromtimestamp(
+            t["em"], timezone.utc).strftime("%d/%m %H:%M")
+        veredito = "ok" if n <= VOZ_TETO else "DEMAIS"
+        print(f"{quando}  {n:2d} message(s), {com_arquivo} with a file  "
+              f"[{veredito}]  {t['pediu'][:56]}")
+        if n > VOZ_TETO:
+            for _, m in t["msgs"]:
+                if "MEDIA:" not in m:
+                    print(f"       - {m.splitlines()[0][:88]}")
+
+    print(f"\n{len(tarefas)} request(s); the worst one cost {pior} message(s). "
+          f"Target {VOZ_ALVO}, ceiling {VOZ_TETO}.")
+    # Sai 1 quando alguma tarefa passou do teto, para um teste poder travar
+    # nisso em vez de alguém ler a tabela e achar que está bom.
+    return 1 if pior > VOZ_TETO else 0
+
+
 def cmd_status(args):
     root = state_dir()
     names = list_campaigns()
@@ -1936,6 +2029,11 @@ def main(argv=None):
     p.add_argument("action", choices=["list", "add"])
     p.add_argument("file", nargs="?")
     p.set_defaults(func=cmd_tracks)
+
+    p = sub.add_parser("voz")
+    p.add_argument("--since", type=float,
+                   help="unix timestamp; only count from there on")
+    p.set_defaults(func=cmd_voz)
 
     p = sub.add_parser("archive")
     p.add_argument("--campaign", help="the campaign whose archive to pull from")
