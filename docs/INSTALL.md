@@ -65,15 +65,23 @@ read it. These lines must all name something, never `MISSING`:
 ffprobe: /usr/bin/ffprobe
 ffmpeg:  /usr/bin/ffmpeg
 face detection: YuNet on OpenCV 5.0.0
-pillow (all burned text): 12.3.0
+pillow (the hook, drawn as a PNG): 12.3.0
 style font: /opt/hermes/skills/warden-shared/assets/Anton-Regular.ttf
 libass (burned captions): yes, the `ass` filter is here
 measured style spec: /opt/hermes/skills/SPECS/estilo-aprovado-scenepack.json
 ```
 
-The script fails if any of them says `MISSING`, and that is deliberate: every
-one of those lines is a dependency whose absence used to degrade a clip in
-silence rather than stop it. The face detector is the sharpest example — without
+The script fails if any of them says `MISSING` — **and it fails just the same if
+one of them does not appear at all.** Those are two different failures and only
+the first used to be caught: a `warden status` that never ran, because the
+container was not up, printed no line saying `MISSING`, so the old check found
+nothing wrong and the install announced itself done. Not finding the word
+`MISSING` is not the same as finding the thing. The script now checks the exit
+code of the command as well, and requires each of the seven lines to be present
+by name.
+
+That gate is deliberate: every one of those lines is a dependency whose absence
+used to degrade a clip in silence rather than stop it. The face detector is the sharpest example — without
 it the vertical crop falls back to the middle of the frame, and a video where
 the speaker sits to one side ships with their face sliced off at the edge. That
 happened. Now `warden cut` refuses to frame rather than guess: with no detector it stops
@@ -88,8 +96,10 @@ filter `warden cut` stops rather than hand back a podcast clip with no caption.
 The line is on this list so that refusal lands here, at install, instead of in
 the middle of someone's first cut.
 
-Read the `pillow` line as the label the tool prints rather than as the state of
-the renderer: since the caption became ASS, PIL draws the hook and nothing else.
+The `pillow` line says what it does: since the caption became ASS, PIL draws the
+hook and nothing else. Copy the labels above exactly as they are written — they
+are what the tool prints, and this list is what you check your own screen
+against.
 
 Three more lines come from the downloader, and the script does **not** fail on
 them — they are a warning, not a gate:
@@ -126,6 +136,13 @@ in the image — baking them cost every installer 600 MB before the agent had sa
 a word — so a background service pulls them at first boot while you read the
 agent's first reply.
 
+They arrive in a deliberate order: **`base` (145 MB) first, `small` (484 MB)
+second**, because `base` is the one the first command needs. Reading a whole
+source to choose a moment in it uses `base`; `small` is for the window you
+already chose, whose words get burned into the caption. So the first clip is
+waiting on 145 MB, not on all 629 MB, and `small` still downloading is not
+something in your way.
+
 **This is the window the first clip falls into.** Ask for a cut while `small` is
 still at 43% and the agent tells you so, with the megabytes left and what to do
 about it, instead of starting a silent five-minute download that reads like a
@@ -146,11 +163,17 @@ or transcribe the window separately first and pass the srt.
 Text the agent's line a campaign link, a video link, or just "oi". It answers
 with what it read and what is still open.
 
-**Its first question will be about sound**: whether the clip keeps the original
-audio or ships silent for you to add a track in the app. It has to ask, because
-a clip that ships silent by accident is a wasted post, and it stores the answer
-so it only asks once. Until that is answered, `warden cut` stops rather than
-guess.
+**It does not interview you before the first clip.** Sound used to be a question
+it had to ask before it would cut anything; it is now a default it announces.
+Clips keep the **original audio**, and the clip arrives with the line that says
+so — `som: original (padrão; a campanha não decide isso)` — rather than a
+question you have to answer first. Measured 15/09/2026: of the 26m22s from the
+link to the one clip, 10m34s were questions like that one.
+
+To ship silent instead, so you add a track in the app, pass
+`--sound platform` to `warden cut`. And when the campaign forbids the source's
+audio, the campaign wins — the clip comes out silent and the announced line
+names the rule that decided it.
 
 If a campaign publishes no archive link, the agent says so and stops. Send it
 the link to the authorised footage, or the footage itself. It does not go
@@ -230,7 +253,10 @@ then, under the agent's `volumes:` in `compose.yml`:
 `docker compose up -d`, and
 `docker compose exec -u 10000:10000 agent warden status` should then read
 `present` on the cookies line. That file is a live session: never commit it,
-and `./install.sh --remover` does not know about it, so delete it yourself.
+and `./install.sh --remover` deliberately does **not** delete it — it is your
+session, not the agent's, and deleting somebody's credential without asking is
+worse than leaving it. The uninstall names the file and its path on the way out;
+deleting it is yours to do. The same goes for `.env`.
 
 ### The knobs
 
@@ -409,20 +435,89 @@ one.
 signed-out browser. That is the whole difference from the command in the next
 section.
 
-What you supply, in `.env` beside `compose.yml`:
-
-```
-WARDEN_POST_API_KEY=...
-WARDEN_POST_PROFILE=...      # optional: which connected profile to post as
-WARDEN_POST_PROVIDER=upload-post   # the default; you rarely set this
-```
+**This is optional and nothing is broken without it.** Without
+`WARDEN_POST_API_KEY` the command is simply off, and that is the normal state of
+a fresh install: the agent cuts, captions and delivers exactly the same, hands
+you the finished file with a title and a description ready to paste, and you
+post that from the YouTube app the way you already do. The key buys you one step
+fewer, not a feature you are missing.
 
 The key is an account **you** hold with that intermediary — your quota, your
 bill, your connected channel. It is not something the image can carry on your
-behalf, for the reason in the rule above.
+behalf, for the reason in the rule above. Here is how you get one.
 
-**Without `WARDEN_POST_API_KEY` the command is simply off**, and that is the
-normal state of a fresh install. The agent hands you the file and you post it.
+#### Setting it up — five steps, about three minutes
+
+No programming, and nothing to install. You need the Google account that
+**owns the channel** you want to publish to, signed in in the same browser.
+
+1. **Create an account** at `https://www.upload-post.com/`. The free plan is
+   **10 uploads per month and does not ask for a card** — that is what their
+   pricing page says.
+
+2. **Open the dashboard** at `https://app.upload-post.com/` and **create a
+   profile**. A profile is just a nickname for one set of connected accounts;
+   `clip-warden` is a fine name. Write down exactly what you typed — it is the
+   value of `WARDEN_POST_PROFILE` in step 5.
+
+3. **Connect your YouTube account to that profile.** Inside the profile, press
+   **Connect** on YouTube. Google's own screen opens, you pick the account that
+   owns the channel, and you press **Allow**. Your Google password is typed on
+   Google's page and nowhere else.
+
+   > **The mistake everybody makes, and how to spot it:** if any screen at this
+   > point asks you for a **Client ID** or a **Client Secret**, you are on the
+   > wrong road — that is the Google Cloud console, which belongs to the *other*
+   > command, the one that cannot publish. **Stop and go back.** Connecting here
+   > is three presses and never asks you for a string to paste.
+
+4. **Generate the API key** in the dashboard and copy it. It is shown **once**;
+   if you lose it you generate another. It is a password to your channel:
+   never paste it into a chat, an issue, or a screenshot — not even into the
+   conversation with this agent.
+
+5. **Write it into `.env`**, a plain text file in this folder, beside
+   `compose.yml`. Two lines, with your own values in place of the angle
+   brackets:
+
+   ```
+   WARDEN_POST_API_KEY=<the key from step 4>
+   WARDEN_POST_PROFILE=<the profile name from step 2>
+   ```
+
+   Then, from a terminal in this folder:
+
+   ```sh
+   chmod 600 .env
+   docker compose up -d
+   ```
+
+   `chmod 600` makes the file readable only by your own user account.
+   `docker compose up -d` recreates the container so it reads the new
+   environment — **a running container does not pick up a changed `.env` on its
+   own**, which is the second most common way this ends in confusion. The file
+   is already in `.gitignore` and `.dockerignore`, so it never reaches the
+   repository or the image.
+
+   `WARDEN_POST_PROFILE` is **only required when your account has more than one
+   profile**. With exactly one, the agent uses it. With several and no name
+   given, it refuses and lists them rather than guessing — a video posted to the
+   wrong channel does not come back.
+
+There is a third knob you almost never touch:
+`WARDEN_POST_PROVIDER=upload-post` is the default and naming anything else is
+an error, not a switch.
+
+#### How you check that yours came out public
+
+**Open the video's URL in a private / incognito window.** That window is not
+signed into anything, so it sees the video the way a stranger does. If it plays,
+it is public. If it says the video is private or unavailable, it is not.
+
+A `200 OK`, a green test, or the agent saying it worked are none of them proof:
+they say the request was accepted, not that anybody can watch the result. The
+measurement quoted above was made that way, on a real channel, on 15/09/2026 —
+and it is how yours should be confirmed too.
 
 ### `warden youtube` — it uploads, and the upload is locked private
 

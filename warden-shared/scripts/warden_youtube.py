@@ -46,16 +46,28 @@ prometer o que a API não faz:
    Cuidado com a confusão que custa caro: a verificação da TELA DE CONSENTIMENTO
    do OAuth (a que tira o aviso "app não verificado" e o teto de 100 usuários) é
    OUTRO processo, e passar por ela não destranca vídeo nenhum.
-2. O CLIENTE OAUTH VEM DA IMAGEM, não do código-fonte. Ele é do tipo "TVs e
-   dispositivos com entrada limitada", e a documentação do Google parte do
-   princípio, literalmente, de que "it is assumed that the apps cannot keep
-   secrets" nesse fluxo -- o par não dá acesso a canal nenhum sozinho, só serve
-   para pedir um código que UMA PESSOA aprova no celular dela, na conta dela.
-   Ainda assim ele NÃO fica no repositório: a proteção de segredos do GitHub
-   recusa o push, e um par commitado é um push bloqueado para sempre. Entra no
-   build pelo ENV, e quem constrói do código passa o seu por
-   `WARDEN_YT_CLIENT_ID` / `WARDEN_YT_CLIENT_SECRET`. Impresso, nunca: é um dos
-   três segredos registrados em `_SEGREDOS`.
+
+   E existe uma estrada que publica de verdade nesta casa -- ela só não é esta.
+   Medida em 15/09/2026, com envio real: `warden post youtube` passa por um
+   intermediário, a API devolveu `privacyStatus: public`, e a página abre para
+   quem não está logado. O preço é uma chave desse intermediário, e o passo a
+   passo está em `docs/INSTALL.md`.
+2. O CLIENTE OAUTH É DE QUEM INSTALA. Nenhuma imagem deste projeto traz um, e
+   isso passou a valer em 15/09/2026: o par entrava no build pelo ENV, a imagem
+   é pública, e um pull anônimo do ghcr devolveu o client_secret para quem
+   pedisse. Não é cautela nossa -- a política III.D.1 dos Termos de Serviço da
+   YouTube API proíbe distribuir credencial dentro de um projeto aberto, e o
+   `ARG`/`ENV` do Dockerfile e os `build-args` do workflow de publicação saíram
+   no mesmo dia. Ele é do tipo "TVs e dispositivos com entrada limitada", e a
+   documentação do Google parte do princípio, literalmente, de que "it is
+   assumed that the apps cannot keep secrets" nesse fluxo -- o par não dá
+   acesso a canal nenhum sozinho, só serve para pedir um código que UMA PESSOA
+   aprova no celular dela, na conta dela. Isso é um argumento sobre RISCO, e
+   não desfaz o vazamento nem a política. Quem quiser o `warden youtube` cria o
+   próprio cliente no Google Cloud Console e põe o par num `.env` ao lado do
+   `compose.yml`, de onde ele chega como `WARDEN_YT_CLIENT_ID` /
+   `WARDEN_YT_CLIENT_SECRET`; o passo a passo está em `docs/INSTALL.md`.
+   Impresso, nunca: é um dos três segredos registrados em `_SEGREDOS`.
 3. SHORTS NÃO É UM ENDPOINT. Não existe "subir um Short": sobe-se um vídeo
    comum, e o YouTube o trata como Short quando ele é vertical e tem até 3
    minutos. O que esta casa entrega já é 1080x1920 e curto, então o vídeo cai
@@ -88,28 +100,36 @@ TOKEN_FILE = os.environ.get("WARDEN_YT_TOKEN_FILE",
 
 # O cliente OAuth deste projeto, tipo "TVs e dispositivos com entrada limitada".
 #
-# POR QUE ISTO PODE ESTAR NUM REPOSITÓRIO PÚBLICO, e por que não é descuido:
-# neste tipo de cliente o Google não trata o secret como confidencial — a
-# própria documentação do fluxo diz que "it is assumed that the apps cannot
-# keep secrets", que é justamente por que o fluxo existe. O par client_id +
-# client_secret não abre canal nenhum: tudo que ele consegue fazer é PEDIR um
-# código de 8 caracteres que uma pessoa precisa digitar e aprovar no celular
-# dela. Sem esse toque humano, não há token, não há canal, não há upload. O que
-# é secreto de verdade é o refresh_token que nasce DEPOIS da aprovação — e esse
+# ELES NASCEM VAZIOS, E ISSO É O ESTADO NORMAL, não um defeito de instalação.
+# Não vêm do código-fonte e não vêm da imagem: nenhuma imagem deste projeto
+# carrega cliente OAuth do Google.
+#
+# POR QUE NÃO VÊM DA IMAGEM, medido em 15/09/2026: o par entrava no build, do
+# segredo do CI para o ENV da imagem — só que a imagem é pública, e um pull
+# anônimo do ghcr devolveu o client_secret para quem pedisse. O `ARG`/`ENV` do
+# Dockerfile e os `build-args` do workflow de publicação saíram no mesmo dia. E
+# não é só o vazamento: a política III.D.1 dos Termos de Serviço da YouTube API
+# proíbe distribuir credencial dentro de um projeto aberto, então nem uma
+# credencial que nunca tivesse vazado poderia voltar para cá.
+#
+# O ARGUMENTO CONTRÁRIO existe, é honesto, e não basta: neste tipo de cliente o
+# Google não trata o secret como confidencial — a própria documentação do fluxo
+# diz que "it is assumed that the apps cannot keep secrets", que é justamente
+# por que o fluxo existe. O par client_id + client_secret não abre canal nenhum:
+# tudo que ele consegue fazer é PEDIR um código de 8 caracteres que uma pessoa
+# precisa digitar e aprovar no celular dela. Sem esse toque humano, não há
+# token, não há canal, não há upload. Mas isso é um argumento sobre RISCO, não
+# sobre higiene nem sobre política, e nenhuma das duas cede a ele. O que é
+# secreto de verdade é o refresh_token que nasce DEPOIS da aprovação — e esse
 # mora em TOKEN_FILE, com modo 600, e nunca é impresso.
 #
-# Quem usa outro projeto do Google Cloud sobrescreve pelo ambiente.
-# Fora do código-fonte, dentro da IMAGEM. Medido em 15/09/2026: a proteção de
-# segredos do GitHub recusa o push de um repositório que os carregue, e ela está
-# certa em recusar -- "o Google diz que este tipo não é confidencial" é um
-# argumento sobre RISCO, não sobre higiene, e um par commitado num repo público
-# vira um push bloqueado toda vez, para sempre.
-#
-# Então eles entram no build, do segredo do CI para o ENV da imagem, e o
-# repositório não os contém. Quem instala puxa a imagem publicada e não
-# configura nada; quem constrói do código passa os próprios, ou conecta pelo
-# TikTok e entrega o arquivo. `status_conta` diz qual dos dois é o caso em vez
-# de falhar no meio de um envio.
+# Quem quiser o `warden youtube` cria o próprio cliente no Google Cloud Console,
+# do tipo "TVs and Limited Input devices", e põe o par num arquivo `.env` ao
+# lado do `compose.yml`, de onde ele chega a estes dois globais pelo ambiente.
+# O passo a passo está em `docs/INSTALL.md`, e não é repetido aqui: um passo a
+# passo que mora em dois lugares fica errado no primeiro dia em que um deles
+# muda. `status_conta` diz que faltam, e manda para lá, em vez de deixar a
+# descoberta para o meio de um envio.
 CLIENT_ID = os.environ.get("WARDEN_YT_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("WARDEN_YT_CLIENT_SECRET", "")
 
@@ -258,6 +278,56 @@ _LEMBRETE_TRANCADO = (
     "passar pela auditoria do YouTube, e que essa "
     "trava não se desfaz no Studio — para publicar agora, suba "
     "o mesmo arquivo pelo app ou site do YouTube.")
+
+# O que sai quando não há cliente OAuth. UM texto para `conecta()` e
+# `publica()`, e não duas cópias: a frase anterior vivia em três lugares, e no
+# dia em que ela ficou falsa ficou falsa nos três de uma vez.
+#
+# O QUE ELA DIZIA, e por que era pior do que não dizer nada: que a imagem
+# distribuída já vinha com o cliente, e que faltar cliente era sintoma de ter
+# compilado o projeto em casa. Nenhuma das duas metades é verdade desde
+# 15/09/2026. Quem lia a frase estava rodando exatamente a imagem que se
+# baixa pronta, e saía caçando uma compilação que nunca fez enquanto o único
+# passo que resolve não aparecia em lugar nenhum da mensagem. Um texto que
+# ocupa o lugar da saída é pior que o silêncio.
+#
+# A frase não é citada aqui de propósito, nem para contar a história: a trava em
+# `tests/test_youtube.py` varre o arquivo INTEIRO atrás dela, e uma citação
+# seria a única coisa que a trava não conseguiria distinguir de uma recaída.
+#
+# O texto novo não acusa ninguém de ter feito nada: diz que o cliente nunca vem
+# pronto, diz por quê, e aponta o documento. Não repete o passo a passo — ele
+# mora em `docs/INSTALL.md`, e um passo a passo em dois lugares fica errado no
+# primeiro dia em que um dos dois muda.
+SEM_CLIENTE = (
+    "não há cliente OAuth do Google aqui, então não há com que falar com o "
+    "YouTube. NENHUMA imagem deste projeto traz um, e isso não é cautela: a "
+    "imagem é pública, uma credencial embutida nela já vazou por um pull "
+    "anônimo, e a política III.D.1 dos Termos da API do YouTube proíbe "
+    "distribuir credencial dentro de um projeto aberto. Para usar este "
+    "comando, crie o SEU cliente no Google Cloud Console, do tipo \"TVs and "
+    "Limited Input devices\", e ponha o par num arquivo `.env` ao lado do "
+    "`compose.yml`, em duas linhas: `WARDEN_YT_CLIENT_ID=` e "
+    "`WARDEN_YT_CLIENT_SECRET=` — o passo a passo está em `docs/INSTALL.md`. "
+    "Se o que você quer é um vídeo que fica público, a estrada é outra e se "
+    "chama `warden post youtube`, que publica por um intermediário e pede uma "
+    "chave dele, no mesmo documento. Enquanto isso, o clipe é entregue como "
+    "arquivo e a publicação é manual.")
+
+# A mesma verdade na língua em que o `warden status` imprime esta linha. Ela
+# não começa com "NOT connected": isso quem põe é o relatório, e repetir aqui
+# viraria "NOT connected -- NOT connected".
+SEM_CLIENTE_STATUS = (
+    "no image of this project carries a Google OAuth client, so there is "
+    "nothing to talk to YouTube with. The image is public: an embedded "
+    "credential already leaked through an anonymous pull, and YouTube policy "
+    "III.D.1 forbids shipping one inside an open project. Create your own "
+    "client in the Google Cloud Console (type \"TVs and Limited Input "
+    "devices\") and put the pair in a `.env` file next to `compose.yml`, as "
+    "`WARDEN_YT_CLIENT_ID=` and `WARDEN_YT_CLIENT_SECRET=`; docs/INSTALL.md "
+    "has the steps. If what you want is a video that ends up public, that is a "
+    "different road called `warden post youtube`, which publishes through a "
+    "broker and needs a key of its own, in the same document.")
 
 COMO_AUTORIZAR = (
     "Abra {url} no celular (ou em qualquer navegador já logado na conta do "
@@ -1016,12 +1086,7 @@ def conecta(*, progresso=None, espera=300):
       avisos    o que não impediu a conexão mas você precisa saber
     """
     if not _cliente_configurado():
-        raise YouTubeIndisponivel(
-                "este build do clip-warden não traz um cliente OAuth do Google, "
-                "então não há com que falar com o YouTube. A imagem publicada "
-                "traz; um build feito do código-fonte precisa dos seus, em "
-                "WARDEN_YT_CLIENT_ID e WARDEN_YT_CLIENT_SECRET. Enquanto isso, "
-                "o clipe é entregue como arquivo e a publicação é manual.")
+        raise YouTubeIndisponivel(SEM_CLIENTE)
     _fala(progresso, "pedindo um código ao Google (a senha não passa por aqui)")
     pedido = _pede_codigo()
     device_code = pedido["device_code"]
@@ -1305,10 +1370,7 @@ def status_conta(*, verificar=True):
     não um palpite otimista.
     """
     if not _cliente_configurado():
-        return (False, "this build carries no Google OAuth client, so there is "
-                       "nothing to talk to YouTube with. The published image "
-                       "has one; a build from source needs yours in "
-                       "WARDEN_YT_CLIENT_ID and WARDEN_YT_CLIENT_SECRET.")
+        return False, SEM_CLIENTE_STATUS
     try:
         dados = _le_arquivo()
     except YouTubeIndisponivel as exc:
@@ -1438,12 +1500,7 @@ def publica(caminho, *, titulo, descricao="", tags=(), privacidade="private",
     Nunca se inventa causa aqui.
     """
     if not _cliente_configurado():
-        raise YouTubeIndisponivel(
-                "este build do clip-warden não traz um cliente OAuth do Google, "
-                "então não há com que falar com o YouTube. A imagem publicada "
-                "traz; um build feito do código-fonte precisa dos seus, em "
-                "WARDEN_YT_CLIENT_ID e WARDEN_YT_CLIENT_SECRET. Enquanto isso, "
-                "o clipe é entregue como arquivo e a publicação é manual.")
+        raise YouTubeIndisponivel(SEM_CLIENTE)
     caminho = os.path.abspath(os.path.expanduser(caminho))
     if not os.path.isfile(caminho):
         raise YouTubeIndisponivel(f"não há arquivo em {caminho} para publicar.")

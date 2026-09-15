@@ -1535,6 +1535,186 @@ class NaoPrometePublicar(unittest.TestCase):
         self.assertIn("youtube.upload", Y.ESCOPOS)
 
 
+# ────────────────────── a outra promessa que não pode voltar: "a imagem traz"
+
+class NaoPrometeClienteNaImagem(Base):
+    """Nenhuma imagem deste projeto carrega cliente OAuth do Google.
+
+    Passou a ser verdade em 15/09/2026, quando o `ARG`/`ENV` do Dockerfile e os
+    `build-args` do workflow de publicação saíram: o par entrava no build pelo
+    ENV, a imagem é pública, e um pull anônimo do ghcr devolvia o
+    client_secret. A política III.D.1 dos Termos da API do YouTube proíbe
+    distribuir credencial dentro de um projeto aberto, então nem uma credencial
+    que nunca tivesse vazado poderia voltar.
+
+    O que este arquivo dizia até aquele dia, nas TRÊS mensagens de "sem
+    cliente", era que a imagem distribuída já vinha com um e que faltar cliente
+    era sintoma de ter compilado o projeto em casa. Quem lia estava rodando
+    exatamente a imagem que se baixa pronta: a mensagem mandava caçar um
+    problema inexistente e, no espaço que gastava com isso, não dava o passo que
+    resolve.
+
+    Como a de cima, esta classe olha TEXTO e não comportamento. Uma promessa
+    volta por edição de frase, e nenhum teste que exercita `conecta()` a pega.
+    Nada aqui toca a rede.
+    """
+
+    def fonte(self):
+        with open(Y.__file__, encoding="utf-8") as fh:
+            return fh.read()
+
+    def as_tres_mensagens(self):
+        """As três mensagens que a pessoa lê quando não há cliente.
+
+        Vêm dos três COMANDOS, exercitados de verdade, e não das constantes: o
+        defeito de 15/09 não foi uma constante errada, foi a mesma frase copiada
+        em três lugares. Ler a constante aqui deixaria passar um quarto lugar
+        que voltasse a escrever o texto à mão.
+        """
+        self._restaura("CLIENT_ID", "")
+        self._restaura("CLIENT_SECRET", "")
+
+        with self.assertRaises(Y.YouTubeIndisponivel) as caixa:
+            Y.conecta()
+        conecta = str(caixa.exception)
+
+        with self.assertRaises(Y.YouTubeIndisponivel) as caixa:
+            # Um caminho que não existe, de propósito: a falta de cliente tem
+            # que ser vista ANTES do arquivo, senão a pessoa sem cliente recebe
+            # uma reclamação sobre o clipe.
+            Y.publica(os.path.join(self.tmp, "nao-existe.mp4"),
+                      titulo="Um clipe qualquer")
+        publica = str(caixa.exception)
+
+        ok, status = Y.status_conta()
+        self.assertFalse(ok, "sem cliente não é conta conectada")
+
+        return {"warden youtube connect": conecta,
+                "warden youtube publish": publica,
+                "warden status": status}
+
+    # As duas metades da frase antiga, em português e em inglês, do jeito que
+    # elas foram publicadas. Qualquer uma delas de volta é a regressão inteira.
+    FRASES_MORTAS = (
+        "the published image has one",
+        "published image has",
+        "the published image carries",
+        "a imagem publicada traz",
+        "a imagem publicada tem",
+        "imagem publicada carrega",
+        "a build from source needs",
+        "build feito do código-fonte precisa",
+    )
+
+    def test_nenhuma_linha_do_arquivo_diz_que_a_imagem_traz_cliente(self):
+        """Varre o ARQUIVO INTEIRO, linha a linha, como a trava do Studio.
+
+        Inclusive comentário, inclusive docstring: a mensagem que foi ao ar
+        errada nasceu de um comentário de módulo que afirmava a mesma coisa, e
+        travar só a constante deixaria a semente plantada.
+
+        Isso proíbe também CITAR a frase para contar a história — de propósito.
+        Uma citação e uma recaída são a mesma sequência de caracteres, e a trava
+        que tenta distinguir as duas é uma trava que se pode enganar.
+        """
+        culpadas = []
+        for numero, linha in enumerate(self.fonte().splitlines(), 1):
+            baixo = linha.lower()
+            for frase in self.FRASES_MORTAS:
+                if frase in baixo:
+                    culpadas.append(f"{numero}: {linha.strip()}")
+                    break
+        self.assertEqual(culpadas, [],
+                         "voltou a afirmar que a imagem distribuída traz o "
+                         "cliente OAuth; nenhuma traz desde 15/09/2026, e a "
+                         "política III.D.1 proíbe que volte a trazer")
+
+    # O que precisa estar na MESMA LINHA para a menção à imagem ser honesta.
+    NEGACAO = ("não", "nao", "nenhum", "no image", "carries no", "nunca",
+               "vazou", "vazad", "sem cliente")
+
+    def test_nenhuma_linha_fala_da_imagem_sem_negar_que_ela_traz(self):
+        """A rede de segurança da de cima, para a frase que ninguém previu.
+
+        A lista de frases mortas pega o que já foi escrito. Esta pega o que
+        alguém vai escrever amanhã com outras palavras — "a imagem oficial já
+        vem configurada", por exemplo. A unidade é a linha, pelo mesmo motivo
+        que lá em cima: janela de N caracteres absolve a promessa com a negação
+        do vizinho.
+        """
+        culpadas = []
+        for numero, linha in enumerate(self.fonte().splitlines(), 1):
+            baixo = linha.lower()
+            if "imagem publicada" not in baixo and "published image" not in baixo:
+                continue
+            if not any(n in baixo for n in self.NEGACAO):
+                culpadas.append(f"{numero}: {linha.strip()}")
+        self.assertEqual(culpadas, [],
+                         "alguma linha fala da imagem publicada sem negar, ali "
+                         "mesmo, que ela traz cliente OAuth")
+
+    def test_as_tres_mensagens_nomeiam_a_estrada_que_publica_publico(self):
+        """O ponto mais caro da auditoria, e não é o cliente OAuth.
+
+        As três mensagens falam do `warden youtube`, que sobe o vídeo TRANCADO
+        como privado e sem recurso. A pessoa lia as três, resolvia o cliente
+        OAuth, e chegava no mesmo beco — sem nunca ouvir falar do
+        `warden post youtube`, que publica por um intermediário e que em
+        15/09/2026 devolveu `privacyStatus: public` num envio real.
+
+        Nomear a estrada é o mínimo; o passo a passo fica no documento.
+        """
+        for comando, mensagem in self.as_tres_mensagens().items():
+            self.assertIn("warden post youtube", mensagem.lower(),
+                          f"a mensagem de `{comando}` não diz qual comando "
+                          "deixa o vídeo público de verdade")
+
+    def test_as_tres_mensagens_dizem_onde_a_credencial_mora(self):
+        """Dizer "não tem" sem dizer "põe aqui" é metade de uma mensagem.
+
+        `.env` é o ARQUIVO que a pessoa cria, ao lado do `compose.yml`, e
+        `docs/INSTALL.md` é onde está o passo a passo — que não se repete aqui,
+        porque um passo a passo em dois lugares fica errado no primeiro dia em
+        que um dos dois muda.
+        """
+        for comando, mensagem in self.as_tres_mensagens().items():
+            baixo = mensagem.lower()
+            self.assertIn(".env", baixo,
+                          f"a mensagem de `{comando}` não diz em que arquivo o "
+                          "par de cliente entra")
+            self.assertIn("docs/install.md", baixo,
+                          f"a mensagem de `{comando}` não aponta o passo a "
+                          "passo")
+
+    def test_as_tres_mensagens_dizem_que_nenhuma_imagem_traz_e_por_que(self):
+        """A verdade nova, com o motivo junto.
+
+        Sem o motivo, "crie o seu cliente" soa como burocracia inventada por
+        esta casa, e a primeira pessoa que achar um jeito de embutir o par na
+        imagem vai achar que está ajudando.
+        """
+        for comando, mensagem in self.as_tres_mensagens().items():
+            baixo = mensagem.lower()
+            self.assertIn("iii.d.1", baixo,
+                          f"a mensagem de `{comando}` não cita a política que "
+                          "proíbe embutir a credencial")
+            self.assertTrue(
+                "nenhuma imagem" in baixo or "no image" in baixo,
+                f"a mensagem de `{comando}` não diz que imagem nenhuma traz "
+                "cliente OAuth")
+
+    def test_as_tres_mensagens_nao_mandam_procurar_um_build_do_codigo_fonte(self):
+        """O defeito medido, do lado de quem lê: a mensagem acusava a pessoa de
+        ter compilado o projeto, e quem lia tinha só baixado a imagem."""
+        for comando, mensagem in self.as_tres_mensagens().items():
+            baixo = mensagem.lower()
+            for frase in ("build from source", "build feito do código-fonte",
+                          "a imagem publicada", "the published image"):
+                self.assertNotIn(frase, baixo,
+                                 f"a mensagem de `{comando}` voltou a mandar "
+                                 f"caçar '{frase}'")
+
+
 # O guarda de execução direta fica no FIM, e não no meio, que era onde estava:
 # tudo declarado depois dele não rodava em `python3 tests/test_youtube.py`.
 # `unittest discover` importa o módulo inteiro e nunca sentiu falta, então o

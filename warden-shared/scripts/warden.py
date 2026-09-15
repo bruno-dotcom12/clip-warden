@@ -19,6 +19,7 @@ Exit codes are the contract, because the caller is usually a shell: 0 the clip
 may be posted, 1 it may not, 2 the command itself was wrong.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -2988,16 +2989,35 @@ def executa_o_plano(plan, args):
     return liberados, failed, asked, mosaicos
 
 
-def conta_do_lote(liberados, failed, asked, sheet=None, depois=None):
+def conta_do_lote(liberados, failed, asked, sheet=None, depois=None,
+                  sem_legenda=None):
     """A conta do lote e o bloco da mensagem final. 0 se todos saíram, 1 se não.
 
     `sheet` é o contact sheet combinado do lote, quando quem chama montou um;
-    `depois` é o que ficou renderizando em background, quando ficou.
+    `depois` é o que ficou renderizando em background, quando ficou;
+    `sem_legenda` são os clipes que saíram sem uma palavra na tela num lote que
+    PEDIU legenda, com o porquê de cada um.
     """
     print(f"\n# {len(liberados)} of {asked} cleared for delivery. NONE of them "
           f"has been sent by this command.", file=sys.stderr)
     for name, why in failed:
         print(f"#   missing: {name} -- {why}", file=sys.stderr)
+    # Clipe mudo ao lado de clipe que falhou, e no MESMO lugar: a conta final.
+    #
+    # Ele não é pego por nenhum portão. `deliver` reprova "legenda pedida e
+    # nenhuma queimada", mas só quando `asked_for_captions` é verdadeiro -- e
+    # isso é `bool(caption_srt)` (`warden_media.cut`), ou seja, um clipe cortado
+    # SEM SRT nunca pediu legenda e nada falta. O clipe passa por tudo, sai
+    # bonito e mudo, e o motivo ficava numa linha de stderr trinta linhas
+    # acima. Aqui ele fica onde o modelo tem de repetir.
+    for name, why in (sem_legenda or []):
+        print(f"#   NO CAPTIONS: {name} -- {why}", file=sys.stderr)
+    if sem_legenda:
+        print(f"# {len(sem_legenda)} of the {asked} clip(s) render with NO "
+              f"words on screen, and this batch asked for captions. Say that "
+              f"in the same final message, naming each clip and why: a silent "
+              f"clip reported as a finished one is the delivery this tool "
+              f"exists to stop.", file=sys.stderr)
     if sheet:
         # UM mosaico para o lote inteiro. Cada clipe já tem o seu -- `deliver`
         # não entrega sem ele -- e este não substitui nenhum: ele é a
@@ -3071,8 +3091,47 @@ minutos depois de ninguém ver nada.
 """
 
 
-def _dir_do_lote():
-    return safe_out(os.path.join(state_dir(), "footage", "lote"),
+def _marca_da_fonte(url):
+    """O identificador deste link, e ele é o MESMO que o do arquivo de janela.
+
+    `warden_media.archive_windows` nomeia cada janela `janela-<marca>-...` com
+    `sha256(url)[:10]` -- é de lá que vem o `janela-0424974c68-...` que está no
+    disco. Esta função repete a MESMA conta de propósito, em vez de inventar
+    outra: duas contas para responder "que link é este" são duas respostas
+    diferentes no dia em que uma delas mudar, e aí o diretório do lote e os
+    arquivos que caem dentro dele falam de links diferentes.
+
+    A normalização é só `strip()`, e isso é deliberado. Qualquer coisa além
+    disso -- minúsculas no host, tirar a barra final, ordenar a query -- faria
+    esta marca divergir da que o nome `janela-` carrega, que é exatamente o que
+    não pode acontecer enquanto `warden_media` fizer a conta sobre a URL crua.
+    """
+    return hashlib.sha256(str(url or "").strip().encode("utf-8")).hexdigest()[:10]
+
+
+def _dir_do_lote(url):
+    """O diretório deste LINK, e não um diretório de lote só para todos.
+
+    Era fixo -- `footage/lote`, o mesmo para qualquer link -- e isso entregava
+    arquivo errado em silêncio. A sequência, achada numa auditoria adversarial
+    de instalação nova:
+
+      1. `lote prep <A>`: A publica legenda, e `lote.legenda.json` fica com a
+         ficha de A;
+      2. `lote prep <B>`: B não publica legenda e a fonte inteira não rende SRT
+         nenhum, então a ficha NÃO é reescrita (ver `_lote_prep`: ela só é
+         reescrita quando o prep produziu SRT);
+      3. `lote render <B>`: lê a ficha que sobrou de A e queima a legenda de A
+         nos clipes de B.
+
+    Ninguém percebe: o clipe sai bonito, com as palavras erradas. Um diretório
+    por link corta a raiz -- a ficha de A não está no caminho de B para ser
+    lida. O cinto e suspensório está na própria ficha, que grava de que link
+    ela é e é recusada quando não bate (ver `_lote_render`), porque o hash
+    sozinho não protege de alguém mudar o esquema de diretório depois.
+    """
+    return safe_out(os.path.join(state_dir(), "footage", "lote",
+                                 _marca_da_fonte(url)),
                     "batch directory")
 
 
@@ -3132,7 +3191,8 @@ def _lote_prep(args):
     rules = regras_de(args.campaign)
     stored = P.load(state_dir())
     entries = avaliza_o_link_de_quem_mandou(url, load_trusted())
-    out = _dir_do_lote()
+    out = _dir_do_lote(url)
+    os.makedirs(out, exist_ok=True)
 
     # 1+2. O portão e o texto, na mesma chamada. O portão não pergunta e não
     # pede licença: quem mandou o link autorizou o material (decisão do dono,
@@ -3177,10 +3237,16 @@ def _lote_prep(args):
         try:
             with open(srt, "w", encoding="utf-8") as fh:
                 fh.write(texto_srt)
+            # `url` e `source_id` são o cinto e suspensório do diretório por
+            # link. O diretório já separa A de B, mas ele é um ESQUEMA, e um
+            # esquema pode ser mudado por quem vier depois; a ficha dizendo de
+            # quem ela é sobrevive à mudança, porque o `render` a confere
+            # contra o link que lhe pediram e recusa a que não bater.
             with open(os.path.join(out, "lote.legenda.json"), "w",
                       encoding="utf-8") as fh:
                 json.dump({"srt": srt, "published": publicada,
-                           "source": transcricao.get("source")}, fh,
+                           "source": transcricao.get("source"),
+                           "url": url, "source_id": _marca_da_fonte(url)}, fh,
                           ensure_ascii=False, indent=1)
         except OSError:
             srt = None
@@ -3237,8 +3303,110 @@ def _lote_prep(args):
     return 0
 
 
+def _porque_a_linha_suspeita_trava(pendentes):
+    """A recusa que já vem com o comando que a destrava.
+
+    O `--keep` EXATO, com a linha entre aspas, pronto para colar. A diferença
+    entre isto e "há uma linha suspeita" é a diferença entre o clipe sair com
+    legenda e sair mudo numa campanha que paga pela legenda: uma frase que
+    descreve o problema sem dar o comando que o resolve custa mais um turno.
+
+    Uma função só, e não duas cópias, porque o portão agora tem DOIS caminhos
+    até ele -- a legenda publicada e a transcrição da janela -- e uma regra que
+    vive em dois lugares são duas regras na primeira vez que uma é editada.
+    """
+    colar = " ".join(f'--keep "{r["text"].strip()}"' for r in pendentes)
+    return (f"{len(pendentes)} suspect line(s) are not decided, so this clip "
+            f"renders WITHOUT captions rather than burn a word nobody read. "
+            f"Read each line below against the video; if it is right, re-run "
+            f"this SAME command with these flags appended and the words "
+            f"burn:\n#     {colar}\n"
+            f"#   the lines, as they will appear on screen: "
+            + " | ".join(r["text"].strip() for r in pendentes))
+
+
+def _legenda_da_janela(out, resultados, janelas, guardadas):
+    """Transcreve CADA janela e assina o que der. ({janela: srt}, {janela: porquê}).
+
+    Existe porque uma fonte SEM legenda publicada entregava o lote inteiro sem
+    legenda, em silêncio. O `render` não assinava nada, `queimar` ficava vazio,
+    todo clipe saía sem uma palavra na tela -- e o portão de `deliver` não
+    dispara nesse caso, porque `asked_for_captions` é `bool(caption_srt)`
+    (`warden_media.cut`): sem SRT passado, ninguém pediu legenda, logo nada
+    falta. Só que a legenda queimada é o produto anunciado e o padrão do
+    projeto é `captions: yes`.
+
+    É a JANELA que é transcrita, e não a fonte: `proposito="janela"` é o
+    caminho que escolhe o modelo `small`. O SRT da fonte que o `prep` escreve
+    veio do modelo BARATO e serve para escolher o momento, não para queimar --
+    é o que o próprio `_lote_prep` já diz.
+
+    Os tempos voltam no relógio da FONTE. O arquivo de janela tem relógio
+    próprio: o zero dele é `de - dentro`, onde `dentro` é o IN_POINT que o
+    `archive_windows` devolveu. É nesse relógio que a aprovação é escrita e que
+    o `cut` alinha a legenda pela ficha `.origem.json`, então somar o
+    deslocamento aqui é o que impede a legenda de sair de outro trecho.
+
+    O portão da linha suspeita NÃO relaxa: `--keep` continua obrigatório. Ele
+    existe porque "Em 1826" e "jokovic jokovic" foram para a tela.
+    """
+    import warden_style as S
+    decididas = {t.strip() for t in (guardadas or [])}
+    queimar, porques = {}, {}
+    for i, ((caminho, dentro), (de, ate)) in enumerate(zip(resultados, janelas), 1):
+        queimar[(de, ate)] = None
+        try:
+            transcricao = _media().transcribe(caminho, proposito="janela")
+        except Exception as exc:
+            # Uma janela que não transcreveu não derruba as outras: ela sai
+            # muda, e a conta final do lote diz qual e por quê.
+            porques[(de, ate)] = (f"the window could not be transcribed "
+                                  f"({type(exc).__name__}: {exc}), so there is "
+                                  f"nothing to burn on it")
+            continue
+        zero = float(de) - float(dentro)
+        segmentos = []
+        for seg in transcricao.get("segments") or []:
+            comeco = seg.get("start")
+            fim = seg.get("end")
+            if comeco is None or fim is None:
+                continue
+            segmentos.append({"start": round(float(comeco) + zero, 2),
+                              "end": round(float(fim) + zero, 2),
+                              "text": seg.get("text") or ""})
+        texto = _media().to_srt(segmentos)
+        if not texto.strip():
+            porques[(de, ate)] = ("faster-whisper heard no speech in this "
+                                  "window, so there is nothing to burn on it")
+            continue
+        alvo = safe_out(os.path.join(out, f"lote-janela-{i:02d}.srt"),
+                        "subtitles")
+        try:
+            with open(alvo, "w", encoding="utf-8") as fh:
+                fh.write(texto)
+        except OSError as exc:
+            porques[(de, ate)] = (f"could not write "
+                                  f"{os.path.basename(alvo)} ({exc}), so this "
+                                  f"clip has no subtitle file to burn")
+            continue
+        dentro_da_janela = [r for r in _media()._read_srt(alvo)
+                            if r["end"] > de and r["start"] < ate]
+        pendentes = [r for r, _w in linhas_suspeitas(dentro_da_janela)
+                     if r["text"].strip() not in decididas]
+        if pendentes:
+            porques[(de, ate)] = _porque_a_linha_suspeita_trava(pendentes)
+            continue
+        S.write_approval(alvo, start=de, end=ate)
+        queimar[(de, ate)] = alvo
+    return queimar, porques
+
+
 def _aprova_as_janelas(srt, janelas, guardadas):
-    """Assina as linhas das janelas escolhidas. ({janela: ok}, [avisos]).
+    """Assina as linhas das janelas escolhidas. ({janela: ok}, [(janela, porquê)]).
+
+    O porquê volta ATRELADO à janela, e não como uma linha solta. Ele tem de
+    chegar à conta final do lote nomeando o clipe que saiu mudo -- um aviso
+    solto no meio de trinta linhas de render é um aviso que ninguém repete.
 
     Automático porque a legenda vem PUBLICADA pelo detentor dos direitos, e é
     o serviço contratado numa campanha musical: a campanha entrega o material
@@ -3265,8 +3433,8 @@ def _aprova_as_janelas(srt, janelas, guardadas):
         dentro = [r for r in linhas if r["end"] > de and r["start"] < ate]
         if not dentro:
             situacao[(de, ate)] = False
-            avisos.append(f"{de:.1f}-{ate:.1f}s: no caption line falls in this "
-                          f"window, so it renders with no words on screen")
+            avisos.append(((de, ate), "no caption line falls in this window, "
+                                      "so it renders with no words on screen"))
             continue
         pendentes = [r for r, _w in linhas_suspeitas(dentro)
                      if r["text"].strip() not in decididas]
@@ -3277,15 +3445,7 @@ def _aprova_as_janelas(srt, janelas, guardadas):
             # entre o clipe sair com legenda e sair mudo numa campanha que
             # paga pela legenda: uma frase que descreve o problema sem dar o
             # comando que o resolve é uma frase que custa mais um turno.
-            colar = " ".join(f'--keep "{r["text"].strip()}"' for r in pendentes)
-            avisos.append(
-                f"{de:.1f}-{ate:.1f}s: {len(pendentes)} suspect line(s) are "
-                f"not decided, so this clip renders WITHOUT captions rather "
-                f"than burn a word nobody read. Read each line below against "
-                f"the video; if it is right, re-run this SAME command with "
-                f"these flags appended and the words burn:\n#     {colar}\n"
-                f"#   the lines, as they will appear on screen: "
-                + " | ".join(r["text"].strip() for r in pendentes))
+            avisos.append(((de, ate), _porque_a_linha_suspeita_trava(pendentes)))
             continue
         S.write_approval(srt, start=de, end=ate)
         situacao[(de, ate)] = True
@@ -3341,7 +3501,8 @@ def _lote_render(args):
     rules = regras_de(args.campaign)
     stored = P.load(state_dir())
     entries = avaliza_o_link_de_quem_mandou(url, load_trusted())
-    out = _dir_do_lote()
+    out = _dir_do_lote(url)
+    os.makedirs(out, exist_ok=True)
     if not args.windows:
         die("lote render needs --windows: the seconds of the source you chose "
             "on `warden lote prep`, as 181-201.6,745.5-765", code=2)
@@ -3375,46 +3536,80 @@ def _lote_render(args):
     srt, publicada = args.subtitles, False
     ficha = os.path.join(out, "lote.legenda.json")
     if not srt and os.path.isfile(ficha):
+        carregado = None
         try:
             with open(ficha, encoding="utf-8") as fh:
                 carregado = json.load(fh)
+        except (OSError, ValueError):
+            carregado = None
+        # O suspensório. O diretório já é por link, então esta ficha só deveria
+        # ser a deste link -- mas o diretório é um ESQUEMA, e foi um esquema de
+        # diretório único que queimou a legenda de um link nos clipes de outro.
+        # Então a ficha diz de quem ela é, e o render RECUSA a que não bater,
+        # nomeando os dois links. Uma ficha antiga, escrita antes de este campo
+        # existir, também não passa: ela não consegue provar de quem é, e
+        # queimar sem essa prova é a aposta que este bloco existe para não
+        # fazer -- um `warden lote prep` a reescreve em segundos.
+        if carregado is not None:
+            if carregado.get("source_id") != _marca_da_fonte(url):
+                die(f"the caption card in {ficha} is not this link's and will "
+                    f"not be burned: it was written for "
+                    f"{carregado.get('url') or '(a link it does not name)'} "
+                    f"and this command was asked for {url}. A caption from "
+                    f"another video looks finished and says things nobody "
+                    f"said. Run `warden lote prep {url}` to write this link's "
+                    f"own card, or delete that file.", code=2)
             srt = carregado.get("srt")
             publicada = bool(carregado.get("published"))
-        except (OSError, ValueError):
-            srt = None
     elif srt:
         publicada = True          # passado à mão é uma decisão de quem passou
     if srt and not os.path.isfile(srt):
         srt = None
-    queimar = {}
-    if srt and padroes["captions"]:
-        if publicada:
-            queimar, avisos = _aprova_as_janelas(srt, janelas,
-                                                 getattr(args, "keep", None))
-        else:
-            # Transcrição nossa: continua exigindo `warden captions review`.
-            # Assinar em massa o que o Whisper escreveu é exatamente o defeito
-            # que a revisão existe para impedir.
-            queimar = {}
-            avisos = [f"the words in {os.path.basename(srt)} are a "
-                      f"transcription, not a published subtitle, so nothing is "
-                      f"signed automatically. Read them with `warden captions "
-                      f"review {srt} --start <s> --end <s> --approve`."]
-        for aviso in avisos:
-            print(f"# {aviso}", file=sys.stderr)
-    elif srt:
-        print("# captions are off for this batch, so nothing is signed or "
-              "burned.", file=sys.stderr)
+
+    queimar, porques = {}, {}
+    if not padroes["captions"]:
+        if srt:
+            print("# captions are off for this batch, so nothing is signed or "
+                  "burned.", file=sys.stderr)
+    elif srt and publicada:
+        situacao, avisos = _aprova_as_janelas(srt, janelas,
+                                              getattr(args, "keep", None))
+        for janela, ok in situacao.items():
+            queimar[janela] = srt if ok else None
+        for janela, aviso in avisos:
+            porques[janela] = aviso
+    else:
+        # A fonte não publica legenda -- ficha ausente, ou ficha dizendo que o
+        # texto do `prep` é transcrição nossa. Antes daqui saía o lote inteiro
+        # SEM legenda, calado: `queimar` vazio, nenhum SRT passado ao `cut`, e
+        # o portão de entrega dorme porque `asked_for_captions` é
+        # `bool(caption_srt)`. Agora a janela é transcrita com o modelo bom e
+        # essa transcrição é o que queima -- com o portão da linha suspeita
+        # intacto.
+        queimar, porques = _legenda_da_janela(out, resultados, janelas,
+                                              getattr(args, "keep", None))
+    for janela, porque in porques.items():
+        print(f"# {janela[0]:.1f}-{janela[1]:.1f}s: {porque}", file=sys.stderr)
 
     # 3. O plano, e o motor do lote que já existe. `lote` é orquestração: uma
     # segunda implementação de "renderiza N janelas e cobra a conta" é uma
     # segunda contagem, e a contagem é o que se está consertando.
-    clips = []
+    clips, mudos = [], []
     for i, ((caminho, dentro), (de, ate)) in enumerate(zip(resultados, janelas), 1):
-        clips.append({"out": f"corte-{i:02d}.mp4", "source": caminho,
+        nome = f"corte-{i:02d}.mp4"
+        legenda = queimar.get((de, ate))
+        # Um clipe que sai mudo num lote que pediu legenda é entrega errada, e
+        # o porquê dele não pode morrer numa linha de stderr no meio do render.
+        # Ele vai para a CONTA FINAL, ao lado dos clipes que falharam, porque é
+        # lá que o modelo é obrigado a repetir o que aconteceu.
+        if padroes["captions"] and not legenda:
+            mudos.append((nome, porques.get((de, ate))
+                          or f"nothing was signed for the {de:.1f}-{ate:.1f}s "
+                             f"window, so no words go on screen"))
+        clips.append({"out": nome, "source": caminho,
                       "start": dentro, "end": dentro + (ate - de),
                       "hook": hooks[i - 1] if i <= len(hooks) else None,
-                      "subtitles": srt if queimar.get((de, ate)) else None,
+                      "subtitles": legenda,
                       "seconds": padroes["seconds"],
                       "_": f"janela {de:.1f}-{ate:.1f}s da fonte"})
     plano = {"campaign": args.campaign, "sound": padroes["sound"],
@@ -3473,7 +3668,8 @@ def _lote_render(args):
         sound=padroes["sound"], seconds=padroes["seconds"], any_length=False)
     liberados, failed, asked, mosaicos = executa_o_plano(plano, argumentos)
     folha = _mosaico_do_lote(mosaicos, os.path.join(out, "lote-contato.jpg"))
-    return conta_do_lote(liberados, failed, asked, sheet=folha, depois=depois)
+    return conta_do_lote(liberados, failed, asked, sheet=folha, depois=depois,
+                         sem_legenda=mudos)
 
 
 def cmd_lote(args):

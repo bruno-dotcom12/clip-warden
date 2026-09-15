@@ -73,8 +73,17 @@ class _MediaFalso:
     def __init__(self, base, publicada=True):
         self.base = base
         self.publicada = publicada
+        # Dois links na MESMA instalação, que é o que a auditoria de instalação
+        # nova mediu: um publica legenda e o outro não. Sem isto o dublê só
+        # sabia representar um link de cada vez, e um lote que queima a legenda
+        # do link anterior nos clipes deste não tinha como aparecer.
+        self.publicada_por_url = {}
+        self.segmentos_por_url = {}
+        # O que o whisper ouve DENTRO de um arquivo de janela, no relógio dele.
+        self.segmentos_de_janela = None
         self.chamadas = []
         self.cortes = []
+        self._url_do_arquivo = {}
 
     # -------------------------------------------------------------- prep
     def archive_trusted(self, url, out_dir, entries, mode="video"):
@@ -83,20 +92,30 @@ class _MediaFalso:
         caminho = os.path.join(out_dir, "fonte.pt.srt")
         with open(caminho, "w", encoding="utf-8") as fh:
             fh.write("1\n00:00:10,000 --> 00:00:14,000\nfala\n\n")
+        self._url_do_arquivo[caminho] = url
         return caminho
 
     def transcribe(self, path, **kw):
         self.chamadas.append(("transcribe", path, kw))
-        fonte = ("published subtitles (pt)" if self.publicada
-                 else "whisper base")
-        return {"source": fonte, "language": "pt", "segments": list(SEGMENTOS)}
+        if os.path.basename(path).startswith("janela-"):
+            # O caminho de janela: outro arquivo, outro relógio e outro modelo.
+            return {"source": "faster-whisper small (only this window)",
+                    "language": "pt",
+                    "segments": [dict(s) for s in (self.segmentos_de_janela or [])]}
+        url = self._url_do_arquivo.get(path)
+        publicada = self.publicada_por_url.get(url, self.publicada)
+        fonte = "published subtitles (pt)" if publicada else "whisper base"
+        segmentos = self.segmentos_por_url.get(url, SEGMENTOS)
+        return {"source": fonte, "language": "pt",
+                "segments": [dict(s) for s in segmentos]}
 
     def to_srt(self, segments):
-        linhas = []
-        for i, s in enumerate(segments, 1):
-            linhas.append(f"{i}\n00:00:{int(s['start']):02d},000 --> "
-                          f"00:00:{int(s['end']):02d},000\n{s['text']}\n")
-        return "\n".join(linhas)
+        # O SRT de verdade, do módulo de verdade: o que este dublê simula é a
+        # REDE, e escrever um timestamp não é rede. Um formatador caseiro aqui
+        # escrevia `00:00:300` para 300s e a legenda lida de volta não era a
+        # mesma que foi escrita.
+        import warden_media
+        return warden_media.to_srt(segments)
 
     def digest(self, segments, window=None):
         self.chamadas.append(("digest", len(segments)))
@@ -122,11 +141,12 @@ class _MediaFalso:
         return saida
 
     def _read_srt(self, caminho):
-        linhas = []
-        for s in SEGMENTOS:
-            linhas.append({"start": s["start"], "end": s["end"],
-                           "text": s["text"]})
-        return linhas
+        # Lê o ARQUIVO, e não uma lista fixa. Devolver sempre `SEGMENTOS`
+        # respondia a mesma coisa para o SRT de qualquer link -- que é
+        # exatamente o defeito sob teste -- e nenhuma asserção conseguia
+        # distinguir a legenda de um link da do outro.
+        import warden_media
+        return warden_media._read_srt(caminho)
 
     def cut(self, source, out, rules, start, end, **kw):
         self.cortes.append({"source": source, "out": out, "start": start,
@@ -203,6 +223,14 @@ class _ComLoteFalso(unittest.TestCase):
 
 
 URL = "https://www.youtube.com/watch?v=abcdefghijk"
+# O segundo link da MESMA instalação. Ele existe porque o defeito só aparece
+# com dois: o lote de um link queimava a legenda que sobrou do outro.
+URL_B = "https://www.youtube.com/watch?v=zyxwvutsrqp"
+
+PALAVRAS_DE_A = [
+    {"start": 10.0, "end": 14.0, "text": "esta fala pertence ao link A"},
+    {"start": 20.0, "end": 24.0, "text": "e esta tambem é do link A"},
+]
 
 
 class LotePrepEUmaLeituraSo(_ComLoteFalso):
@@ -292,7 +320,7 @@ class LotePrepEUmaLeituraSo(_ComLoteFalso):
         """
         _code, saida, _erro = self._roda(["lote", "prep", URL])
         self.assertIn("SRT:", saida)
-        ficha = os.path.join(warden._dir_do_lote(), "lote.legenda.json")
+        ficha = os.path.join(warden._dir_do_lote(URL), "lote.legenda.json")
         with open(ficha, encoding="utf-8") as fh:
             dados = json.load(fh)
         self.assertTrue(dados["published"])
@@ -300,7 +328,7 @@ class LotePrepEUmaLeituraSo(_ComLoteFalso):
     def test_transcricao_nossa_nao_e_marcada_como_publicada(self):
         self.media.publicada = False
         self._roda(["lote", "prep", URL])
-        ficha = os.path.join(warden._dir_do_lote(), "lote.legenda.json")
+        ficha = os.path.join(warden._dir_do_lote(URL), "lote.legenda.json")
         with open(ficha, encoding="utf-8") as fh:
             self.assertFalse(json.load(fh)["published"])
 
@@ -359,7 +387,7 @@ class LoteRenderFazTudoODepois(_ComLoteFalso):
         self.assertTrue(self.media.cortes[0]["caption_srt"],
                         "a janela veio da legenda publicada e não foi queimada")
         import warden_style as S
-        srt = os.path.join(warden._dir_do_lote(), "lote.srt")
+        srt = os.path.join(warden._dir_do_lote(URL), "lote.srt")
         ok, _porque = S.approval_state(srt, start=10.0, end=14.0)
         self.assertTrue(ok)
 
@@ -395,13 +423,25 @@ class LoteRenderFazTudoODepois(_ComLoteFalso):
         self.assertEqual(code, 0, erro)
         self.assertTrue(self.media.cortes[0]["caption_srt"])
 
-    def test_transcricao_nossa_nao_e_assinada_sozinha(self):
+    def test_o_srt_da_fonte_inteira_nao_e_o_que_queima(self):
+        """O texto do `prep` é do modelo BARATO sobre a fonte inteira.
+
+        Ele serve para escolher o momento, e é o próprio `_lote_prep` que diz
+        isso. O que queima é a transcrição da JANELA, feita de novo com o
+        modelo bom -- nunca o SRT da varredura.
+        """
         self.media.publicada = False
+        self.media.segmentos_de_janela = [
+            {"start": 2.0, "end": 6.0, "text": "a palavra desta janela"}]
         self._prep()
         _code, _saida, erro = self._roda(
-            ["lote", "render", URL, "--windows", "10-14", "--hooks", "x"])
-        self.assertIn("warden captions review", erro)
-        self.assertIsNone(self.media.cortes[0]["caption_srt"])
+            ["lote", "render", URL, "--windows", "10-30", "--hooks", "x"])
+        queimado = self.media.cortes[0]["caption_srt"]
+        self.assertTrue(queimado, erro)
+        self.assertNotEqual(
+            queimado, os.path.join(warden._dir_do_lote(URL), "lote.srt"))
+        with open(queimado, encoding="utf-8") as fh:
+            self.assertIn("a palavra desta janela", fh.read())
 
     def test_um_render_por_vez(self):
         """`WARDEN_RENDER_PARALELO` continua 1, e não é gosto: é memória.
@@ -438,7 +478,7 @@ class LoteRenderFazTudoODepois(_ComLoteFalso):
             ["lote", "render", URL, "--windows", "10-30,60-80",
              "--hooks", "um|dois"])
         folhas = [l for l in (saida + erro).splitlines() if l.startswith("SHEET:")]
-        combinado = os.path.join(warden._dir_do_lote(), "lote-contato.jpg")
+        combinado = os.path.join(warden._dir_do_lote(URL), "lote-contato.jpg")
         self.assertTrue(os.path.isfile(combinado), erro)
         self.assertTrue(any(combinado in l for l in folhas),
                         "o mosaico do lote não foi impresso")
@@ -466,6 +506,202 @@ class LoteRenderFazTudoODepois(_ComLoteFalso):
             ["lote", "render", URL, "--windows", "10-30", "--hooks", "x"])
         self.assertEqual(code, 0, erro)
         self.assertEqual(self.media.cortes[0]["sound"], "embedded")
+
+
+class OLoteDeUmLinkNaoQueimaALegendaDeOutro(_ComLoteFalso):
+    """O diretório do lote é por LINK, e a ficha diz de qual link ela é.
+
+    Achado numa auditoria adversarial de instalação nova. O diretório do lote
+    era FIXO -- `footage/lote`, o mesmo para todo link -- e a ficha
+    `lote.legenda.json` só é reescrita quando o `prep` produziu SRT. Então:
+
+      1. `lote prep <A>`: A publica legenda e a ficha fica com as palavras de A;
+      2. `lote prep <B>`: B não publica legenda e não tem fala que o modelo
+         barato ouça na fonte inteira, então nada é reescrito;
+      3. `lote render <B>`: lê a ficha que sobrou de A e queima a legenda de A
+         nos clipes de B.
+
+    Ninguém percebe. O clipe sai bonito, com as palavras erradas -- que é a
+    classe de defeito que este projeto existe para impedir.
+    """
+
+    def _dois_links(self):
+        self.media.segmentos_por_url[URL] = PALAVRAS_DE_A
+        self.media.publicada_por_url[URL_B] = False
+        # B é um clipe musical sem fala que o modelo barato ouça na fonte
+        # inteira: é o caso em que o `prep` não produz SRT nenhum e a ficha
+        # anterior sobrevive.
+        self.media.segmentos_por_url[URL_B] = []
+
+    def test_os_clipes_de_B_nao_carregam_a_legenda_de_A(self):
+        self._dois_links()
+        self.media.segmentos_de_janela = []
+        self._roda(["lote", "prep", URL])
+        self._roda(["lote", "prep", URL_B])
+        code, _saida, erro = self._roda(
+            ["lote", "render", URL_B, "--windows", "10-30", "--hooks", "x"])
+        self.assertEqual(code, 0, erro)
+        queimado = self.media.cortes[0]["caption_srt"]
+        if queimado and os.path.isfile(queimado):
+            with open(queimado, encoding="utf-8") as fh:
+                texto = fh.read()
+            self.assertNotIn("link A", texto,
+                             "os clipes de B saíram com a legenda de A")
+        self.assertIsNone(queimado,
+                          "B não tem palavra nenhuma, então nada pode queimar")
+
+    def test_cada_link_tem_o_seu_diretorio_com_a_marca_do_arquivo_de_janela(self):
+        """E a marca é a MESMA que `janela-<marca>-...` carrega.
+
+        Duas contas diferentes para "que link é este" são duas respostas
+        diferentes no dia em que uma delas mudar.
+        """
+        import hashlib
+        self.assertNotEqual(warden._dir_do_lote(URL), warden._dir_do_lote(URL_B))
+        marca = hashlib.sha256(URL.encode()).hexdigest()[:10]
+        self.assertTrue(warden._dir_do_lote(URL).endswith(marca),
+                        warden._dir_do_lote(URL))
+
+    def test_o_prep_de_B_nao_apaga_a_ficha_de_A(self):
+        self._dois_links()
+        self._roda(["lote", "prep", URL])
+        self._roda(["lote", "prep", URL_B])
+        ficha_a = os.path.join(warden._dir_do_lote(URL), "lote.legenda.json")
+        with open(ficha_a, encoding="utf-8") as fh:
+            dados = json.load(fh)
+        self.assertTrue(dados["published"])
+        self.assertEqual(dados["url"], URL)
+        self.assertFalse(os.path.isfile(
+            os.path.join(warden._dir_do_lote(URL_B), "lote.legenda.json")))
+
+    def test_a_ficha_de_outro_link_e_recusada_nomeando_os_dois(self):
+        """Cinto e suspensório: o hash sozinho não protege de mudarem o esquema.
+
+        Se um dia o diretório voltar a ser um só, a ficha ainda diz de quem ela
+        é -- e o render recusa em vez de queimar.
+        """
+        self._dois_links()
+        self._roda(["lote", "prep", URL])
+        destino = warden._dir_do_lote(URL_B)
+        os.makedirs(destino, exist_ok=True)
+        shutil.copy(os.path.join(warden._dir_do_lote(URL), "lote.legenda.json"),
+                    os.path.join(destino, "lote.legenda.json"))
+        code, _saida, erro = self._roda(
+            ["lote", "render", URL_B, "--windows", "10-30", "--hooks", "x"])
+        self.assertNotEqual(code, 0)
+        self.assertIn(URL, erro)
+        self.assertIn(URL_B, erro)
+        self.assertEqual(self.media.cortes, [],
+                         "nenhum clipe pode sair de uma ficha de outro link")
+
+
+class FonteSemLegendaPublicadaNaoEntregaClipeMudo(_ComLoteFalso):
+    """A legenda queimada é o produto anunciado, e o padrão é `captions: yes`.
+
+    Segundo achado da mesma auditoria. Quando a fonte não publicava legenda, o
+    `render` não assinava nada, `queimar` ficava vazio e TODOS os clipes saíam
+    sem uma palavra na tela -- em silêncio. O portão de `deliver` não pega
+    esse caso: ele reprova "legenda pedida e nenhuma queimada", mas
+    `asked_for_captions` é `bool(caption_srt)`, então um clipe cortado sem SRT
+    nunca pediu legenda e nada falta.
+    """
+
+    def _sem_legenda_publicada(self, texto_da_janela):
+        self.media.publicada = False
+        self.media.segmentos_de_janela = [
+            {"start": 2.0, "end": 6.0, "text": texto_da_janela}]
+
+    def test_a_transcricao_da_janela_e_queimada(self):
+        self._sem_legenda_publicada("as palavras desta janela e nao de outra")
+        self._roda(["lote", "prep", URL])
+        code, _saida, erro = self._roda(
+            ["lote", "render", URL, "--windows", "10-30", "--hooks", "x"])
+        self.assertEqual(code, 0, erro)
+        queimado = self.media.cortes[0]["caption_srt"]
+        self.assertTrue(queimado, "o clipe saiu mudo numa fonte sem legenda")
+        with open(queimado, encoding="utf-8") as fh:
+            texto = fh.read()
+        self.assertIn("as palavras desta janela e nao de outra", texto)
+        # e no relógio da FONTE: o arquivo de janela começa em 8s (10 menos o
+        # IN_POINT de 2s), então 2s dentro dele são 10s da fonte. Sem essa
+        # soma a legenda sai de outro trecho, que é o defeito que o
+        # `.origem.json` existe para impedir.
+        self.assertIn("00:00:10,000", texto)
+
+    def test_e_a_transcricao_e_a_da_janela_com_o_modelo_bom(self):
+        self._sem_legenda_publicada("as palavras desta janela")
+        self._roda(["lote", "prep", URL])
+        self._roda(["lote", "render", URL, "--windows", "10-30", "--hooks", "x"])
+        janela = [c for c in self.media.chamadas
+                  if c[0] == "transcribe"
+                  and os.path.basename(c[1]).startswith("janela-")]
+        self.assertTrue(janela, "a janela nunca foi transcrita")
+        self.assertEqual(janela[0][2].get("proposito"), "janela")
+
+    def test_linha_suspeita_continua_exigindo_keep_e_entra_na_conta_final(self):
+        """O portão não relaxa: "Em 1826" e "jokovic jokovic" foram para a tela.
+
+        E o clipe que sai mudo por causa dele não pode ficar num stderr solto
+        no meio do lote: ele vai para a CONTA FINAL, nomeado, ao lado dos
+        clipes que falharam.
+        """
+        self._sem_legenda_publicada("foram 90 mil reais naquele dia")
+        self._roda(["lote", "prep", URL])
+        code, _saida, erro = self._roda(
+            ["lote", "render", URL, "--windows", "10-30", "--hooks", "x"])
+        self.assertEqual(code, 0, erro)
+        self.assertIsNone(self.media.cortes[0]["caption_srt"])
+        self.assertIn('--keep "foram 90 mil reais naquele dia"', erro)
+        conta = erro.split("cleared for delivery", 1)[1]
+        self.assertIn("NO CAPTIONS: corte-01.mp4", conta)
+        self.assertIn("--keep", conta)
+        self.assertIn("words on screen", conta)
+
+    def test_com_keep_a_linha_suspeita_da_janela_queima(self):
+        self._sem_legenda_publicada("foram 90 mil reais naquele dia")
+        self._roda(["lote", "prep", URL])
+        code, _saida, erro = self._roda(
+            ["lote", "render", URL, "--windows", "10-30", "--hooks", "x",
+             "--keep", "foram 90 mil reais naquele dia"])
+        self.assertEqual(code, 0, erro)
+        self.assertTrue(self.media.cortes[0]["caption_srt"])
+        self.assertNotIn("NO CAPTIONS", erro)
+
+    def test_janela_sem_fala_nenhuma_sai_dita_na_conta_final(self):
+        self._sem_legenda_publicada("")
+        self.media.segmentos_de_janela = []
+        self._roda(["lote", "prep", URL])
+        code, _saida, erro = self._roda(
+            ["lote", "render", URL, "--windows", "10-30", "--hooks", "x"])
+        self.assertEqual(code, 0, erro)
+        conta = erro.split("cleared for delivery", 1)[1]
+        self.assertIn("NO CAPTIONS: corte-01.mp4", conta)
+        self.assertIn("heard no speech", conta)
+
+    def test_ficha_ausente_nao_e_erro(self):
+        """Fonte sem legenda publicada é o caso NORMAL, não uma falha.
+
+        Sem `prep` nenhum não há ficha, e isso não pode virar `die`: é
+        exatamente por aí que se cai no caminho da transcrição da janela.
+        """
+        self._sem_legenda_publicada("a janela falou sozinha")
+        code, _saida, erro = self._roda(
+            ["lote", "render", URL, "--windows", "10-30", "--hooks", "x"])
+        self.assertEqual(code, 0, erro)
+        self.assertFalse(os.path.isfile(os.path.join(
+            warden._dir_do_lote(URL), "lote.legenda.json")))
+        self.assertTrue(self.media.cortes[0]["caption_srt"])
+
+    def test_com_captions_desligado_nada_e_queimado_e_nada_e_cobrado(self):
+        """`captions: no` é uma decisão guardada, não um clipe mudo por acidente."""
+        self._roda(["prefs", "set", "--key", "captions", "--value", "no"])
+        self._sem_legenda_publicada("as palavras desta janela")
+        self._roda(["lote", "prep", URL])
+        code, _saida, erro = self._roda(
+            ["lote", "render", URL, "--windows", "10-30", "--hooks", "x"])
+        self.assertEqual(code, 0, erro)
+        self.assertIsNone(self.media.cortes[0]["caption_srt"])
+        self.assertNotIn("NO CAPTIONS", erro)
 
 
 class MaisDeTresClipesVaoParaOFundo(_ComLoteFalso):
@@ -496,7 +732,7 @@ class MaisDeTresClipesVaoParaOFundo(_ComLoteFalso):
         self._roda(["lote", "render", URL,
                     "--windows", "10-30,60-80,120-140,180-200,240-260",
                     "--hooks", "a|b|c|d|e"])
-        resto = os.path.join(warden._dir_do_lote(), "lote-resto.json")
+        resto = os.path.join(warden._dir_do_lote(URL), "lote-resto.json")
         self.assertTrue(os.path.isfile(resto))
         with open(resto, encoding="utf-8") as fh:
             plano = json.load(fh)

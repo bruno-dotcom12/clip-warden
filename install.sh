@@ -38,6 +38,23 @@ if [ "${1:-}" = "--remover" ]; then
     rm -f plow-credentials
     diga "removido -- some o container, o volume (campanhas, ledger, clipes e
 material baixado) e a credencial."
+    # Dois arquivos FICAM, de propósito: são credenciais suas, não do agente, e
+    # apagar credencial de alguém sem perguntar é pior do que deixar. Mas ficar
+    # em silêncio sobre elas também é ruim -- quem "desinstalou" acha que não
+    # sobrou nada. Então: não apaga, avisa onde estão.
+    if [ -f "$RAIZ/.env" ] || [ -f "$RAIZ/cookies.txt" ]; then
+        printf '\n  \033[33matenção:\033[0m estes arquivos NÃO foram apagados, porque são seus:\n'
+        if [ -f "$RAIZ/.env" ]; then
+            printf '    %s/.env\n' "$RAIZ"
+            printf '      a chave que publica (WARDEN_POST_API_KEY) e o segredo do\n'
+            printf '      seu cliente OAuth do Google.\n'
+        fi
+        if [ -f "$RAIZ/cookies.txt" ]; then
+            printf '    %s/cookies.txt\n' "$RAIZ"
+            printf '      uma sessão do YouTube já logada, viva enquanto existir.\n'
+        fi
+        printf '  Se não vai mais usar este agente, apague à mão o que listamos acima.\n'
+    fi
     exit 0
 fi
 
@@ -133,9 +150,11 @@ diga "5/5  conferindo o agente de pé"
 
 printf '  esperando o agente reivindicar a linha'
 i=0
+SUBIU=0
 while [ "$i" -lt 90 ]; do
     if docker compose logs agent 2>/dev/null | grep -q 'plow-init: configured'; then
         printf ' -- pronto\n'
+        SUBIU=1
         break
     fi
     printf '.'
@@ -144,20 +163,55 @@ while [ "$i" -lt 90 ]; do
 done
 printf '\n'
 
+# Estourar os 180s é FALHA, e antes não era: o laço imprimia noventa pontos e
+# seguia em frente, então uma instalação em que o container nunca subiu chegava
+# até a última tela e lia `pronto`. Quem espera três minutos merece saber que
+# esperou em vão.
+if [ "$SUBIU" -ne 1 ]; then
+    printf '\n  as últimas linhas do log do agente:\n'
+    docker compose logs --tail 25 agent 2>&1 | sed 's/^/    /' || true
+    pare "passaram 180 segundos e o agente não reivindicou a linha.
+Ele não está de pé. Nada abaixo disto foi conferido.
+Veja o log inteiro com 'docker compose logs agent'; se ele fala em credencial,
+rode 'docker compose down', apague plow-credentials e rode este script de novo."
+fi
+
 # `-u 10000:10000`: `exec` entra como root, e root criando estado num volume
 # nomeado passa a ser dono dele para sempre. O agente perderia a escrita no
 # próprio diretório, e `warden status` ainda diria `writable: yes`.
-ESTADO="$(docker compose exec -u 10000:10000 -T agent warden status 2>&1 || true)"
-printf '%s\n' "$ESTADO"
+#
+# E o `|| true` que estava aqui transformava "o comando inteiro falhou" em
+# "nada faltando": o container fora do ar devolvia a mensagem de erro do docker,
+# nenhum `grep` casava, e o script imprimia `pronto` para uma instalação morta.
+# O código de saída é a primeira coisa que se olha.
+if ESTADO="$(docker compose exec -u 10000:10000 -T agent warden status 2>&1)"; then
+    printf '%s\n' "$ESTADO"
+else
+    printf '%s\n' "$ESTADO"
+    pare "o 'warden status' não chegou a rodar dentro do container.
+Isso não quer dizer que está tudo certo -- quer dizer que não deu para conferir
+nada. Veja 'docker compose ps' e 'docker compose logs agent'."
+fi
 
 # O que não pode faltar. Quase todas estas linhas já degradaram um clipe em
 # silêncio -- a de detecção de rosto entregou um corte com o rosto na borda do
 # quadro. libass é a exceção: sem o filtro `ass` o `cut` recusa queimar legenda
 # em voz alta, e é por isso que ele está aqui -- para a recusa acontecer nesta
 # tela, no install, e não no meio do primeiro corte de alguém.
+#
+# E cada linha tem de ESTAR PRESENTE, não só "não dizer MISSING". Procurar a
+# palavra MISSING e concluir que está tudo bem quando ela não aparece é tomar
+# ausência de prova por prova de ausência: uma saída vazia, truncada, ou com os
+# rótulos renomeados passava limpa. Agora a linha que não apareceu reprova
+# igual à que apareceu faltando.
 FALTA=0
 for CHAVE in "ffprobe" "ffmpeg" "face detection" "pillow" "style font" "measured style spec" "libass"; do
-    if printf '%s\n' "$ESTADO" | grep -i "^$CHAVE" | grep -q "MISSING"; then
+    SAIDA_CH="$(printf '%s\n' "$ESTADO" | grep -i "^$CHAVE" | head -1)" || SAIDA_CH=""
+    if [ "$SAIDA_CH" = "" ]; then
+        printf '\n\033[31mnão apareceu:\033[0m %s -- o `warden status` não imprimiu\n' "$CHAVE"
+        printf '  essa linha, então ninguém conferiu se está aqui.\n'
+        FALTA=1
+    elif printf '%s\n' "$SAIDA_CH" | grep -q "MISSING"; then
         printf '\n\033[31mfalta:\033[0m %s\n' "$CHAVE"
         FALTA=1
     fi
@@ -165,29 +219,59 @@ done
 [ "$FALTA" -eq 0 ] || pare "o agente subiu sem algo de que precisa para cortar.
 Isso é um defeito da imagem, não da sua máquina: abra uma issue com a saída acima."
 
-# O par OAuth do Google não vem na imagem, e não pode vir: a imagem é pública e
-# um `ENV` nela é lido por qualquer um com um pull anônimo -- foi o que
-# aconteceu com o par antigo deste projeto, em 15/09/2026. Então ele entra da
-# máquina de quem instala, por `.env`, e a ausência dele é o estado NORMAL.
+# Credencial nenhuma vem na imagem, e não pode vir: a imagem é pública e um `ENV`
+# nela é lido por qualquer um com um pull anônimo -- foi o que aconteceu com o
+# par OAuth antigo deste projeto, em 15/09/2026. Então elas entram da máquina de
+# quem instala, por `.env`, e a ausência delas é o estado NORMAL.
 #
-# Um aviso, nunca um erro: sem o par o agente corta, legenda e entrega igual.
-# Só `warden youtube connect` fica desligado, e quem nunca quis publicar pela
-# API do YouTube não perde nada.
-if [ ! -f "$RAIZ/.env" ]; then
-    printf '\n  \033[33mnota:\033[0m sem `.env`, o `warden youtube connect` fica desligado.\n'
-    printf '  Cortar, legendar e entregar na conversa funcionam igual -- isto é opcional.\n'
-    printf '  Para ligar, crie %s/.env com o seu cliente OAuth do Google\n' "$RAIZ"
-    printf '  (WARDEN_YT_CLIENT_ID e WARDEN_YT_CLIENT_SECRET) e rode `docker compose up -d`.\n'
-    printf '  O passo a passo está em docs/INSTALL.md, "Handing a clip to YouTube or TikTok".\n'
+# Um aviso, nunca um erro: sem chave nenhuma o agente corta, legenda e entrega
+# igual, com título e descrição prontos.
+#
+# E são DUAS estradas, que fazem coisas DIFERENTES. A nota antiga citava só
+# `warden youtube connect` -- a que NÃO publica, porque o vídeo sobe trancado
+# como privado e não há recurso. Quem instalava saía daqui achando que publicar
+# sozinho no próprio canal não era possível, e é: por `warden post youtube`,
+# medido público em 15/09/2026. Uma linha para cada, dizendo qual é qual.
+TEM_POST=0
+TEM_YT=0
+if [ -f "$RAIZ/.env" ]; then
+    if grep -q '^[[:space:]]*WARDEN_POST_API_KEY=.' "$RAIZ/.env" 2>/dev/null; then TEM_POST=1; fi
+    if grep -q '^[[:space:]]*WARDEN_YT_CLIENT_ID=.'  "$RAIZ/.env" 2>/dev/null; then TEM_YT=1; fi
 fi
+
+printf '\n  \033[33mpublicar no YouTube: são duas estradas, e só UMA publica.\033[0m\n'
+if [ "$TEM_POST" -eq 1 ]; then
+    printf '  1. `warden post youtube` -- PUBLICA. \033[32mligada\033[0m (achei WARDEN_POST_API_KEY no .env).\n'
+else
+    printf '  1. `warden post youtube` -- PUBLICA: o vídeo sai PÚBLICO no seu canal.\n'
+    printf '     Desligada. Quer ligar? Precisa de WARDEN_POST_API_KEY no .env, que é\n'
+    printf '     uma conta sua em upload-post.com (plano grátis, 10 envios por mês,\n'
+    printf '     não pede cartão).\n'
+fi
+if [ "$TEM_YT" -eq 1 ]; then
+    printf '  2. `warden youtube connect` -- NÃO publica. ligada (achei WARDEN_YT_CLIENT_ID no .env).\n'
+else
+    printf '  2. `warden youtube connect` -- NÃO publica: o vídeo sobe TRANCADO como\n'
+    printf '     privado e não há como destrancar depois. Serve para conferir o\n'
+    printf '     caminho, não para publicar. Precisa de WARDEN_YT_CLIENT_ID e\n'
+    printf '     WARDEN_YT_CLIENT_SECRET no .env.\n'
+fi
+printf '  O .env é um arquivo de texto em %s/.env, ao lado do compose.yml.\n' "$RAIZ"
+printf '  O passo a passo das duas está em docs/INSTALL.md, seção\n'
+printf '  "Handing a clip to YouTube or TikTok".\n'
+printf '  Sem nenhuma das duas o agente corta, legenda e entrega igual, com título e\n'
+printf '  descrição prontos para você subir pelo app -- isto aqui é opcional.\n'
 
 diga "pronto"
 cat <<'FIM'
   Mande uma mensagem para a linha do agente com um link de campanha, um link de
   vídeo, ou só "oi". Ele responde e conduz a partir daí.
 
-  A primeira pergunta dele vai ser sobre o som: se o clipe mantém o áudio
-  original ou sai mudo para você pôr a trilha no app. Ele guarda a resposta.
+  Ele não vai te entrevistar antes do primeiro clipe. O som sai ORIGINAL por
+  padrão, e ele ANUNCIA isso em vez de perguntar -- a linha "som: original" vem
+  junto com o clipe. Para sair mudo, e pôr a trilha no app: `--sound platform`.
+  Quando a campanha proíbe o áudio da fonte, é a campanha que manda, e a linha
+  diz que foi ela.
 
   Para acompanhar:   docker compose logs -f agent
   Para desinstalar:  ./install.sh --remover

@@ -26,7 +26,15 @@ marca() { printf '%s=%s\n' "$1" "$2" >> "$ESTADO"; }
 
 : > "$ESTADO"
 marca started "$(date -u +%s)"
-for size in small base; do
+# The order is `base` first, and it is not alphabetical or arbitrary: whoever
+# arrives first is whoever unlocks the first clip. The first command a stranger
+# runs is `warden lote prep`, which transcribes the WHOLE source only to choose
+# a moment from it, and that pass picks `base` (145 MB). `small` (484 MB) is for
+# the window that was already chosen, whose words get burned in -- the second
+# command, not the first. Fetching `small` first made the stranger wait for
+# 629 MB before their first clip instead of 145 MB, for a model that pass never
+# calls.
+for size in base small; do
   marca "$size" fetching
   if /opt/hermes/.venv/bin/python3 - "$size" <<'PY'
 import sys

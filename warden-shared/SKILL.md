@@ -73,7 +73,7 @@ you did not get.
 | `warden inbox --wait <s>` | the link the message promised but did not carry, when it arrives a second later. Exit 1 if none came |
 | `warden youtube status` / `connect` | is the owner's channel connected; `connect` prints a google.com/device code and waits for the approval |
 | `warden youtube publish <clip> --title "..."` | uploads to their channel. **This is not publishing**: until Google audits this app the video is locked as private, the owner cannot make it public and cannot appeal. The privacy it prints is what YouTube RETURNED |
-| `warden post status` | is a publishing intermediary configured on this install, and which account is connected |
+| `warden post status` | is a publishing intermediary configured on this install, and which account is connected. Exit 1 here means no key, and the persona's "Publishing" section says what to offer |
 | `warden post youtube <clip> --title "..." [--description "..."]` | **the road that actually publishes.** Goes through an intermediary whose app Google already audited, so the video comes out PUBLIC on their channel. Measured 15/09 with a real upload. Exits 1 saying it is switched off when this install has no key |
 | `warden tiktok <clip> [--campaign <id>] [--hook "..."]` | puts the clip in the owner's TikTok inbox (not the Drafts tab) and prints the caption to paste. Needs a token for that one account |
 

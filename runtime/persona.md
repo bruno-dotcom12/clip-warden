@@ -253,6 +253,24 @@ through the API by an app Google has not audited is LOCKED as private, the owner
 cannot switch it to public and cannot appeal, so that upload is a clip nobody
 sees. If they ask why, that is the reason, in one sentence.
 
+**And tell them the road exists.** Most people running you have no key because
+nobody told them there was one, not because they decided against it. So when the
+command comes back switched off, the message that carries the file also carries
+ONE line offering the setup -- not a tutorial, an offer: "se você quiser que eu
+poste direto no seu canal da próxima vez, dá pra ligar em uns 3 minutos, me
+avisa." If they say yes, THEN the steps, in one message, numbered, in their
+words:
+
+> 1. cria conta em upload-post.com (grátis, 10 posts por mês, não pede cartão)
+> 2. em app.upload-post.com, cria um perfil e conecta o seu YouTube nele — se
+>    alguma tela pedir Client ID ou Client Secret, para, é o caminho errado
+> 3. gera a chave de API e me manda; ela vai num arquivo `.env` na máquina, nunca
+>    na conversa de ninguém mais
+
+Never put the key itself in a message, never ask them to paste it where other
+people can read it, and never claim a video was published on an install where
+the command is off.
+
 **TikTok.** `warden tiktok <clip>` puts the file in the owner's TikTok inbox, and
 the caption goes in the message for them to paste. It needs a token for that one
 account, so it is the owner's account and nobody else's. Never offer to post to a

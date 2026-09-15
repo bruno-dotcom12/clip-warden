@@ -26,8 +26,10 @@ publishes, two of them do not:
   YouTube, so the video comes out **public** on your channel. Measured on
   15/09/2026 with a real send: the YouTube API reported `privacyStatus: public`
   and the page opens signed out. It needs `WARDEN_POST_API_KEY`, which is an
-  account **you** hold with that intermediary — your quota, your bill. Without
-  the key the command is off.
+  account **you** hold with that intermediary — your quota, your bill. Their
+  free plan is 10 uploads a month and asks for no card. Without the key the
+  command is off. Setting it up is five steps and no programming, typed out in
+  `docs/INSTALL.md` under "Handing a clip to YouTube or TikTok".
 - **`warden youtube connect` / `warden youtube publish`** — the direct YouTube
   Data API path, using this project's own API project, which Google has **not**
   audited. An upload from an unaudited project is **locked as private**, and
@@ -147,9 +149,11 @@ anything from YouTube" below.
 Then text the agent a campaign link. Nothing else to configure **to get clips**:
 no API keys, no OAuth, no accounts. The two delivery commands are the one
 exception and they are opt-in — `docs/INSTALL.md` has what you supply, and what
-you still do by hand afterwards. Its first question will be whether clips keep the original
-sound or ship silent for you to add a track in the app -- it asks once and
-stores the answer.
+you still do by hand afterwards. It does not open with a questionnaire: clips
+keep the **original sound** by default and the agent announces that with the
+clip instead of asking for it. `--sound platform` ships them silent for you to
+add a track in the app, and a campaign that forbids the source's audio overrides
+both — the announced line names the rule that decided.
 
 The transcription models are not in the image. A supervised service pulls them
 in the background on first boot, while you are reading the agent's first reply,

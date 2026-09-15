@@ -195,7 +195,27 @@ i he she it we they you
 eu ele ela eles elas você voce vocês voces nós
 so very too quite muito mais bem tão tao
 favorite favourite favorito favorita elementary primary secondary
+vou vai vamos vão vao tenho tem temos está esta estão estao foi ser ter
+nunca sempre já ja ainda também tambem só
 """.split())
+
+# As duas últimas linhas são de 15/09, e vêm de uma legenda que NÃO tinha
+# pontuação nenhuma: a letra publicada de uma música. O contact sheet mostrou
+# quatro cues fechando em palavra que a lista não conhecia --
+#
+#     "Nunca vou desistir de você / Nunca"      <- advérbio abrindo a oração
+#     "vou te decepcionar Eu / nunca"           <- o mesmo, e "Eu" pendurado
+#     "adeus Nunca / vou"                       <- auxiliar sem o principal
+#
+# -- e nenhuma delas é preposição, artigo ou conjunção. Auxiliar sem verbo
+# principal ("vou", "vai", "tem", "foi") e advérbio que abre sintagma
+# ("nunca", "sempre", "já") quebram exatamente como "HATE THE": cada metade é
+# gramatical e nenhuma diz nada.
+#
+# Entram só as que o corpus do defeito mostrou mais as que o dono nomeou no
+# mesmo pedido; "ser" e "ter" entraram por serem a outra metade de "vai ser" e
+# "vai ter", que é o mesmo par. Não é uma lista de verbos auxiliares do
+# português -- é o que apareceu.
 
 # `when` estava faltando e o contact sheet de um render de teste mostrou: a cue
 # saiu "My Pokemon journey started / when". A lista é uma lista, e a única forma
@@ -208,6 +228,77 @@ favorite favourite favorito favorita elementary primary secondary
 # por isso a regra escrita não as pegava. Não dá para listar todo adjetivo;
 # entram as que apareceram, pelo mesmo motivo e do mesmo jeito que `when`
 # entrou. O que pega o resto continua sendo alguém olhando o mosaico.
+
+# Pronomes que a lista acima proíbe, mas que fecham bem quando são o
+# COMPLEMENTO de uma preposição que já está na cue.
+#
+# "…nunca vou desistir de você" é uma cue inteira e diz exatamente o que
+# promete. A lista a reprovava por "você" ser pronome, e o efeito medido em
+# 15/09 foi que a letra inteira não tinha UMA fronteira utilizável: o reflow
+# recuava até "desistir", órfãos de "de você" cascateavam por todas as cues
+# seguintes e o clipe saía com seis fragmentos.
+#
+# A lista tem duas coisas dentro: palavra que pede o que vem DEPOIS (de, que,
+# the, vou) e pronome que pende de um sujeito ausente ("CARA, EU"). O pronome
+# depois de preposição não é nenhuma das duas -- o que ele pedia está na
+# palavra anterior, dentro da mesma cue. É a única exceção aqui, e ela é
+# ESTREITA de propósito: exige a preposição imediatamente antes.
+#
+# Isto não afrouxa o portão. O portão continua reprovando "CARA, EU", "HATE
+# THE" e "…Nunca vou"; o que deixou de reprovar é uma cue que sempre esteve
+# certa.
+PREPOSICOES = frozenset("""
+de do da dos das em no na nos nas a ao aos as à às para pra pro por
+pelo pela pelos pelas com sem sobre sob entre até ate desde contra
+""".split())
+
+PRONOMES_COMPLEMENTO = frozenset("""
+mim ti si ele ela eles elas você voce vocês voces nós nos isso isto aquilo
+me him her it us them you
+""".split())
+
+# Palavras que TIPICAMENTE abrem um sintagma, e por isso são um bom lugar para
+# a cue ANTERIOR fechar.
+#
+# Existe porque sem pontuação o código não tinha plano B. A ordem era:
+# pontuação, estender, recuar -- e numa letra de música não há pontuação, então
+# sobrava o relógio. Resultado medido: "Nunca vou te fazer" numa cue e "chorar"
+# aberto na seguinte. Nenhuma lista razoável proíbe fechar em infinitivo
+# ("fazer"), então a palavra culpada não é a que fecha: é a que ABRE a cue
+# seguinte no meio de um sintagma.
+#
+# Virando a pergunta -- onde a próxima oração começa? -- a mesma letra fecha
+# em "chorar", "adeus", "magoar", que é onde o cantor respira.
+#
+# Só entram as que apareceram na letra medida (advérbio de negação/frequência e
+# pronome sujeito) e os subordinadores que abrem oração sem ambiguidade. "e" e
+# "que" ficaram DE FORA: são frequentes demais e fechar antes de cada um
+# picotaria a legenda, que é o defeito oposto.
+ABRE_SINTAGMA = frozenset("""
+nunca sempre já ja ainda também tambem só talvez agora
+eu ele ela eles elas você voce vocês voces nós
+mas porque quando então entao
+never always still also i he she it we they you but because when
+""".split())
+
+# Pares que NÃO se partem: o que está entre eles é uma unidade, como uma
+# expressão fixa.
+#
+# Medido em 15/09 no `.ass` de uma letra com vocal de apoio entre parênteses:
+#
+#     {\k27}nunca {\k14}vou {\k41}desistir\N{\k78}(Desistir   <- cue 1
+#     {\k22}de {\k44}você)                                    <- cue 2
+#
+# "(Desistir de você)" foi partido no meio: parêntese aberto pendurado no fim
+# de uma cue e o fechamento órfão na seguinte. O espectador lê um parêntese que
+# nunca fecha, e o portão de entrega reprovou o clipe.
+#
+# Aspa reta `"` entra como alternância (abre/fecha com o mesmo caractere).
+# Apóstrofo e aspa simples curva ficaram FORA de propósito: `don't` e `’` são
+# apóstrofo em muito mais texto do que citação, e tratá-los como par inventaria
+# grupos que não existem.
+DELIMITADORES = {"(": ")", "[": "]", "{": "}", "«": "»", "“": "”"}
+DELIMITADOR_SIMETRICO = '"'
 
 # Expressões que não se partem no meio, custe o que custar.
 #
@@ -634,6 +725,48 @@ def silabas(palavra):
     return max(1, len(re.findall(r"[aeiouy]+", nucleo)))
 
 
+def _grupos_delimitados(words):
+    """[(primeira, última)] dos trechos entre parênteses, colchetes ou aspas.
+
+    Índices sobre a lista de palavras: o par cobre da palavra que traz o sinal
+    de abertura até a que traz o fechamento, inclusive. Abertura sem
+    fechamento não vira grupo -- o texto continua depois do fim da janela e não
+    há unidade nenhuma para proteger.
+    """
+    grupos, pilha, aspa = [], [], None
+    for i, w in enumerate(words):
+        for ch in str(w):
+            if ch == DELIMITADOR_SIMETRICO:
+                if aspa is None:
+                    aspa = i
+                else:
+                    grupos.append((aspa, i))
+                    aspa = None
+            elif ch in DELIMITADORES:
+                pilha.append((DELIMITADORES[ch], i))
+            elif pilha and ch in DELIMITADORES.values():
+                for n in range(len(pilha) - 1, -1, -1):
+                    if pilha[n][0] == ch:
+                        grupos.append((pilha[n][1], i))
+                        del pilha[n:]
+                        break
+    return [(a, b) for a, b in grupos if b > a]
+
+
+def _fecha_apesar_da_lista(words, k):
+    """Se a palavra `k` está na lista proibida mas mesmo assim fecha bem.
+
+    Um caso só, e ele é o de 15/09: pronome logo depois de preposição. O que a
+    lista acusa é a palavra pedir o que vem DEPOIS; aqui o que ela pedia está
+    na palavra anterior, dentro da mesma cue. "…desistir de você" fecha.
+    """
+    if k <= 0 or k >= len(words):
+        return False
+    if _palavra(words[k]) not in PRONOMES_COMPLEMENTO:
+        return False
+    return _palavra(words[k - 1]) in PREPOSICOES
+
+
 def _fronteiras(words):
     """(onde NÃO se pode fechar a cue, onde há fronteira de pontuação).
 
@@ -657,7 +790,7 @@ def _fronteiras(words):
         # Ponto final perdoa: "...não sei o que." fecha uma ideia de verdade.
         # Vírgula não perdoa: ela separa, e o que vem depois dela é justamente o
         # complemento que a palavra funcional está pedindo.
-        if funcional and not fecha:
+        if funcional and not fecha and not _fecha_apesar_da_lista(words, i):
             proibido.add(i)
     nucleos = [_palavra(w) for w in words]
     for expressao in EXPRESSOES_FIXAS:
@@ -670,7 +803,70 @@ def _fronteiras(words):
                 for k in range(i, i + n - 1):
                     proibido.add(k)
                     pontuada.discard(k)
+    # Parênteses e aspas pelo mesmo princípio da expressão fixa: para quem
+    # corta, o trecho entre eles é uma palavra só. Fechar em qualquer ponto
+    # interno deixa o delimitador aberto na tela -- foi o `(Desistir` de 15/09.
+    for a, b in _grupos_delimitados(words):
+        # Um grupo maior que a tela inteira não tem o que ser protegido: ele
+        # vai ser partido de qualquer jeito, e proibir todas as fronteiras
+        # internas só apagaria a pontuação que existe DENTRO dele. É também o
+        # que segura uma aspa solta na origem, que pareia com a próxima aspa
+        # dez frases adiante e viraria um grupo de trinta palavras.
+        if not cabe_na_tela(" ".join(words[a:b + 1])):
+            continue
+        for k in range(a, b):
+            proibido.add(k)
+            pontuada.discard(k)
     return proibido, pontuada
+
+
+def _alcance(i, j, words, marco, max_cue_s):
+    """O último índice que a cue que começa em `i` alcança sem estourar nada.
+
+    "Nada" são os dois orçamentos que já existiam: o teto de tempo com a
+    tolerância, e duas linhas de 26 caracteres.
+    """
+    teto = max_cue_s + CUE_TOLERANCIA_S
+    limite, k = j, j + 1
+    while k < len(words):
+        if marco[k + 1] - marco[i] > teto:
+            break
+        if not cabe_na_tela(" ".join(words[i:k + 1]), MAX_CHARS_PER_LINE,
+                            MAX_LINES):
+            break
+        limite = k
+        k += 1
+    return limite
+
+
+def _fronteira_sintatica(i, j, words, marco, proibido, max_cue_s):
+    """Onde fechar quando não há UM sinal de pontuação para seguir.
+
+    É o plano B que faltava, e a falta dele é o que dava zero clipe em fonte
+    sem pontuação -- música, live, podcast transcrito, legenda automática.
+    Sem pontuação a ordem antiga caía direto no relógio, e o relógio corta no
+    meio do sintagma: "Nunca vou te fazer" numa cue, "chorar" na seguinte.
+
+    A pergunta aqui é a outra ponta da mesma coisa: em vez de "esta palavra
+    pode fechar?", **onde começa a próxima oração?**. Fechar imediatamente
+    antes de uma palavra que abre sintagma deixa as duas metades dizendo
+    alguma coisa, que é o critério que o próprio REJECT usa.
+
+    Dentro da janela que os orçamentos permitem, e escolhendo a fronteira mais
+    próxima do que o relógio pediu: andar muito para trás pica a legenda, e
+    andar muito para a frente é o bloco parado que o item 1 combate.
+    """
+    piso = i + (j - i) // 2
+    limite = _alcance(i, j, words, marco, max_cue_s)
+    candidatos = [k for k in range(piso, limite + 1)
+                  if k + 1 < len(words)
+                  and k not in proibido
+                  and _palavra(words[k + 1]) in ABRE_SINTAGMA]
+    if not candidatos:
+        return None
+    # Empate entre recuar e estender vai para a frente: a cue maior é a que
+    # leva o sintagma inteiro.
+    return min(candidatos, key=lambda k: (abs(k - j), -k))
 
 
 def _ajusta_fronteira(i, j, words, marco, proibido, pontuada, budget,
@@ -696,6 +892,14 @@ def _ajusta_fronteira(i, j, words, marco, proibido, pontuada, budget,
     for k in range(j, piso - 1, -1):
         if k in pontuada and k not in proibido:
             return k
+    # Passo 1b, e ele só existe quando o passo 1 não tinha COM O QUE trabalhar:
+    # nenhum sinal de pontuação em nenhuma palavra da janela. Ficou atrás do
+    # passo 1 e na frente de tudo o mais de propósito -- onde há pontuação ela
+    # continua mandando, e nada do que já estava medido muda de resposta.
+    if not any(k in pontuada for k in range(i, min(j + 1, len(words)))):
+        escolha = _fronteira_sintatica(i, j, words, marco, proibido, max_cue_s)
+        if escolha is not None:
+            return escolha
     if j not in proibido:
         return j
     teto = max_cue_s + CUE_TOLERANCIA_S
@@ -833,9 +1037,52 @@ def finais_pendurados(cues, continua_depois=False):
         if ultima and not continua_depois:
             continue
         palavras = (cue.get("text") or "").split()
-        if palavras and _palavra(palavras[-1]) in NAO_FECHA_CUE:
+        if not palavras:
+            continue
+        # Um delimitador que abre e não fecha dentro da cue é a MESMA falha,
+        # dita com um caractere em vez de uma palavra: o que falta vem depois.
+        # Medido em 15/09 -- a cue fechava em "(Desistir" e o parêntese ficava
+        # aberto na tela. A regra escrita não pegava, porque "desistir" não
+        # está em lista nenhuma; quem pegou o clipe foi a cue SEGUINTE, por
+        # sorte. Aqui é de propósito.
+        if _delimitador_aberto(cue.get("text") or ""):
+            ruins.append(cue.get("text"))
+            continue
+        # "Ponto final perdoa" é regra de `_fronteiras` desde sempre, e ela
+        # NÃO estava aqui: a mesma regra escrita em dois lugares, com duas
+        # respostas. Medido em 15/09 sobre um trecho de fala comum --
+        # "ninguém aguenta mais." -- o reflow fechava na pontuação, fazendo
+        # exatamente o que lhe mandaram, e este relatório acusava a cue por
+        # "mais" estar na lista. Um ponto final não pendura nada.
+        fecha, _separa = _pontua(palavras[-1])
+        if fecha:
+            continue
+        if (_palavra(palavras[-1]) in NAO_FECHA_CUE
+                and not _fecha_apesar_da_lista(palavras, len(palavras) - 1)):
             ruins.append(cue.get("text"))
     return ruins
+
+
+def _delimitador_aberto(texto):
+    """Se o texto abre um parêntese ou colchete e não o fecha.
+
+    Aspa reta NÃO entra, e a assimetria é de propósito: `(` só pode ser
+    abertura, e uma aspa reta ímpar numa cue pode muito bem ser a origem que
+    veio torta -- legenda automática esquece a aspa de fechamento o tempo todo.
+    Acusar isso reprovaria clipes em que não há nada para ver. O reflow
+    continua mantendo o par de aspas inteiro quando ele existe; o que este
+    portão acusa é só o que é inequívoco na tela.
+    """
+    pilha = []
+    for ch in str(texto or ""):
+        if ch in DELIMITADORES:
+            pilha.append(DELIMITADORES[ch])
+        elif pilha and ch in DELIMITADORES.values():
+            for n in range(len(pilha) - 1, -1, -1):
+                if pilha[n] == ch:
+                    del pilha[n:]
+                    break
+    return bool(pilha)
 
 
 def _merge_spans(segments, gap=0.4, descartes=None):
