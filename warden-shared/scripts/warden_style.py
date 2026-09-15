@@ -324,8 +324,25 @@ BAND_CAP = 0.22
 # O degradê do rodapé, medido no `rodape.png` do PRIME: a transição ocupa 26% da
 # faixa e o alfa satura em 252. Um degradê que só chega a 93% deixa amarelo
 # saturado passar por baixo, que é o que o disclaimer do material é.
-FOOTER_FADE = 0.26
-FOOTER_ALPHA = 252
+# O perfil do rodapé, e por que ele mudou em 15/09.
+#
+# O PRIME satura o alfa em 252 sobre 74% da faixa: uma tarja preta com a borda
+# de cima suavizada. Isso funciona lá, onde a faixa cobre o terço inferior de um
+# scenepack e não há imagem embaixo dela que alguém queira ver.
+#
+# Aqui virou defeito. Medido linha a linha no clipe "colonizadores": tarja de
+# **289px**, 15% do quadro, em TODOS os quadros, sobre material limpo -- 0 de 8
+# quadros acima do limiar, média 1,5x contra um piso de 1,35x. O código chamava
+# de degradê, o comentário prometia "cobre o texto de baixo sem virar tarja", e
+# o que saía era tarja.
+#
+# O perfil agora é degradê de verdade: o alfa sobe da borda superior da faixa
+# até o pé do quadro sem nunca saturar, e o teto é 200 de 255. Cobrir a legenda
+# do acervo não exige apagar a imagem: exige rebaixar o contraste dela o
+# bastante para a nossa ganhar, e 200 já faz isso -- o texto de baixo fica
+# ilegível e a imagem continua existindo.
+FOOTER_FADE = 0.55
+FOOTER_ALPHA = 200
 
 
 def usable_width(width):
@@ -528,9 +545,20 @@ def footer_png(path, width, height, band=None):
     Image, _D, _F, _Ft = _pil()
     band = int(band or height * 0.20)
     band = max(1, min(band, height))
+    # Sobe até `FOOTER_ALPHA` ao longo de `FOOTER_FADE` da faixa e depois
+    # continua subindo devagar até o pé, em vez de travar num platô. Nenhuma
+    # linha chega a opaca: a menor luminância que sobra é o que separa "cobri o
+    # texto" de "apaguei a imagem".
     fade = max(1, int(band * FOOTER_FADE))
-    column = [FOOTER_ALPHA if yy >= fade
-              else int(FOOTER_ALPHA * (yy / fade) ** 1.15) for yy in range(band)]
+    column = []
+    for yy in range(band):
+        if yy < fade:
+            a = FOOTER_ALPHA * (yy / fade) ** 1.15
+        else:
+            # do fim da rampa ao pé do quadro, mais 12% de alfa, no máximo
+            resto = (yy - fade) / max(1, band - fade)
+            a = FOOTER_ALPHA + (255 - FOOTER_ALPHA) * 0.12 * resto
+        column.append(int(min(228, a)))
     # Só a faixa, e o y em que ela entra -- pelo mesmo motivo do `text_png`.
     _gradient(width, column).save(path)
     return path, height - band
@@ -1647,6 +1675,79 @@ METRICS = (
 )
 
 
+# Uma linha é "preta" abaixo disto. Não é zero: um render de H.264 não devolve
+# 0 exato, e o degradê do rodapé chega perto do pé do quadro sem ser preto.
+BARRA_LUZ = 8
+# Quantos por cento da altura (ou largura) precisam ser pretos para ser barra, e
+# em quantos quadros. Uma barra é uma coisa constante: o que aparece num quadro
+# só é imagem escura.
+BARRA_MIN = 0.02
+BARRA_QUADROS = 0.8
+
+
+def barras_pretas(frames):
+    """(quanto de cada borda é barra preta, motivo). Frações da altura/largura.
+
+    Existe porque um clipe entregue em 15/09 tinha **289px de tarja preta no pé
+    do quadro, 15% da altura, em todos os quadros** -- e passou por toda a
+    verificação, porque nenhum dos instrumentos olhava as bordas. A causa era o
+    próprio "degradê" de rodapé, que saturava o alfa em 252 sobre 74% da faixa.
+    O degradê foi consertado; isto é o portão que diz se ele voltou a ser tarja,
+    ou se a barra veio de outro lugar -- letterbox do material, render errado,
+    escala com padding.
+
+    Mede a MEDIANA por borda em vez do máximo: um quadro que é preto porque a
+    cena é preta não é uma barra.
+    """
+    if not frames:
+        return None, "no frame was opened, so the edges were not looked at"
+    por_borda = {"top": [], "bottom": [], "left": [], "right": []}
+    for frame in frames:
+        g = frame.convert("L")
+        w, h = g.size
+        if w < 8 or h < 8:
+            continue
+        px = g.load()
+        passo_x = max(1, w // 64)
+        passo_y = max(1, h // 64)
+
+        def linha_preta(y):
+            vals = [px[x, y] for x in range(0, w, passo_x)]
+            return (sum(vals) / len(vals)) <= BARRA_LUZ
+
+        def coluna_preta(x):
+            vals = [px[x, y] for y in range(0, h, passo_y)]
+            return (sum(vals) / len(vals)) <= BARRA_LUZ
+
+        n = 0
+        while n < h // 2 and linha_preta(n):
+            n += 1
+        por_borda["top"].append(n / h)
+        n = 0
+        while n < h // 2 and linha_preta(h - 1 - n):
+            n += 1
+        por_borda["bottom"].append(n / h)
+        n = 0
+        while n < w // 2 and coluna_preta(n):
+            n += 1
+        por_borda["left"].append(n / w)
+        n = 0
+        while n < w // 2 and coluna_preta(w - 1 - n):
+            n += 1
+        por_borda["right"].append(n / w)
+
+    saiu = {}
+    for borda, valores in por_borda.items():
+        if not valores:
+            saiu[borda] = 0.0
+            continue
+        # Barra é o que está em quase todo quadro: o percentil (1 - BARRA_QUADROS).
+        ordenados = sorted(valores)
+        idx = int(len(ordenados) * (1.0 - BARRA_QUADROS))
+        saiu[borda] = round(ordenados[min(idx, len(ordenados) - 1)], 4)
+    return saiu, None
+
+
 def measure(video, samples=10):
     """As métricas de um clipe, medidas no arquivo e não no que ele deveria ser.
 
@@ -1723,6 +1824,9 @@ def measure(video, samples=10):
     out["cut_interval_s"], porque = _cut_interval(video, dur)
     if porque:
         out["cut_interval_s_why"] = porque
+    out["black_bars"], porque_barras = barras_pretas(frames)
+    if porque_barras:
+        out["black_bars_why"] = porque_barras
     out["scale_variation"], porque = _scale_variation(frames)
     if porque:
         out["scale_variation_why"] = porque
@@ -2235,6 +2339,45 @@ def _linhas_demais(side, medida):
                    f"{orcamento} line(s) of ours, rejecting at {limite}")]
 
 
+def _barra_preta_reprova(medida):
+    """Qualquer borda preta constante reprova o render.
+
+    Isto existe porque um clipe entregue tinha 289px de tarja no pé do quadro --
+    15% da altura, em todos os quadros -- e a verificação inteira aprovou, porque
+    ela conta segundos, pixels de largura e faixas de texto, e **nenhum
+    instrumento olhava as bordas**. O defeito era do nosso próprio rodapé, que
+    se chamava degradê e saturava o alfa em 252. Consertar o degradê não impede
+    que ele volte, nem pega uma barra que venha de outro lugar: letterbox do
+    material, escala com padding, render errado.
+
+    O limiar é 2% da altura. Uma borda preta de 2% num vertical de 1920 são 38
+    pixels, que já é visível como moldura no feed; abaixo disso é cor de cena.
+    """
+    barras = (medida or {}).get("black_bars")
+    if not barras:
+        porque = (medida or {}).get("black_bars_why")
+        if porque:
+            return [("REJECT", f"the edges of this render were not looked at: "
+                               f"{porque}. A black bar is invisible to every "
+                               f"other measurement here.")]
+        return []
+    achadas = {b: v for b, v in barras.items() if v and v >= BARRA_MIN}
+    if not achadas:
+        return [("ok", "no black bar on any edge")]
+    partes = []
+    for borda, fracao in sorted(achadas.items(), key=lambda kv: -kv[1]):
+        partes.append(f"{borda} {fracao * 100:.1f}%")
+    return [("REJECT",
+             f"this render has a black bar on {len(achadas)} edge(s): "
+             + ", ".join(partes)
+             + ". It is there in most frames, so it reads as a frame around the "
+               "picture and not as a dark scene. On 15/09 a delivered clip had "
+               "289px of it along the bottom -- 15% of the frame -- and every "
+               "check passed, because none of them looked at the edges. If it "
+               "is ours, it is the footer gradient saturating; if it is the "
+               "footage's, the framing kept its letterbox.")]
+
+
 def cross_check(side, medida):
     """A métrica de pixel cruzada com o que o render anotou de si.
 
@@ -2255,6 +2398,7 @@ def cross_check(side, medida):
     """
     out = []
     out += _linhas_demais(side, medida)
+    out += _barra_preta_reprova(medida)
     px = (medida or {}).get("text_width_ratio")
     hook = ((side or {}).get("hook") or {})
     largura, util = hook.get("width_px"), hook.get("usable_px")

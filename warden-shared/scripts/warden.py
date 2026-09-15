@@ -1877,6 +1877,48 @@ def cmd_style(args):
     die(f"unknown style action {args.action!r}")
 
 
+# As linhas que ninguém pode assinar de olhos fechados.
+#
+# Escrito a partir do que foi de fato queimado. Em 15/09 o agente escreveu, com
+# todas as letras: *"Legenda um pouco confusa ('Em 1826' — provavelmente erro do
+# Whisper..., mas mantém sentido de comparação histórica). Vou aprovar assim
+# mesmo"* -- e aprovou. Antes disso saiu `jokovic jokovic`. Um portão que quem
+# está passando por ele decide contornar não é portão.
+#
+# O que dá para detectar sem adivinhar:
+#
+# - NÚMEROS. O Whisper erra número mais que qualquer outra coisa, e um ano
+#   errado queimado ("Em 1826") é exatamente o caso medido.
+# - PALAVRA REPETIDA colada ("jokovic jokovic"), que é a assinatura do erro de
+#   transcrição, não da fala.
+# - MARCAS DE LEGENDA AUTOMÁTICA: `>>` de troca de locutor e `[risadas]` de
+#   anotação. Elas existem no arquivo do YouTube e não são o que alguém quer na
+#   tela -- e o `>>` foi para a tela num edit de 15/09.
+_SUSPEITA_NUMERO = re.compile(r"\d")
+_SUSPEITA_REPETIDA = re.compile(r"\b(\w{3,})\s+\1\b", re.IGNORECASE)
+_SUSPEITA_MARCA = re.compile(r">>|\[[^\]]+\]")
+
+
+def linhas_suspeitas(window):
+    """[(linha, motivo)] do que não se assina sem olhar."""
+    saiu = []
+    for r in window:
+        texto = r.get("text") or ""
+        motivos = []
+        if _SUSPEITA_NUMERO.search(texto):
+            motivos.append("carries a number, which is what Whisper gets wrong "
+                           "most often")
+        if _SUSPEITA_REPETIDA.search(texto):
+            motivos.append("repeats a word back to back, which is a "
+                           "transcription artefact and not speech")
+        if _SUSPEITA_MARCA.search(texto):
+            motivos.append("carries an auto-subtitle marker (>> or [..]), "
+                           "which is not something anyone wants on screen")
+        if motivos:
+            saiu.append((r, "; ".join(motivos)))
+    return saiu
+
+
 def cmd_captions(args):
     """As linhas que vão para a tela, para alguém ler antes de queimar.
 
@@ -1914,6 +1956,44 @@ def cmd_captions(args):
         most = max((len(c["lines"]) for c in cues), default=0)
         print(f"\n# on screen that becomes {len(cues)} cues, at most {most} "
               f"lines and {longest:.1f}s each.")
+        suspeitas = linhas_suspeitas(window)
+        if suspeitas:
+            print(f"\n# {len(suspeitas)} line(s) here cannot be signed without "
+                  f"saying what you decided about them:")
+            for r, porque in suspeitas:
+                print(f"  [{r['start']:7.2f}]  {r['text']}")
+                print(f"             ^ {porque}")
+
+        if args.approve and suspeitas:
+            # O PORTÃO QUE FOI CONTORNADO. Em 15/09 o agente marcou uma linha
+            # como provável erro e a aprovou no mesmo fôlego. Agora ele não
+            # pode: ou corrige a linha, ou a repete inteira dizendo que leu e
+            # está certa -- e o que ele decidiu fica escrito na aprovação.
+            decididas = {t.strip() for t in (getattr(args, "keep", None) or [])}
+            pendentes = [(r, w) for r, w in suspeitas
+                         if r["text"].strip() not in decididas]
+            if pendentes:
+                print("", file=sys.stderr)
+                print(f"NOT approving: {len(pendentes)} suspect line(s) have "
+                      f"not been decided. You do not get to sign a line you "
+                      f"just called probably wrong -- on 15/09 that is exactly "
+                      f"what happened, and 'Em 1826' went to the screen.",
+                      file=sys.stderr)
+                for r, _w in pendentes:
+                    print(f"  {r['text']}", file=sys.stderr)
+                print("", file=sys.stderr)
+                print("Two ways through, and both make you look at the line:",
+                      file=sys.stderr)
+                print("  * it is WRONG -> fix it in the srt and review again "
+                      "(editing voids any signature, which is the point)",
+                      file=sys.stderr)
+                print("  * it is RIGHT -> repeat it back, exactly: "
+                      "`--keep \"<the line>\"`, once per line",
+                      file=sys.stderr)
+                return 1
+            print(f"\n# {len(decididas)} suspect line(s) read and kept as they "
+                  f"are.")
+
         if args.approve:
             # Assina SÓ o que foi impresso. Assinar o arquivo depois de mostrar
             # uma janela é o defeito que queimou `aromasas`: cinco linhas lidas,
@@ -2568,6 +2648,10 @@ def main(argv=None):
     p.add_argument("--approve", action="store_true",
                    help="sign these words off for burning; without it, cut "
                         "renders the clip with no caption rather than a wrong one")
+    p.add_argument("--keep", action="append", metavar="LINE",
+                   help="a suspect line, repeated back exactly, meaning you "
+                        "read it and it is right. Once per line. Without it a "
+                        "suspect line cannot be signed.")
     p.set_defaults(func=cmd_captions)
 
     p = sub.add_parser("beat")

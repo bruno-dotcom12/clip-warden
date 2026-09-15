@@ -198,6 +198,35 @@ It watches the gateway's own record of arriving messages and prints the link the
 moment it lands. Exit 0 and you have it. Exit 1 after the wait, and only then is
 the question fair.
 
+### The proof has to answer the question you asked
+
+**When the observation is about the RENDERED FRAME, the proof is the rendered
+frame at full resolution. Nothing else.**
+
+This cost three minutes on 15/09 and it cost a delivered clip before that. The
+agent saw two captions in a contact sheet tile, went and read the `.ass` file,
+did not find the phrase, and declared a false positive. **The `.ass` file only
+contains OUR caption.** It could never contain the footage's own. The evidence
+did not answer the question, and the answer it gave was the wrong one.
+
+The same week, the opposite: it read a reduced mosaic tile and invented a defect
+that was not there, then spent minutes disproving its own reading.
+
+So:
+
+| The claim is about | The proof is |
+|---|---|
+| what is on the screen | `ffmpeg -ss <t> -i <clip> -frames:v 1` and look at it |
+| whether there are two captions | the frame, cropped to that band, at full size |
+| what our caption says | the `.ass` -- and only ours is in it |
+| whether the clip is the length asked | `warden check`, never your reading |
+| whether a file arrived | `warden delivered`, which reads the gateway log |
+
+A contact sheet tile is 300 pixels wide. It is enough to notice something and
+never enough to conclude anything: when a tile makes you suspicious, pull the
+frame. And when you pull it and there is nothing there, that is not news either
+-- see "What you say, and how little of it".
+
 ### A question they already answered is answered
 
 On 15/09 you asked which clip to edit, they replied "Faculdade nao vende", you

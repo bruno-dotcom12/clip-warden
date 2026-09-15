@@ -5388,3 +5388,131 @@ class ATrilhaEntraEFicaGuardadaComOBpmMedido(unittest.TestCase):
                         ".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac"):
                     achadas.append(os.path.join(base, f))
         self.assertEqual(achadas, [], f"faixa embarcada no repo: {achadas}")
+
+
+class ATarjaPretaReprovaOClipe(unittest.TestCase):
+    """289px de tarja no pé do quadro passaram por toda a verificação.
+
+    Medido linha a linha no clipe "colonizadores" entregue em 15/09: preto de
+    luminância 0,1 do pixel 1630 ao 1919, em TODOS os quadros -- 15% da altura.
+    Nenhum instrumento olhava as bordas: eles contam segundos, pixels de largura
+    de texto e faixas de texto, e uma barra preta não é nenhuma dessas coisas.
+
+    A causa era nossa: o "degradê" de rodapé saturava o alfa em 252 de 255 sobre
+    74% da própria faixa. O código chamava de degradê e o comentário prometia
+    "cobre o texto de baixo sem virar tarja".
+    """
+
+    def setUp(self):
+        _pillow_or_skip()
+        import warden_style as S
+        self.S = S
+
+    def _quadro(self, barra_baixo=0, barra_cima=0, w=108, h=192):
+        from PIL import Image
+        im = Image.new("RGB", (w, h), (120, 130, 140))
+        px = im.load()
+        for y in range(barra_cima):
+            for x in range(w):
+                px[x, y] = (0, 0, 0)
+        for y in range(h - barra_baixo, h):
+            for x in range(w):
+                px[x, y] = (0, 0, 0)
+        return im
+
+    def test_a_tarja_de_quinze_por_cento_e_medida(self):
+        quadros = [self._quadro(barra_baixo=29) for _ in range(8)]
+        barras, _porque = self.S.barras_pretas(quadros)
+        self.assertGreater(barras["bottom"], 0.13)
+        self.assertLess(barras["bottom"], 0.17)
+        self.assertEqual(barras["top"], 0.0)
+
+    def test_material_limpo_nao_tem_barra(self):
+        quadros = [self._quadro() for _ in range(8)]
+        barras, _p = self.S.barras_pretas(quadros)
+        self.assertEqual(set(barras.values()), {0.0})
+
+    def test_um_quadro_escuro_sozinho_nao_e_barra(self):
+        # Uma cena preta num quadro não é moldura. A agregação tem de sobreviver
+        # a isso, senão o portão reprova clipe bom e é desligado na semana
+        # seguinte.
+        quadros = [self._quadro() for _ in range(7)] + [self._quadro(barra_baixo=60)]
+        barras, _p = self.S.barras_pretas(quadros)
+        self.assertEqual(barras["bottom"], 0.0)
+
+    def test_a_barra_reprova_o_render(self):
+        medida = {"black_bars": {"top": 0.0, "bottom": 0.15,
+                                 "left": 0.0, "right": 0.0}}
+        achados = self.S._barra_preta_reprova(medida)
+        self.assertEqual(achados[0][0], "REJECT")
+        self.assertIn("bottom 15.0%", achados[0][1])
+
+    def test_nao_ter_olhado_as_bordas_tambem_reprova(self):
+        # "Não consegui olhar" não é "está limpo": uma barra preta é invisível
+        # para todas as outras medições deste projeto.
+        achados = self.S._barra_preta_reprova(
+            {"black_bars": None, "black_bars_why": "no frame was opened"})
+        self.assertEqual(achados[0][0], "REJECT")
+
+    def test_o_degrade_do_rodape_nunca_satura(self):
+        # O conserto: o alfa sobe até o pé sem travar num platô opaco. Uma
+        # linha opaca é uma tarja, por mais fina que seja a rampa acima dela.
+        import tempfile
+        from PIL import Image
+        alvo = os.path.join(_temp(self, "warden-rodape-"), "r.png")
+        self.S.footer_png(alvo, 1080, 1920, band=384)
+        im = Image.open(alvo).convert("RGBA")
+        px = im.load()
+        w, h = im.size
+        coluna = [px[w // 2, y][3] for y in range(h)]
+        self.assertEqual(coluna[0], 0, "a faixa tem de comecar transparente")
+        self.assertLess(max(coluna), 230,
+                        "o rodape voltou a ser tarja: alfa saturou")
+        # E sobe de verdade: nada de platô na metade de baixo.
+        self.assertGreater(coluna[-1], coluna[h // 2],
+                           "o alfa parou de subir antes do pe do quadro")
+
+
+class UmPortaoQueQuemPassaPorEleContornaNaoEUmPortao(unittest.TestCase):
+    """"Vou aprovar assim mesmo" era uma frase válida. Agora não é.
+
+    Medido em 15/09, palavra por palavra: *"Legenda um pouco confusa ('Em 1826'
+    — provavelmente erro do Whisper..., mas mantém sentido de comparação
+    histórica). Vou aprovar assim mesmo"* -- e aprovou, e "Em 1826" foi para a
+    tela. Antes disso saiu `jokovic jokovic`.
+    """
+
+    def setUp(self):
+        import warden as W
+        self.W = W
+
+    def _linha(self, texto):
+        return {"start": 1.0, "end": 3.0, "text": texto}
+
+    def test_um_numero_e_suspeito(self):
+        achadas = self.W.linhas_suspeitas(
+            [self._linha("Caralho, muito foda. Em 1826,")])
+        self.assertEqual(len(achadas), 1)
+        self.assertIn("number", achadas[0][1])
+
+    def test_palavra_repetida_colada_e_suspeita(self):
+        achadas = self.W.linhas_suspeitas(
+            [self._linha("jokovic jokovic ganhou de novo")])
+        self.assertEqual(len(achadas), 1)
+        self.assertIn("repeats a word", achadas[0][1])
+
+    def test_marca_de_legenda_automatica_e_suspeita(self):
+        for texto in (">> para gravação. Vamos respirar.",
+                      "e realmente [risadas] mogou os locais"):
+            achadas = self.W.linhas_suspeitas([self._linha(texto)])
+            self.assertEqual(len(achadas), 1, texto)
+            self.assertIn("auto-subtitle marker", achadas[0][1])
+
+    def test_uma_frase_comum_nao_e_suspeita(self):
+        self.assertEqual(self.W.linhas_suspeitas(
+            [self._linha("uma frase limpa e comum")]), [])
+
+    def test_a_repeticao_precisa_ser_colada_e_nao_so_repetida(self):
+        # "que ... que" numa frase longa é português, não artefato.
+        self.assertEqual(self.W.linhas_suspeitas(
+            [self._linha("acho que hoje a gente entende que dá certo")]), [])

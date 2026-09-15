@@ -409,6 +409,14 @@ things, and every one of them rejects the clip on its own:
 - [ ] there are not two captions in the same frame
 - [ ] no frame edge, source border or third party's text is sliced at the margin
 - [ ] the subject's face is not covered by text
+- [ ] no black bar along any edge -- `warden check` rejects one now, but the
+      sheet is where you see it first
+
+**When a tile makes you suspicious, pull the frame.** A tile is 300px wide:
+enough to notice, never enough to conclude. `ffmpeg -ss <t> -i <clip>
+-frames:v 1 -update 1 /tmp/q.png` and look at that. Reading the `.ass` to
+settle a question about two captions is the one thing that cannot work -- only
+ours is in it.
 
 A clip that fails any of them is rejected **even if every check passed**. Re-cut
 it -- a different window, `--crop`, no `--subtitles` -- and look again. Never

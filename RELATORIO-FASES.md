@@ -727,3 +727,159 @@ na sua pasta. Removi a que eu criei e deixei a que já estava lá.
   porque um pedaço do nome resolve, mas não é bonito de digitar.
 - O risco da fonte é anotado na ficha e dito na hora de guardar. Ele **não**
   aparece de novo na hora de usar a faixa num edit.
+
+---
+
+## FASE 7 — Os defeitos de imagem
+
+### (a) A tarja preta
+
+**A causa era nossa.** O "degradê" que cobre legenda queimada do acervo
+(`rodape.png`) tem 384px de altura e a curva de opacidade dele era:
+
+- até 26% da faixa: sobe de transparente
+- **de 26% até o pé: alfa 252 de 255, constante**
+
+74% da faixa era preto quase sólido. O código chamava de degradê e o comentário
+prometia *"cobre o texto de baixo sem virar tarja"*. Medido linha a linha no
+clipe "colonizadores": **289px pretos no pé do quadro, 15% da altura, em todos
+os quadros** — e sobre material limpo, porque entrou pela regra do "suspeito"
+(0 de 8 quadros acima do limiar, média 1,5x contra um piso de 1,35x).
+
+Uma correção sua: a tarja é **só embaixo**, não em cima e embaixo. Medi o topo e
+ele tem 0px.
+
+**O conserto**: o alfa agora sobe da borda superior até o pé sem nunca saturar,
+com teto em 206 de 255. Cobrir a legenda do acervo não exige apagar a imagem —
+exige rebaixar o contraste dela o bastante para a nossa ganhar.
+
+| Perfil | Antes | Agora |
+|---|---|---|
+| 0% da faixa | 0 | 0 |
+| 25% | 80 | 80 |
+| 50% | **252** | 179 |
+| 75% | **252** | 202 |
+| pé do quadro | **252** | 206 |
+
+**E o portão que faltava.** `warden style check` passou a medir as quatro bordas
+do arquivo pronto e reprovar qualquer barra preta constante acima de 2% da
+altura. Testado nos arquivos de verdade:
+
+| Clipe | Barra medida | Veredito |
+|---|---|---|
+| `clip-colonizadores-digitais` (o que você mediu) | pé, **15,0%** | REPROVA |
+| `f1f-01` (render da FASE 1, mesmo defeito) | pé, **15,05%** | REPROVA |
+| `f7-a` (mesma fonte, mesma janela, degradê novo) | **0%** | passa |
+| `f5-final` (o edit) | 0% | passa |
+
+A última linha é a prova do conserto: mesma fonte, mesma janela, mesma decisão
+de cobrir o rodapé, e a barra desapareceu.
+
+A medição usa o percentil e não o máximo, de propósito: um quadro preto porque a
+cena é preta não é moldura, e um portão que reprova clipe bom é desligado na
+semana seguinte.
+
+### (b) A legenda dupla — e aqui eu discordo da sua leitura
+
+Você pediu para descobrir se a detecção rodou e o que ela devolveu. Rodou:
+`"looked": true`, 0 de 8 quadros acima do limiar no pé, média 1,5x, estado
+"suspeito", e o rodapé foi aplicado por precaução. Foi essa aplicação que criou
+a tarja.
+
+**Mas a legenda amarela do "colonizadores" é a NOSSA, não a do vídeo de origem.**
+O arquivo de legenda do clipe define a cor primária como `&H0000E5FF`, que é
+amarelo puro, e o texto bate palavra por palavra com o que está na tela,
+`Caralho, muito foda. Em\N1826,` incluso. A contagem de camadas de texto é 2 (a
+nossa legenda e a tarja), não duas legendas.
+
+Isso não elimina o defeito, muda o que ele é: **a nossa legenda é amarela, na
+mesma posição e no mesmo estilo em que os vídeos de origem costumam queimar a
+própria.** Ela é indistinguível de uma legenda alheia — foi o que aconteceu com
+você, olhando.
+
+**E existe uma legenda dupla de verdade, que eu encontrei na FASE 5.** Num edit,
+a amostragem de quadros olhava um trecho contínuo que o clipe não mostra. A
+detecção disse "limpo" e o render saiu com a legenda do próprio vídeo atrás da
+nossa. Só apareceu quando extraí o quadro em resolução cheia. Corrigido na FASE
+5: os quadros agora vêm dos planos.
+
+### (c) O contorno da aprovação
+
+O que foi escrito em 15/09, palavra por palavra:
+
+> *"Legenda um pouco confusa ('Em 1826' — provavelmente erro do Whisper para 'há
+> 500 anos' ou similar, mas mantém sentido de comparação histórica). Vou aprovar
+> assim mesmo"*
+
+E aprovou. Um portão que quem está passando por ele decide contornar não é
+portão.
+
+**O que dá para detectar sem adivinhar**, escrito a partir do que de fato foi
+queimado:
+
+| Sinal | O caso real |
+|---|---|
+| A linha carrega um **número** | "Em 1826" — o Whisper erra número mais que qualquer outra coisa |
+| Uma **palavra repetida colada** | "jokovic jokovic" |
+| Uma **marca de legenda automática** (`>>`, `[risadas]`) | ">> para gravação", que foi para a tela num edit |
+
+`warden captions review --approve` agora **recusa** enquanto houver linha
+suspeita não decidida, e são duas saídas, ambas obrigando a olhar a linha:
+
+- está **errada** → corrige no srt e revisa de novo (editar invalida qualquer
+  assinatura, que é o ponto)
+- está **certa** → repete ela de volta, exata: `--keep "<a linha>"`
+
+Não existe "aprovar assim mesmo". O que foi decidido fica escrito.
+
+Testado nos quatro caminhos: sem decidir recusa (saída 1); decidindo uma de duas
+ainda recusa; decidindo as duas aprova e registra "2 suspect line(s) read and
+kept"; e uma legenda sem nada suspeito aprova direto.
+
+### (d) O método da verificação
+
+Duas falhas opostas, na mesma semana:
+
+- Viu legenda dupla no mosaico, foi conferir no arquivo `.ass`, não achou a
+  frase, declarou falso positivo. **O `.ass` só contém a NOSSA legenda.** Ele
+  nunca acharia a do vídeo lá. A prova não respondia à pergunta. Custou 3min01s.
+- Leu mal um ladrilho reduzido do mosaico e inventou um problema, depois gastou
+  minutos desmentindo a própria leitura.
+
+Foi para a persona como tabela, não como parágrafo:
+
+| A afirmação é sobre | A prova é |
+|---|---|
+| o que está na tela | `ffmpeg -ss <t> -i <clipe> -frames:v 1` e olhar |
+| se há duas legendas | o quadro, recortado naquela faixa, em tamanho cheio |
+| o que a NOSSA legenda diz | o `.ass` — e só a nossa está lá |
+| se o clipe tem a duração pedida | `warden check`, nunca a sua leitura |
+| se um arquivo chegou | `warden delivered`, que lê o log do gateway |
+
+E a frase que resume: **um ladrilho do mosaico tem 300 pixels de largura. É o
+bastante para desconfiar e nunca o bastante para concluir.**
+
+### Auditoria da FASE 7
+
+**Eu mesmo usei essa regra nesta sessão, e ela pagou.** Na FASE 5 vi algo
+estranho num ladrilho, extraí o quadro em resolução cheia, e lá estavam as duas
+legendas — a do vídeo cortada na margem esquerda e a nossa por cima. No mosaico
+reduzido as duas se confundiam. Sem extrair o quadro, eu teria entregado o edit.
+
+**Onze testes novos.** Seis da tarja (a de 15% é medida; material limpo não tem
+barra; um quadro escuro sozinho não é barra; a barra reprova; **não ter olhado
+as bordas também reprova**; e o degradê nunca satura) e cinco do portão de
+aprovação (número, palavra repetida colada, marca de legenda automática, frase
+comum não é suspeita, e "que...que" numa frase longa é português e não
+artefato).
+
+**A suíte: 390 testes, todos passando.**
+
+**O que ficou aberto:**
+
+- A cor da nossa legenda continua amarela. Ela bate a spec medida do corpus
+  aprovado, então não mexi — mas é o motivo de ela ter sido confundida com a de
+  outro vídeo, e essa é uma decisão sua.
+- A detecção de suspeita é por classe de erro, não por sentido. "Em 1500" seria
+  aceita do mesmo jeito que "Em 1826", se alguém repetir a linha de volta. O que
+  ela garante é que ninguém assina sem olhar.
