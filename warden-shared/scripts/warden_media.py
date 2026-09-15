@@ -150,8 +150,19 @@ POT_BASE_URL = os.environ.get("WARDEN_POT_URL", "http://127.0.0.1:4416")
 # webpage requests an hour, and names bursts as what gets an address flagged.
 # These are seconds between requests, not a preference.
 SLEEP_REQUESTS = os.environ.get("WARDEN_SLEEP_REQUESTS", "1.5")
-SLEEP_INTERVAL = os.environ.get("WARDEN_SLEEP_INTERVAL", "1")
-SLEEP_MAX = os.environ.get("WARDEN_SLEEP_MAX", "5")
+# `--sleep-interval`/`--max-sleep-interval` dormem ANTES de cada download, e o
+# yt-dlp sorteia uniformemente entre os dois: 1 e 5 davam 3,0s de média. Pior,
+# `YoutubeDL.py` itera formatos × seções, então `--windows` com três janelas
+# pagava ~9s de `time.sleep` puro.
+#
+# Baixado para 0,5-1 (média 0,75s) em 15/09/2026, e NÃO para zero. O que marca
+# um endereço, pela wiki do yt-dlp, é rajada de REQUISIÇÃO ao innertube -- que
+# é o que `--sleep-requests` cobre e continua em 1,5s. Um sono antes de puxar
+# bytes de um CDN é outra coisa, e 3s dele por janela era preço sem prova.
+# Ainda assim não é zero: este agente é publicado e o endereço queimado é o de
+# quem instalou, então a margem fica do lado caro.
+SLEEP_INTERVAL = os.environ.get("WARDEN_SLEEP_INTERVAL", "0.5")
+SLEEP_MAX = os.environ.get("WARDEN_SLEEP_MAX", "1")
 
 
 def _js_runtimes():
@@ -249,6 +260,10 @@ def _ytdlp(*, paced=True):
     # against an address that is being refused is how a flagged address stays
     # flagged: it reads as exactly the burst the wiki warns about.
     base += ["--retries", "3", "--extractor-retries", "2"]
+    # Sem isto, uma conexão que trava fica sentada até o teto de 900s antes de
+    # alguém saber. 20s é folgado para um CDN do Google e curto o bastante para
+    # a falha aparecer enquanto a pessoa ainda está esperando.
+    base += ["--socket-timeout", "20"]
     if paced:
         base += ["--sleep-requests", SLEEP_REQUESTS,
                  "--sleep-interval", SLEEP_INTERVAL,
@@ -506,7 +521,7 @@ def playlist_video_ids(url):
     yt-dlp's flat listing is what makes 'is this video in the authorised
     playlist?' a question the tool answers instead of the model guessing.
     """
-    out = run(_ytdlp() + ["--flat-playlist", "--no-warnings",
+    out = run(_ytdlp(paced=False) + ["--flat-playlist", "--no-warnings",
                "--print", "%(id)s", "--", safe_url(url)],
               TIMEOUT_DOWNLOAD, "yt-dlp playlist listing")
     return {line.strip() for line in out.splitlines() if _YT_ID.match(line.strip())}
@@ -530,7 +545,11 @@ def _facts(url):
     if url in _FACTS:
         return _FACTS[url]
     try:
-        out = run(_ytdlp() + ["--no-warnings", "--no-playlist", "--playlist-items", "1",
+        # `paced=False`: `--print` implica `--simulate`, então esta chamada não
+        # baixa byte nenhum e o sono de download é espera pura. O
+        # `--sleep-requests` continua valendo, que é o que protege o endereço.
+        out = run(_ytdlp(paced=False) + ["--no-warnings", "--no-playlist",
+                   "--playlist-items", "1",
                    "--print", "\t".join("%%(%s)s" % c for c in _FACTS_CAMPOS),
                    "--", url],
                   TIMEOUT_DOWNLOAD, "yt-dlp metadata lookup")
@@ -2156,13 +2175,23 @@ def loud_segment_indexes(segments, source, top_fraction=0.25):
     env, why = _loudness_envelope(source)
     if not env or not segments:
         return set(), why
+    # `env` já vem ordenado no tempo, então as pontas saem por busca binária
+    # em vez de varredura. A versão anterior percorria as ~13.800 leituras da
+    # envoltória INTEIRA para cada segmento: num podcast de 23 minutos com ~700
+    # segmentos isso são ~10 milhões de comparações em Python, num container
+    # amd64 emulado. Não aparecia nos 24s de teste e apareceria na fonte longa,
+    # que é o caso de uso real deste comando.
+    import bisect
+    tempos = [t for t, _ in env]
     peaks = []
     for seg in segments:
         s, e = seg.get("start"), seg.get("end")
         if s is None or e is None:
             peaks.append(None)
             continue
-        vals = [lufs for t, lufs in env if s <= t <= e and lufs > -70]
+        i = bisect.bisect_left(tempos, s)
+        j = bisect.bisect_right(tempos, e)
+        vals = [lufs for _, lufs in env[i:j] if lufs > -70]
         peaks.append(max(vals) if vals else None)
     got = sorted(p for p in peaks if p is not None)
     if not got:
@@ -2306,35 +2335,73 @@ def _face_centers(source, start, length, samples=7):
         return []
     cv2, det = found
     import subprocess, tempfile
+    # UMA passada de ffmpeg para as sete amostras, não sete.
+    #
+    # Medido em 15/09/2026 no container: sete `-ss` separados custavam 4,1-5,4s
+    # de ffmpeg; a passada única custa ~1,3s. É o mesmo conserto que
+    # `sample_frames` já tinha neste projeto e que não havia chegado aqui, e é
+    # o maior item da varredura de lentidão.
+    #
+    # O que NÃO foi feito, de propósito: reaproveitar os quadros do
+    # `sample_frames`. Isso economizaria mais e mudaria quais quadros decidem o
+    # enquadramento -- com `--shots` ele amostra por plano e aqui é contínuo --
+    # e o enquadramento é o produto. Uma passada própria mantém a decisão
+    # idêntica à de antes.
+    #
+    # Os que a passada não trouxer voltam um a um, pelo mesmo motivo do contact
+    # sheet: `fps` não emite a última amostra quando o intervalo não cabe, e
+    # quadro não lido aqui não é "não achei rosto", é "não olhei".
     out, lidos = [], 0
-    for i in range(samples):
-        t = float(start) + (i + 0.5) * float(length) / samples
-        fd, png = tempfile.mkstemp(suffix=".png")
-        os.close(fd)
-        try:
-            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss",
-                            f"{t:.3f}", "-i", source, "-frames:v", "1", png],
-                           capture_output=True, timeout=30)
-            img = cv2.imread(png)
-            if img is None:
+    instantes = [float(start) + (i + 0.5) * float(length) / samples
+                 for i in range(samples)]
+    passo = float(length) / samples
+    tmp = tempfile.mkdtemp(prefix="warden-faces-")
+
+    def _mede(png):
+        nonlocal lidos
+        img = cv2.imread(png)
+        if img is None:
+            return False
+        h, w = img.shape[:2]
+        det.setInputSize((w, h))
+        _n, faces = det.detect(img)
+        if faces is not None:
+            for f in faces:
+                cx = (float(f[0]) + float(f[2]) / 2) / w
+                area = (float(f[2]) * float(f[3])) / (w * h)
+                out.append((cx, area))
+        lidos += 1
+        return True
+
+    try:
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error",
+                        "-ss", f"{instantes[0]:.3f}", "-i", source,
+                        "-vf", f"fps=1/{passo:.6f}", "-frames:v", str(samples),
+                        "-fps_mode", "passthrough",
+                        os.path.join(tmp, "f%02d.png")],
+                       capture_output=True, timeout=90)
+        faltaram = []
+        for i, t in enumerate(instantes):
+            png = os.path.join(tmp, "f%02d.png" % (i + 1))
+            if not (os.path.isfile(png) and os.path.getsize(png) > 0):
+                faltaram.append(t)
                 continue
-            h, w = img.shape[:2]
-            det.setInputSize((w, h))
-            _n, faces = det.detect(img)
-            if faces is not None:
-                for f in faces:
-                    cx = (float(f[0]) + float(f[2]) / 2) / w
-                    area = (float(f[2]) * float(f[3])) / (w * h)
-                    out.append((cx, area))
-        except Exception:
-            continue                                   # a bad frame is not a failed cut
-        else:
-            lidos += 1
-        finally:
             try:
-                os.remove(png)
-            except OSError:
-                pass
+                if not _mede(png):
+                    faltaram.append(t)
+            except Exception:
+                faltaram.append(t)
+        for t in faltaram:
+            png = os.path.join(tmp, "fill%.3f.png" % t)
+            try:
+                subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss",
+                                f"{t:.3f}", "-i", source, "-frames:v", "1", png],
+                               capture_output=True, timeout=30)
+                _mede(png)
+            except Exception:
+                continue                               # a bad frame is not a failed cut
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     if not lidos:
         # Zero quadros lidos não é "não achei rosto": é "não olhei". As duas
         # devolviam lista vazia e as duas caíam no centro, que foi como o rosto

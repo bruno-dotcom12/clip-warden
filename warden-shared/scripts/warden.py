@@ -400,16 +400,25 @@ def probe(path):
         die("ffprobe is not on PATH, so no clip can be measured")
     if not os.path.isfile(path):
         die(f"there is no file at {path} to measure", code=1)
-    def run(args):
-        return subprocess.run(["ffprobe", "-v", "error", *args, path],
-                              capture_output=True, text=True).stdout.strip()
-    video = run(["-select_streams", "v:0", "-show_entries",
-                 "stream=width,height,r_frame_rate,codec_name",
-                 "-of", "default=nw=1"])
-    fields = dict(line.split("=", 1) for line in video.splitlines() if "=" in line)
-    duration = run(["-show_entries", "format=duration", "-of", "default=nw=1:nk=1"])
-    audio = run(["-select_streams", "a:0", "-show_entries", "stream=codec_name",
-                 "-of", "csv=p=0"])
+    # UMA chamada, não três. Medido em 15/09/2026: 0,198s por ffprobe, 0,618s
+    # pelos três -- e a duração era medida aqui pela terceira vez no mesmo
+    # clipe, depois do render e do contact sheet. O arquivo continua sendo
+    # MEDIDO de propósito, que é o ponto desta função; só deixa de ser aberto
+    # três vezes para isso.
+    bruto = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_streams", "-show_format",
+         "-of", "json", path], capture_output=True, text=True).stdout
+    try:
+        tudo = json.loads(bruto or "{}")
+    except ValueError:
+        tudo = {}
+    correntes = tudo.get("streams") or []
+    v_stream = next((c for c in correntes if c.get("codec_type") == "video"), {})
+    a_stream = next((c for c in correntes if c.get("codec_type") == "audio"), {})
+    fields = {k: str(v_stream[k]) for k in
+              ("width", "height", "r_frame_rate", "codec_name") if k in v_stream}
+    duration = str((tudo.get("format") or {}).get("duration") or "")
+    audio = str(a_stream.get("codec_name") or "")
     def number(value, cast=float):
         try:
             return cast(value)

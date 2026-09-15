@@ -1571,15 +1571,32 @@ def contact_sheet(video, out_png, tiles=8, cols=4, label=None):
     tmp = tempfile.mkdtemp(prefix="warden-sheet-")
     perdidos = []
     try:
-        for i in range(tiles):
-            # Amostra no meio de cada fatia: o primeiro e o último quadro de um
-            # render costumam ser transição, e um mosaico de transições não conta
-            # o que o clipe mostra.
-            t = dur * (i + 0.5) / tiles
-            png = os.path.join(tmp, f"f{i:02d}.png")
-            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss",
-                            f"{t:.3f}", "-i", video, "-frames:v", "1", png],
-                           capture_output=True, timeout=60)
+        # UMA passada de ffmpeg, não uma por quadro.
+        #
+        # Amostra no meio de cada fatia: o primeiro e o último quadro de um
+        # render costumam ser transição, e um mosaico de transições não conta o
+        # que o clipe mostra. Os mesmos instantes de antes -- `dur*(i+0.5)/tiles`
+        # é uma progressão regular, então um `-ss` de meia fatia mais um `fps`
+        # de uma amostra por fatia cai exatamente neles.
+        #
+        # Medido em 15/09/2026 no container: oito `-ss` separados custavam
+        # 4,3-8,0s; a passada única custa 1,2-1,6s. É o mesmo conserto que
+        # `sample_frames` já tinha recebido neste arquivo e que não havia sido
+        # propagado para cá.
+        #
+        # E a confissão de cegueira do portão NÃO se perde: o espaçamento é
+        # determinístico, então o índice de saída volta a ser instante, e um
+        # quadro que não saiu continua sendo nomeado pelo segundo dele.
+        passo = dur / tiles
+        instantes = [dur * (i + 0.5) / tiles for i in range(tiles)]
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error",
+                        "-ss", f"{passo / 2:.3f}", "-i", video,
+                        "-vf", f"fps=1/{passo:.6f}", "-frames:v", str(tiles),
+                        "-fps_mode", "passthrough",
+                        os.path.join(tmp, "f%02d.png")],
+                       capture_output=True, timeout=120)
+        for i, t in enumerate(instantes):
+            png = os.path.join(tmp, "f%02d.png" % (i + 1))   # ffmpeg conta de 1
             if os.path.isfile(png) and os.path.getsize(png) > 0:
                 try:
                     shots.append((t, Image.open(png).convert("RGB")))
@@ -1587,6 +1604,35 @@ def contact_sheet(video, out_png, tiles=8, cols=4, label=None):
                     perdidos.append(f"{t:.1f}s ({type(exc).__name__})")
             else:
                 perdidos.append(f"{t:.1f}s")
+        # O que a passada não trouxe, buscado um a um.
+        #
+        # O filtro `fps` não emite a última amostra quando o intervalo dela não
+        # cabe inteiro no arquivo: medido em 15/09 num clipe de 15,00s, a
+        # oitava amostra (14,1s) existia no vídeo e não saía. Sete de oito
+        # enfraquece o portão -- e um portão que some por otimização é pior que
+        # um portão lento.
+        #
+        # Então a passada única é o caminho rápido, não o único: o que faltar
+        # volta pelo caminho antigo. No caso comum isso é zero ou uma chamada,
+        # e no pior caso o custo é o de antes, nunca maior.
+        if perdidos:
+            faltando = list(perdidos)
+            perdidos = []
+            for t_txt in faltando:
+                t = float(t_txt.split("s")[0])
+                png = os.path.join(tmp, "fill%.3f.png" % t)
+                subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss",
+                                f"{t:.3f}", "-i", video, "-frames:v", "1", png],
+                               capture_output=True, timeout=60)
+                if os.path.isfile(png) and os.path.getsize(png) > 0:
+                    try:
+                        shots.append((t, Image.open(png).convert("RGB")))
+                        continue
+                    except Exception as exc:
+                        perdidos.append(f"{t:.1f}s ({type(exc).__name__})")
+                        continue
+                perdidos.append(f"{t:.1f}s")
+            shots.sort(key=lambda par: par[0])
         if not shots:
             return None
 
