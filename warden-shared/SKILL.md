@@ -48,15 +48,17 @@ you did not get.
 | `warden fetch <url>` | a brief as readable text |
 | `warden discover` | the public campaign directories, as text |
 | `warden prefs ask --group search\|edit` / `set` / `show` | what this owner wants |
-| `warden archive --campaign <id> --text-first` | **start here.** the words only: published subtitle, or audio. No video. |
-| `warden archive --trusted <url> --text-first` | the same, for a bare link the owner vouched for. One of the two gates is required |
+| `warden lote prep <url> [--campaign <id>] [--n 2] [--seconds 20]` | **start here.** the gate, the words, the digest and the signals in ONE output, with the defaults it will use printed. No questions |
+| `warden lote render <url> --windows <a>-<b>,<c>-<d> --hooks 'x\|y'` | the other half: pulls the windows, renders the clips, ONE combined contact sheet, and every `MEDIA:` line printed together at the end |
+| `warden archive --campaign <id> --text-first` | the words only, by hand: published subtitle, or audio. No video |
+| `warden archive --trusted <url> --text-first` (or `--link`) | the same, for a bare link. **The link having been sent IS the authorisation** -- there is no list to check and nothing to ask |
 | `warden archive … --windows <a>-<b>,<c>-<d>` | the whole batch of windows in one run: 31s against 38s for two |
 | `warden archive … --window <a>-<b>` | one window, with the origin card beside it |
-| `warden archive --campaign <id>` | the WHOLE file, 382 MB. The exception -- `warden-clip` 4c says when |
-| `warden cut … --seconds <n>` / `--any-length` | the duration the person said. One of the two is **required**: no default, like sound |
-| `warden delivered [<clip>]` | confirm a send that came back; with no path, **exit 1 while any cleared clip is still unsent** |
+| `warden archive --campaign <id>` | the WHOLE file. The exception -- `warden-clip` 4c says when, and it is the only place that number lives |
+| `warden cut … --seconds <n>` / `--any-length` | the duration the person said. Neither one: `cut` uses the stored default (20s), inside the campaign's limits, and prints which number it used and where it came from |
+| `warden delivered [<clip>]` | reads the conversation's own record: did THIS path go out, in a final message? Run it at the **START of the next turn** -- it cannot confirm a send that has not happened yet. When it cannot verify, it says so instead of confirming |
 | `warden authorize <url> --campaign <id>` | is this link in the campaign's archive? exit 1 = no |
-| `warden trusted add\|check\|list <x>` | the owner's trusted channels and domains, for clipping without a campaign |
+| `warden trusted add\|check\|list <x>` | legacy. A link someone sent needs no entry here |
 | `warden transcribe <file>` / `digest <transcript>` | words, then words you can afford |
 | `warden signals <transcript> --source <file>` | where the words and the sound spike: hooks, conflict, reactions |
 | `warden beat <track>` | tempo, grid and drop |
@@ -69,5 +71,10 @@ you did not get.
 | `warden style extract <clip>` / `check <render>` | the measured style of an approved clip, and whether a new one is inside it |
 | `warden voz [--since <ts>]` | how many messages each request actually cost the person; **exit 1 above four** |
 | `warden inbox --wait <s>` | the link the message promised but did not carry, when it arrives a second later. Exit 1 if none came |
+| `warden youtube status` / `connect` | is the owner's channel connected; `connect` prints a google.com/device code and waits for the approval |
+| `warden youtube publish <clip> --title "..."` | uploads to their channel. **This is not publishing**: until Google audits this app the video is locked as private, the owner cannot make it public and cannot appeal. The privacy it prints is what YouTube RETURNED |
+| `warden post status` | is a publishing intermediary configured on this install, and which account is connected |
+| `warden post youtube <clip> --title "..." [--description "..."]` | **the road that actually publishes.** Goes through an intermediary whose app Google already audited, so the video comes out PUBLIC on their channel. Measured 15/09 with a real upload. Exits 1 saying it is switched off when this install has no key |
+| `warden tiktok <clip> [--campaign <id>] [--hook "..."]` | puts the clip in the owner's TikTok inbox (not the Drafts tab) and prints the caption to paste. Needs a token for that one account |
 
 Every one of them accepts `--help`. None of them needs a path you have to guess.

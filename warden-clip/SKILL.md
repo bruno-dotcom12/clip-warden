@@ -8,6 +8,16 @@ description: Go from a campaign's authorised archive to finished vertical clips.
 The order is fixed and it is not a preference.
 
 ```
+warden lote prep  ->  you choose the windows  ->  warden lote render  ->  deliver
+```
+
+`lote` is the short road and it is the default one: `prep` does the gate, the
+words and the signals in one output, and `render` does the windows, the clips,
+one combined contact sheet and every `MEDIA:` line together at the end. The long
+road is the same order by hand, and it is what the numbered sections below
+describe:
+
+```
 gate -> WORDS (--text-first) -> chosen windows -> --windows -> render -> sheet -> deliver
 ```
 
@@ -15,9 +25,10 @@ gate -> WORDS (--text-first) -> chosen windows -> --windows -> render -> sheet -
 points here, `warden-run` points here, and neither carries a second version. If
 you find one somewhere, it is stale and this section wins.
 
-**The video is the last thing you pull, and you pull only the seconds you
-chose.** Any instruction anywhere that reads "pull the footage, then find the
-moment" is the old order and it is wrong. Measured on the 18-minute source of
+**The video is the last thing you pull.** Any instruction anywhere that reads
+"pull the footage, then find the moment" is the old order and it is wrong. How
+MUCH of the video to pull, once the moment is chosen, is decided in 4c and
+nowhere else. Measured on the 18-minute source of
 15/09: the published subtitle is **5s and 89 KB** and covers the whole video,
 while transcribing that same video costs **3min46s**. That is the whole reason
 this order exists.
@@ -38,23 +49,23 @@ Exit 0 gives you the URL; exit 1 after the wait is when asking becomes fair.
 
 ## 1. The gate, and the rule set when there is one
 
-**Every download passes a gate, and the gate is never your reading of the link.**
-There are two and there is no third:
+**A link someone sent you is authorised by their having sent it.** That is the
+owner's decision of 15/09 and it holds for anyone in the conversation. There is
+no list to check, nothing to ask, and no licence to request.
 
 ```
-warden archive --campaign <id> ...      the campaign's archive vouches
-warden archive --trusted <url> ...      the owner's trusted list vouches
+warden archive --trusted <url> ...      a bare link. `--link` is the same flag
+warden archive --campaign <id> ...      the campaign's own archive
 ```
 
-`warden archive` refuses to run with neither. With a campaign, store it first --
-`warden-campaign` does that, and the renderer takes its duration and resolution
-from the rule set, so `warden campaign show <id>` coming back empty means you
-are not ready to cut. Without a campaign, `warden trusted check <url>` is the
-question and `warden trusted add <@channel|domain>` is how the owner answers it.
+With a campaign, store it first -- `warden-campaign` does that, and the renderer
+takes its duration and resolution from the rule set, so `warden campaign show
+<id>` coming back empty means you are not ready to cut.
 
-Until 15/09 the cheap path required `--campaign`, so a person who sent a bare
-link had no cheap path at all and the agent pulled the whole file three times in
-a row because it was the only door open. `--trusted` is that door.
+`warden cut` no longer needs `--campaign`. A bare link is cut against a blank
+rule set, where every field is `unchecked` rather than invented. Do not make up a
+campaign to get past a required flag; that was the road into the caption question
+that stopped every first clip.
 
 ## 2. Pull the words. Never the video.
 
@@ -84,63 +95,47 @@ owner the failing link instead.
 
 ### A specific link the owner sends
 
-Do not reason about whether it belongs; ask the tool. With a campaign, run
-`warden authorize <link> --campaign <id>`: it expands the playlists and matches
-the id, and only it can, so a "not in the archive" from you without it is a
-guess. It also prints the video's title. Authorised, you cut it. Not authorised,
-you do not refuse -- you ask, naming the video by that title: "the video
-'<title>' is outside the campaign's archive and a submission may be rejected --
-cut it anyway?" and you wait for a yes before cutting. Their call, not yours, and
-a flat no is not the answer.
+With a campaign, `warden authorize <link> --campaign <id>` answers ONE question:
+does a submission with this video risk rejection? It expands the playlists,
+matches the id and prints the title. Exit 0, nothing to say. **Exit 1, you cut it
+anyway** and add one clause to that clip's message naming the video: "esse vídeo
+não está no acervo da campanha, então a submissão pode ser recusada." You do not
+ask, you do not wait for a yes, and you do not refuse.
 
-Without a campaign, run `warden trusted check <link>`. From a source in their
-trusted list, cut it; otherwise say it is not a source they have vouched for and
-offer `warden trusted add <channel|domain>`. A channel is an `@handle` or a
-`UC…` id; a domain is `youtube.com`. This is the only footage you cut that no
-campaign authorised, and the trusted list is what stands in for the brief.
+Without a campaign there is no question at all.
 
 ### When the source refuses to come down at all
 
-Measured 15/09: YouTube refuses this outgoing address for logged-out requests,
-with the bot check "Sign in to confirm you're not a bot". It fires on
-`--text-first` as well, before any window exists, because the refusal is on the
-request and not on the video.
+When `archive` prints the bot-check diagnosis ("Sign in to confirm you're not a
+bot"), it is **every link and not this one**: the refusal is on the request, so
+it fires on `--text-first` too, before any window exists, and another YouTube
+link comes back the same way. Asking for a different link costs a round trip and
+lands here again.
 
-What it is not:
+What you say is one message offering their own file, and it is written in the
+persona under "The failure you repass". Not repeated here.
 
-- **not this video** -- every link gets the same refusal;
-- **not "the IP of the server"** -- the same error comes back on the owner's
-  Mac, outside Docker, on their own residential connection;
-- **not a blip of a few minutes** -- and nobody can promise when it passes.
+`archive` prints the diagnosis itself, including whether a cookies file was
+configured and used. **Repass what it printed and do not put a cause of your own
+in front of it.** The two paths it names are a different outgoing address, or a
+cookies file at `/var/lib/hermes/warden/cookies.txt` from a throwaway logged-in
+account -- never the owner's own, because yt-dlp's own warning is that this can
+get the account banned.
 
-Tried and beaten, all on 15/09: 11 different player clients, `--impersonate
-chrome`, the JS runtime, and a valid PO token freshly generated and tied to the
-right visitor data, in the player context. Every one refused the same. yt-dlp
-files this under "Intractable issues": it moves with a **different outgoing
-address**, or with **cookies from a logged-in session**, and with nothing else.
-
-`archive` detects this refusal and prints the diagnosis itself -- what is
-already standing (JS runtime, PO token provider, pacing, cookie file) and the
-two real options. **Repass what it printed instead of summarising over it**, and
-do not put a cause of your own in front of it.
-
-The two options, and there is no third:
-
-- **another outgoing address** for the download;
-- **a cookies file at `/var/lib/hermes/warden/cookies.txt`**, exported from a
-  logged-in session. yt-dlp's own warning is that using account cookies this way
-  can get the account banned, so this is a throwaway account and never the
-  owner's.
-
-**Asking for another link is not the first answer.** Another YouTube link is
-refused the same way, so the question costs a round trip and comes back here.
+**Measured 15/09: a different outgoing address fixes it, and that is now a
+measurement rather than a promise from a manual.** The residential address was
+refusing every link; through a phone's connection the same container, with no
+cookies and nothing else changed, pulled the published subtitle and a window
+download normally. What is NOT measured is whether a marked address ever clears
+on its own, so you never say it will, and you never say it will not. Say what the
+tool measured, offer the file, and if they send one you are cutting in seconds
+instead of waiting.
 
 **The one case where it IS that video**, and the tool tells the two apart so you
-do not have to: an age-restricted, private, members-only or removed video is
-refused for itself, and every other link keeps working. That refusal comes back
-as an ordinary error with yt-dlp's own words, NOT as the diagnosis above. So the
-rule is not "it is never the video" -- it is that you report whichever of the two
-the tool handed you, and you do not upgrade one into the other.
+do not have to: an age-restricted, private, members-only or removed video comes
+back as an ordinary yt-dlp error in yt-dlp's own words, NOT as that diagnosis.
+Repeat whichever of the two the tool handed you, in one line, and never upgrade
+one into the other.
 
 ## 3. Read the words and choose the windows
 
@@ -209,9 +204,8 @@ Two things about this path, both measured:
   windows are **31s and 14 MB**. The reason is in yt-dlp's own documentation --
   `--download-sections` "needs ffmpeg", and ffmpeg remuxes the section in real
   time at about 1.8x, so a 28-second window costs ~17s of ffmpeg no matter how
-  fast the connection is. So: **under about half an hour of source, pull it
-  whole; over that, pull the windows.** What the windows always save is disk,
-  and on a two-hour stream they are the only sane way.
+  fast the connection is. **The rule that comes out of those two numbers is in
+  4c.**
 - **It goes through the same archive gate.** `archive_window` refuses a link
   that is not in `sources.archive_urls` before a single byte comes down, and
   says so: downloading a slice is still downloading. A fast clip made of
@@ -237,22 +231,24 @@ yt-dlp picks the HLS stream, and `--download-sections` over HLS writes an mp4
 **with no video track, silently**. The tool probes the file and deletes it
 rather than handing it on.
 
-### 4c. The whole video is the exception, and you say why
+### 4c. How much of the video to pull, decided once
 
 ```
-warden archive --campaign <id>                  the WHOLE file. 361 MB. 16s.
+warden archive --campaign <id>                  the WHOLE file
 ```
 
-There are three reasons to run this, and "it is simpler" is not one of them:
+**Under about half an hour of source, pull it whole. Over that, pull the
+windows.** That is the whole rule, and it comes from the two numbers in section
+2: on the 18-minute source the whole file was 13s and two windows were 31s, so
+below that size the windows cost time and save only disk. On a two-hour stream
+they are the only sane way.
 
-- the source publishes no subtitle **and** `--text-first` could not get the
-  audio either;
-- the owner asked for the whole thing;
-- you need more of the source than the windows -- a montage across the hour,
-  a search for a shot you cannot place on the text.
+Pull it whole regardless of length when: the source publishes no subtitle **and**
+`--text-first` could not get the audio either; or the owner asked for the whole
+thing; or you need more of the source than the windows -- a montage across the
+hour, a search for a shot you cannot place on the text.
 
-Outside those, pulling the whole file is the 12min26s path. When you do take
-it, say so in one line and say which of the three it was. Each file it prints
+Do not announce which of those it was. Each file it prints
 is a path you pass straight to `warden cut`, on the SOURCE's own clock -- it
 names them itself and pulls one video per playlist link, so there is nothing to
 rename and no stray file to sort through.
@@ -265,14 +261,41 @@ overlay at the top.
 
 `warden transcribe` writes an `.srt` beside the transcript JSON, and that is
 what `--subtitles` takes -- so the words the tool heard can go on the screen even
-when the archive shipped no subtitles of its own. Two things it cannot decide for
-you. First, whisper mishears, and a wrong word burned on the screen is worse than
-no caption: read the transcript before you burn, and if a line is wrong, fix the
-srt or leave captions off. The srt does not burn on its own, and that is the same
-rule enforced: `warden captions review <srt> --start <s> --end <s>` prints the
-lines inside the window and `--approve` signs them, and with no signature `cut`
-renders the clip with **no caption at all** rather than burning words nobody
-read. So sign after reading, never before, and editing the srt voids it. Second, the tool opens eight frames of the window
+when the archive shipped no subtitles of its own.
+
+### Who signs the captions, on each road
+
+**This is the only place this is written.** The persona, `warden-run` and
+`warden-style` point here; none of them carries a second version.
+
+The srt never burns on its own. Something has to SIGN the window, and with no
+signature `cut` renders the clip with **no caption at all** rather than burn
+words nobody read. Who signs depends on which road you took:
+
+| road | who signs |
+|---|---|
+| `warden lote render` | the tool signs the clean lines itself, per window. You do not run `captions review`, and nobody is asked |
+| `warden cut` on its own | YOU sign, first: `warden captions review <srt> --start <s> --end <s> --approve` |
+
+**A suspect line is never signed on either road.** A number, a repeated word, an
+auto-caption `>>` marker: it is only signed if you repeat it back, exactly, in
+`--keep "<the line>"`. That gate was walked around on 15/09 -- a line was flagged
+as probably wrong and signed in the same breath -- and "Em 1826" went to the
+screen. A window that could not be signed does not fail the batch and does not
+become a wrong caption: it renders WITHOUT captions, and the warning names the
+`--keep` that would release it. **If a clip came back without captions and the
+campaign wanted them, that warning is where the reason is.** Read it and pass the
+`--keep`, rather than delivering a silent-captioned clip to a campaign that pays
+for the words.
+
+Reading is the point of the signature: whisper mishears, and a wrong word burned
+on the screen is worse than no caption. Sign after reading, never before, and
+editing the srt voids the signature. This is YOUR check, never a question to the
+person -- you never ask permission to caption.
+
+### What the footage already carries
+
+Second, the tool opens eight frames of the window
 before it renders and measures the edge density of the bottom band, which finds
 text the footage already carries -- a lower-third, a channel's own burned
 captions, the Prime archive's own subtitles. Burn over those and you have two.
@@ -391,27 +414,30 @@ Pass `--seconds` whenever a person said a duration. The cut is moved to it from
 the same start, the `-estilo.json` records what was asked, and the delivery gate
 rejects a file that misses it.
 
-On 14/09 two clips of "20 segundos" were asked for and 20.6s and 22.2s were
-delivered. The renderer was not wrong — it cut exactly the window it was given.
+On 14/09 two clips of "20 segundos" were asked for and 24,5s and 15,4s came
+back -- 22% over and 23% under, in the same batch -- because the number never
+became a parameter and nothing compared the result to it. Those are the numbers;
+they are measured once, here, and no other file repeats them. What was delivered. The renderer was not wrong — it cut exactly the window it was given.
 What did not exist was any way for the person's number to reach it: the windows
 had been aligned to transcript boundaries and nobody went back to the number.
 
 Only a campaign rule may override it. When one does, `cut` says which rule, and
 you repeat that to the person. "It came out a bit longer" is not a reason.
 
-### The batch renders in parallel and reports in order
+### The batch renders ONE at a time and reports in order
 
-`warden cut --plan` renders two clips at a time and prints each one **the moment
-it is ready** — clip 2 is already rendering while you are looking at clip 1's
-contact sheet. Two at a time, not more: the container has 3 GB and a single
-render with transcription peaked at 1815 MiB. It prints a line every 15s while a
-render is running. That line is for YOU, in the command output; it is not
-something to relay. The person heard a number in your first message and that is
-the whole of what they hear until a clip exists.
+`warden cut --plan` renders **one clip at a time** and prints each one the moment
+it is ready. `WARDEN_RENDER_PARALELO=2` turns on two, and it is deliberately off:
+two in parallel was measured at 64s against 70s sequential -- a 9% gain -- with
+the peak at 3035 MiB of the container's 3072 MiB limit. Speed the OOM killer
+interrupts is not speed.
 
-That order matters for delivery: look at clip 1's sheet and end your turn with
-its `MEDIA:` line straight away. Do not hold the first clip hostage to the
-last one.
+It prints a line every 15s while a render is running. That line is for YOU, in
+the command output; it is not something to relay. The person heard a number in
+your first message and that is the whole of what they hear until a clip exists.
+
+When the batch finishes, end the turn with ALL of the `MEDIA:` lines in one
+final message -- the block `--plan` prints at the end is exactly that message.
 
 ### Do not re-cut four times to find the window
 
@@ -436,7 +462,7 @@ SHEET:/var/lib/hermes/cache/videos/clip-01-contato.jpg
 MEDIA:/var/lib/hermes/cache/videos/clip-01.mp4
 ```
 
-**Open that image with the Read tool before you put that clip's `MEDIA:` line in
+**Open that image with `vision_analyze` before you put that clip's `MEDIA:` line in
 a final message** -- the sheet is what stands between a render and a delivery, and section 7
 is where the delivery happens. Then say, in your own words, what you saw -- in
 your THINKING, which is the only place in this runtime that is private. Not in
@@ -473,102 +499,39 @@ withholds the `MEDIA:` path itself in that case, so there is no path to put in a
 
 ## 7. Send, and deliver the number that was asked for
 
-### A clip is delivered by the LAST message of a turn. Nothing else delivers.
+**The delivery rule lives in the persona, under "Handing the file over", and it
+is written there and nowhere else.** In one line: render every clip they asked
+for -- up to three -- before you answer, then ALL of the `MEDIA:` lines go in the
+LAST message of the turn, with no tool call after it. What follows is only the
+evidence and what it means for a batch.
 
-**The rule itself lives in the persona, under "Handing the file over". It is
-written there and nowhere else; what follows is the evidence behind it and what
-it means for a batch.**
+`MEDIA:` mid-turn attaches nothing, in silence, and the prose around it still
+arrives -- the person reads "aqui está o primeiro corte" and no file comes. That
+is 5 occurrences out of 5 requests for more than one clip. Every `MEDIA:` in a
+final message was attached: 8 out of 8, including twice with two lines together.
 
-**There is no `send_message` tool in this runtime.** Measured 15/09: three
-conversations, five tools ever called (`terminal`, `vision_analyze`,
-`search_files`, `read_file`, `patch`), zero calls to `send_message`, because it
-is not offered. Every older instruction built on it is dead text.
+| where the `MEDIA:` line was | attached |
+|---|---|
+| in a message that still called a tool | 0 of 5 |
+| in the final message of the turn | 8 of 8 |
 
-What delivers is the `MEDIA:` line in the **final message of your turn**. The
-gateway reads that message, pulls out every `MEDIA:` path, and sends each as an
-attachment. Two lines in one final message deliver two files — measured twice,
-both times while re-sending after the person complained.
+`warden delivered` runs at the **START of the next turn**, never before ending
+the one that delivers: the attachment leaves after the final message, so a check
+inside that turn can only ever say "not yet". It reads each path and answers for
+that exact file; when it cannot verify, it says it could not, and you repeat that
+rather than guessing.
 
-A `MEDIA:` line written anywhere else in the turn **attaches nothing, in
-silence**, and the prose around it still arrives. That is the expensive part:
-the person reads "aqui está o primeiro corte" and no file comes.
+Do not write that the batch is ready, or done, or delivered, while a clip is
+unconfirmed. **Rendered is not delivered.** The count you report is the count of
+attachments that left, never the count of files on disk.
 
-| Conversation | `MEDIA:` mid-turn | `MEDIA:` in the final message |
-|---|---|---|
-| 15/09, 00:53 | did not arrive | 01:00:38 arrived |
-| 15/09, 02:48 | did not arrive | 02:50:56 arrived |
-
-### One clip per turn, and clip 2's render is what wakes you
-
-Only the final message delivers, so **one turn hands over one clip**. Do not hold
-the first until the last renders, and do not try to send it mid-turn.
-
-Start the NEXT render in the background before you end the turn. A background
-command finishing wakes you with its result — measured, that is how the
-transcription of 15/09 brought the agent back four minutes later.
-
-```
-1. render clip 1, look at its sheet
-2. launch clip 2's render in the background
-3. end the turn with clip 1's MEDIA: line          -> delivered
-4. the render finishing wakes you; look at clip 2's sheet
-5. end that turn with clip 2's MEDIA: line         -> delivered
-```
-
-Three messages, two files, neither waiting on the other.
-
-### The confirmation is a reading of the gateway's log, not your word
-
-Nothing returns a send result, so there is none to read. What you can ask is
-whether an attachment actually left:
-
-```
-warden delivered /var/lib/hermes/cache/videos/clip-01.mp4
-```
-
-It goes and looks at the gateway's own log:
-
-- **nothing left since that clip cleared** → it refuses to strike it off, and
-  says the `MEDIA:` line has to be in the final message
-- **a send failure logged** → it refuses, and you resend it yourself in the last
-  message of your next turn, with one line: "o corte 1 não foi anexado,
-  reenviando"
-- **an attachment left** → struck off
-
-Before 15/09 it simply believed you, which was worth nothing: the case it exists
-to catch is the one where you believe you delivered and you did not.
-
-### "Os N clipes estão prontos" is a forbidden sentence until every file is confirmed
-
-Do not write that the batch is ready, or done, or delivered, in any wording,
-while a single clip is still unconfirmed. **Rendered is not delivered. Pronto is
-in the person's hand, not on the disk.** The count you report is the count of
-attachments the gateway logged leaving — never the count of files you
-rendered.
-
-The last message of the turn says what actually arrived, by name:
-
-> "Entreguei os 2: corte 1 (Emirates) e corte 2 (chave de buceta). Ambos
-> confirmados."
+> "Entreguei os 2: corte 1 (Emirates) e corte 2 (o cartão)."
 
 and if one did not make it, that is the sentence instead:
 
-> "Entreguei 1 de 2. O corte 2 falhou no envio três vezes; o arquivo está em
-> <caminho>. Não está entregue."
+> "Entreguei 1 de 2. O corte 2 não foi anexado, estou reenviando."
 
-### Two clips asked for means two clips delivered
-
-**Do not end your turn while the number of files you have delivered is smaller
-than the number you were asked for.** "One good clip" is not a batch of two, and
-stopping at the first is the exact failure this rule exists for: two cuts were
-asked for, one arrived, and nothing accused the shortfall.
-
-Something accuses it now. `warden delivered` exits 1 while a cleared clip has
-not been confirmed, and it prints which one. That is the last command you run
-before your turn ends, so the person is never the one who has to count.
-
-For more than one clip, write a plan. The tool holds the count of renders; you
-hold the count of sends, and only the second one is the count you report:
+### The plan, for more than one clip
 
 ```json
 {
@@ -585,42 +548,29 @@ hold the count of sends, and only the second one is the count you report:
 }
 ```
 
-`seconds` is `--seconds` inside the plan and carries the same number the person
-said: put it at the top when they named one duration for the batch, and on a
-clip when that clip was asked for at a different one. Leave it out only when
-nobody named a duration -- a plan without it is the 14/09 defect written down,
-where the windows are transcript boundaries and the person's number never
-reaches the renderer.
+`seconds` is `--seconds` inside the plan and carries the number the person said:
+at the top when they named one for the batch, on a clip when that clip was asked
+for at a different one. Leave it out and the stored default (20s) applies.
 
-`warden cut --plan lote.json` **renders and clears; it does not deliver**, and
-it says so itself on its first line:
+The `_` field is what that cut is *for* -- the hook, what sustains it, what closes
+it. Write it before you render. A window you cannot justify in a sentence is not
+a clip yet.
 
-```
-# 2 clips asked for. This command RENDERS and clears them; it does not deliver.
-...
-# 2 of 2 cleared for delivery. NONE of them has been sent by this command.
-# now deliver the 2 of them, one per turn, MEDIA: in the last message of each.
-```
+`warden cut --plan lote.json` renders one clip at a time; the numbers behind that
+choice are in 5b and nowhere else. It **renders and clears; it does not
+deliver**, and at the end it prints the final message for you to copy,
+with every `MEDIA:` line in it. Copy that block and end your turn with it.
 
-That last line is your instruction, not a summary: N clips cleared on disk are N
-turns still owed. Work down the list in order -- read that clip's sheet, end a
-turn with that clip, confirm it with `warden delivered`, then the next -- and
-hand over the first as soon as its sheet is clear instead of holding the batch
-until the last one is open.
+**Above three clips, use `warden lote render`, not `cut --plan`.** Only `lote
+render` splits the batch: it delivers the first three in the final message and
+leaves the rest rendering in the background, so their finishing wakes you.
+`cut --plan` prints every `MEDIA:` line it rendered, however many, and a final
+message with six attachments is not what the persona's rule asks for.
 
 `--plan` exits non-zero when a clip is missing and names which and why. A clip it
 did not clear has no `MEDIA:` path, so it is not sent and it does not count: say
 exactly which one failed and for what reason. Do not report a batch as finished
 while it is short.
 
-The `_` field on each clip is what that cut is *for* -- the hook, what sustains
-it, what closes it. Write it before you render. A window you cannot justify in a
-sentence is not a clip yet.
-
 The number you give in your FIRST message is the whole of what they hear before
-the first clip: an hour of source is ten to thirty minutes. You say that once,
-there, and never again.
-The first clip leaves in its own final message as soon as its sheet is clear;
-nothing waits for the last render. "As soon as it exists" means delivered and
-confirmed, not rendered -- a file on disk whose `MEDIA:` line never reached a
-final message is the clip that vanished on 14/09 and twice more on 15/09.
+the first clip. You say it once, there, and never again.

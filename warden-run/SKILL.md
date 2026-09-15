@@ -8,9 +8,9 @@ description: The whole path from one message to finished clips. Use when someone
 Someone sends a link, or asks you to go find a campaign. What comes back is
 files they can upload, with the caption to paste. Everything between is yours.
 
-**The order of work is written in `warden-clip`, section 2, and nowhere else.**
-Not here, not in the persona, not in the README. This skill is the front door --
-what happens at each door, and what to ask -- and it does not carry a second copy
+**The order of work is written in `warden-clip`, at the top of that file, and
+nowhere else.** Not here, not in the persona, not in the README. This skill is
+the front door -- what happens at each door -- and it does not carry a second copy
 of the order, because the second copy is the one that goes stale and the model
 obeys whichever it reads first.
 
@@ -21,8 +21,12 @@ A link: `warden-campaign` turns it into a stored rule set.
 No link, they want you to look: ask the search questions first.
 `warden prefs ask --group search` lists only the ones not answered yet, which is
 which audience they post to, what footage they can actually work with, where they
-post, and what makes a campaign worth their time. Ask them in the conversation,
-store each with `warden prefs set`, and never ask a second time.
+post, and what makes a campaign worth their time. Ask them in ONE numbered message, never one at a time -- the persona's rule
+about that covers these too -- store each with `warden prefs set`, and never ask
+a second time. This is the one place questions still belong before a search,
+because nobody can measure what a person wants to spend their afternoon on. It
+does not reopen the question of clips: the count and the length are still the
+only thing ever asked before a cut.
 
 Then `warden discover`, which returns the public campaign directories as text
 with those answers printed on top. The filtering is yours: read the listings,
@@ -32,99 +36,71 @@ or four options, not thirty, and say plainly which one you would take and why.
 Then wait. You are choosing where their next hours go, and that is their call.
 
 If a search answer is still missing, the command says so and you do not filter on
-it. Guessing that someone only wants music campaigns and hiding the rest is worse
-than showing too many.
-
-If a page could not be read, say which and move on. Never describe a campaign
+it. If a page could not be read, say which and move on. Never describe a campaign
 you did not read.
 
-## 2. Ask what they like, once
+## 2. Nothing to ask
 
-`warden prefs ask --group edit` lists only what has not been answered yet. Ask those, in the
-conversation, in their language, a couple at a time rather than as a form. Store
-each answer as it arrives with `warden prefs set --key <k> --value <v>`.
+**Do not run `warden prefs ask --group edit` before the first clip.** Every edit
+preference has a default now, and the command says so. The persona's single
+question -- how many clips and how long, and only when the message names neither
+-- is the only question that may come before a clip.
 
-Ask before rendering, not after. Someone who wanted an edit on a beat and got
-clean cuts throws away the whole batch.
+`warden prefs show --campaign <id>` is read SILENTLY, for what the campaign
+overrules. You repeat that to them in one clause alongside the clip, not as a
+question: "essa campanha põe o som na plataforma, então esses saem mudos."
 
-Sound is not optional to ask, and it has no default. Unless the campaign settles
-the audio, `warden cut` refuses to render until the owner has chosen: the
-original sound carried in the file, or silent for the platform to add its own. A
-clip that shipped silent because nobody was asked is a clip nobody wanted silent.
-Ask it in their words -- "keep the original audio, or does the platform add the
-sound?" -- and store the answer.
-
-Never ask twice. `warden prefs show --campaign <id>` also tells you what the
-campaign overruled, and you repeat that to them in one line: "you asked for the
-track inside the file, this campaign adds the sound on the platform, so these
-ship silent." Taste loses to the rule set every time, because taste is taste and
-the rule set is the payment.
+Store a preference only when the person volunteers one (`warden prefs set`).
 
 ## 3. Footage, text, moments
 
-`warden-clip`, sections 2 to 4, is the whole of it: which command, in which
-order, with the measured reason for each. Do not work from a summary of it, and
-do not write one here.
+`warden-clip` is the whole of it: which command, in which order, with the
+measured reason for each. Do not work from a summary of it, and do not write one
+here.
 
-The one thing this skill adds is the gate, because it is the front door and the
-gate is the first question a link raises. `warden archive` takes `--campaign
-<id>` when a campaign vouches for the footage, and `--trusted <url>` when the
-owner's own list does. It refuses to run with neither, which is the point: there
-is no third way to decide that a link may be cut.
+The gate is in `warden-clip` 1, and it is one sentence there: a link someone
+sent you is authorised by their having sent it. Do not restate the mechanics
+here; that is the summary this section just told you not to write.
 
-If their preference is `approval: yes`, send the chosen moments first, as
-timestamps with the line that carries each one, and wait. If it is `no`, render
-and send.
+Render the moments you chose. There is no approval round trip.
 
 ## 4. Render and send
 
-`warden cut` for each chosen window, honouring `delivery`, `captions`, `hook`
-and `target_s` from `warden prefs show`. Then `warden-package` for the caption.
+`warden lote` is the short road and it is the default one: `lote prep <url>`
+gives you the words, the signals and the defaults in one output, and `lote render`
+cuts the windows, checks them on one combined contact sheet, and prints every
+`MEDIA:` line at the end. Use `warden cut` directly only for a single odd clip.
 
-When THEY said a number of seconds, it goes on the command line as
-`--seconds <n>`. `target_s` is their standing taste; `--seconds` is this
-request, and with it the delivery gate rejects a file that misses the number
-unless a campaign rule is to blame. When nobody named a number, you say that
-too, with `--any-length`: `cut` will not render without one of the two. On
-14/09 "20 segundos" came back as 24,5s and 15,4s because the number never
-became a parameter and nothing missed it.
+The length rule: when THEY said a number of seconds it goes on the command line
+as `--seconds <n>`. When nobody named one, `cut` uses the stored default and
+prints which number it used and where it came from. You repeat that number only
+if it differs from what they asked for. Why, and what it cost, is in
+`warden-clip` 5b.
 
-The captions are approved per WINDOW, never per file.
-`warden captions review <srt> --start <s> --end <s> --approve` signs the lines
-it just printed and nothing else; a cut outside that window renders WITHOUT
-captions rather than burn a word nobody read. Approving one window never
-approved the file -- that is how `jokovic jokovic` reached the screen.
+Who signs the captions -- the tool on the `lote` road, you on the `cut` road --
+is written in `warden-clip` 5, "Who signs the captions", and nowhere else. Read
+it there. It is never a question to the person.
 
-`cut` writes a contact sheet of its own render and prints it as `SHEET:`, and it
-does not print the `MEDIA:` line without one. Open that image and go through the
-checklist it names before you send: the sheet is the only step in this whole
-path that looks at the picture, and a file with ten visible defects was once
-reported as passing because nobody opened it.
-
-Send each clip as it finishes, never the batch at the end.
-
-And that is the only reason to end a turn before the clips exist. The cure for
-a long silence is a shorter path -- the words first, the windows only -- not a
-stream of progress notes: each one is a turn of yours and seconds of theirs.
-The persona, under "What you say, and how little of it", is where that rule
-lives.
+Open the contact sheet before you send. `cut` will not print a `MEDIA:` line
+without one. The checklist, and why it rejects a clip every check passed, is in
+`warden-clip` 6.
 
 **How a file is handed over is written in the persona, under "Handing the file
-over", and it is written there and nowhere else.** Read it there. In one line:
-the `MEDIA:` line goes in the LAST message of a turn, one clip per turn, and
-`warden delivered` reads the gateway's log to say whether the attachment really
-left. A `MEDIA:` line written mid-turn attaches nothing in silence, and that cost
-a clip on 14/09 and two more on 15/09.
+over", and it is written there and nowhere else.** Read it there before you end
+a turn that carries a clip. Nothing about it is repeated here, because a second
+copy is the one that goes stale.
 
 With every clip goes the caption from `warden-package` and the one thing they do
 on the platform, which is almost always the sound.
 
 ## 5. Afterwards
 
-Ask which ones they posted and run `warden log`, because the campaign's cap is
-counted from that ledger and a clipper past the cap is working for free.
+When they say they posted one, run `warden log`: the campaign's cap is counted
+from that ledger and a clipper past the cap is working for free. Do not ask which
+ones they posted.
 
 ## What you never do
 
-Post for them. Take footage from outside the archive the brief published. State
-a number you did not get from `warden`. Fill a rule the brief did not state.
+Take footage nobody sent you. State a number you did not get from `warden`. Fill
+a rule the brief did not state. Ask for a licence, for rights, or for permission
+to caption.

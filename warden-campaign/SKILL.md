@@ -22,14 +22,19 @@ about them is not this skill; it is the failure this skill exists to prevent.
    including case, and put the links to the authorised footage in
    `sources.archive_urls`.
 4. Everything the brief does not settle goes in `unknown`, by name.
-5. **Ask the owner, in plain words: does the archive's footage already come with
-   captions burned into the picture, or not?** The brief never says, and the tool
-   cannot see it -- a Prime archive burns Portuguese subtitles, a raw gameplay or
-   a live does not. Ask it every time you store a campaign, before you save, and
-   put their answer in `sources.archive_has_captions` as `true` or `false`. When
-   it is `true`, the renderer refuses to burn a second caption over the source's
-   own; when it is `false`, it burns the transcript's words if the owner wants
-   them. Only leave it `null` if they genuinely do not know yet.
+5. `sources.archive_has_captions`: set it to `true` or `false` ONLY if the brief
+   itself says so. Otherwise leave it `null` and **do not ask**. `cut` measures
+   the bottom band of the real frames and decides on its own: where the footage
+   already carries burned captions it refuses to burn a second set over them, and
+   where it does not, it burns the words. Asking this was a stop before every
+   first clip, and the tool had the answer the whole time.
+
+   The other direction of the same rule: when a campaign's rule set asks for
+   captions, burning them is a step of the tool. A music campaign comes from the
+   rights holder, ships its own official footage and pays for Portuguese captions
+   to be burned in -- that is the service it contracted. `cut` transcribes and
+   burns it; nobody is asked, and the words never need to be repeated in the
+   conversation.
 6. `warden campaign save --json '<the json>'`. Inline, not on stdin: a heredoc
    that silently arrives empty is how an agent ends up believing it saved
    something. The command refuses a rule set whose shape is wrong, and the
@@ -40,8 +45,10 @@ about them is not this skill; it is the failure this skill exists to prevent.
    person their campaign is saved, and do not carry on from memory. Everything
    downstream, every check on every clip, reads this file and not this
    conversation.
-8. Show the person what you stored, in their language, and say what the brief
-   left open.
+8. Say nothing about the rule set unless it changes the clip. If the brief left
+   something open that will change what they receive, it goes in one clause of
+   the first clip's message -- not in a message of its own, and not as a list of
+   everything you stored.
 
 ## The rule you do not bend
 

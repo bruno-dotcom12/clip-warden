@@ -60,8 +60,11 @@ Dois em sequência custariam 70s. Em paralelo custam 64s. **O ganho é de 9%**, 
 o preço é chegar a 37 MiB do teto de memória do container. O gargalo não é
 espera, é CPU: x86_64 emulado sobre Apple Silicon, sem codificador de hardware.
 
-**Não vale.** O paralelismo de render fica como está (o lote já renderiza dois
-de cada vez, com teto), e o ganho real veio de outro lugar.
+**Não vale.** CORRIGIDO em 15/09: o lote renderiza **UM por vez** por padrão
+(`warden.py`: `WARDEN_RENDER_PARALELO` com padrão 1, e a variável não está no
+compose). A frase anterior desta linha dizia que ele já renderizava dois de cada
+vez, e era falsa. `WARDEN_RENDER_PARALELO=2` liga dois, e pelos números acima não
+vale ligar.
 
 ### Pesquisa na web, só em fonte oficial
 
@@ -106,8 +109,12 @@ de dois, de 10min56s a 20min39s — e só depois de cobrança.
 
 ### Auditoria da FASE 1
 
-**O critério foi medido, não estimado.** Os 69s e os 104s saem de uma corrida
-cronometrada de ponta a ponta, não da soma de etapas medidas em separado.
+**O critério foi medido, não estimado — mas SEM o modelo no meio.** Os 69s e os
+104s saem de uma corrida cronometrada de ponta a ponta com os comandos rodados à
+mão. Nenhuma chamada do modelo entrou nessa conta, e numa conversa real elas são
+a maior parte do tempo: em 15/09 um pedido de 2 cortes gastou 8min50s em 35
+chamadas do modelo contra 4min52s de ferramentas. Ou seja, este número mede o
+caminho da ferramenta, não a conversa. Correção registrada em 15/09.
 
 **Os dois mosaicos foram olhados, em resolução cheia.** No primeiro: o hook sai
 da tela aos 3s, a legenda fica em duas linhas, o destaque amarelo acompanha a
@@ -144,7 +151,11 @@ execução só, e cada janela leva a própria ficha de origem.
 - A escolha entre janela e arquivo inteiro virou uma regra escrita ("abaixo de
   meia hora de fonte, puxe inteiro"), não uma decisão da ferramenta. O agente
   ainda pode errar essa.
-- `faster-whisper` com `int8` não foi ligado. Só importa quando a fonte não
+- CORRIGIDO em 15/09: `faster-whisper` com `int8` **já estava ligado** desde
+  a5dff08b (14/09) -- `WhisperModel(size, device="cpu", compute_type="int8")`. O
+  que não estava ligado, e foi ligado em 15/09, é `beam_size=1` e `cpu_threads`.
+  O texto abaixo é o da medição original e vale só como número de referência.
+  Só importa quando a fonte não
   publica legenda, que não é o caminho comum.
 - A tagarelice, que é a outra metade da lentidão, é a FASE 2.
 
@@ -1022,7 +1033,8 @@ Em ordem de quanto custa:
    contrário. O que funciona é o meio-termo, e ele exige escolher bem.
 4. **A lista de palavras que não fecham cue é uma lista.** Duas entraram nesta
    sessão, uma terceira classe (verbo pedindo complemento) ficou de fora.
-5. **`faster-whisper` com `int8`** não foi ligado: 1m42s contra 6m58s, número
+5. **`faster-whisper` com `int8`** -- ver a correção de 15/09 acima: já estava
+   ligado desde 14/09. O número abaixo é da fonte oficial: 1m42s contra 6m58s, número
    oficial. Só importa quando a fonte não publica legenda — que foi o caso do
    teste final, onde custou 3min40s.
 6. **A cor da nossa legenda continua amarela**, que é o que a faz ser confundida

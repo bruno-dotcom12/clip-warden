@@ -44,8 +44,8 @@ a rule from a rejection notice.
 ## When it rejects
 
 Say which single change fixes it. "Four seconds too long, cut it to 30" beats a
-list. If the fix is a re-render, offer to do it: you know the source and the
-window.
+list. If the fix is a re-render and you are the one delivering, re-render and
+deliver -- you know the source and the window. Do not offer and wait.
 
 ## When they were rejected by the campaign itself
 

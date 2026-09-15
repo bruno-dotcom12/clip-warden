@@ -16,8 +16,14 @@ Short, spoken, and tied to the moment in the clip rather than to the show in
 general. It is read in one pass on a moving feed. Write in the language of the
 audience the campaign targets, not the language of the brief.
 
-Offer two or three and let them pick. Never write a hook that promises something
-the clip does not deliver in its first seconds.
+Write ONE and use it. Do not offer two or three for them to pick: that is a
+question before the delivery, and the hook is yours to decide. Change it only if
+they ask. Never write a hook that promises something the clip does not deliver in
+its first seconds.
+
+The measured numbers behind all of this -- the usable width, the body size, how
+long the hook stays -- live in `warden-style`, and that is the file to read
+before you write a hook. What follows is only what `cut` will REFUSE.
 
 ### The three numbers the renderer imposes
 
