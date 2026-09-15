@@ -117,19 +117,163 @@ def have(binary):
     return shutil.which(binary) is not None
 
 
-def _ytdlp():
-    """How to invoke yt-dlp so it works whether or not the venv bin is on PATH.
+# The escape hatch, and the only one. An install whose address YouTube has
+# already flagged cannot be rescued by anything in this file -- that was
+# measured, not assumed -- and a cookies file is what yt-dlp itself points at.
+# It is never shipped and never the owner's by default: whoever installs this
+# agent drops their own file here if they need it.
+COOKIES_FILE = os.environ.get(
+    "WARDEN_COOKIES", "/var/lib/hermes/warden/cookies.txt")
 
-    A skill command runs under this interpreter, but a subprocess inherits the
-    supervision tree's PATH, which need not hold the venv's bin. Calling it as a
-    module of this interpreter sidesteps that, and falls back to the binary for a
-    dev machine that installed yt-dlp on its own.
+# Where the PO token provider answers. Bound to loopback on purpose: version
+# 2.0.0 of bgutil exists because binding it to 0.0.0.0 was a remote code
+# execution hole (GHSA-qpv9-8xfj-xx9m), and this agent is published.
+POT_BASE_URL = os.environ.get("WARDEN_POT_URL", "http://127.0.0.1:4416")
+
+# yt-dlp's own wiki puts a logged-out session at roughly a thousand player and
+# webpage requests an hour, and names bursts as what gets an address flagged.
+# These are seconds between requests, not a preference.
+SLEEP_REQUESTS = os.environ.get("WARDEN_SLEEP_REQUESTS", "1.5")
+SLEEP_INTERVAL = os.environ.get("WARDEN_SLEEP_INTERVAL", "1")
+SLEEP_MAX = os.environ.get("WARDEN_SLEEP_MAX", "5")
+
+
+def _js_runtimes():
+    """The JS engines yt-dlp may use here, best first, or None if there are none.
+
+    deno leads because it is the only one yt-dlp enables on its own; node is
+    named because this image already carries it and a host that has only node
+    should still work.
+    """
+    achados = [n for n in ("deno", "node", "bun", "qjs") if have(n)]
+    return ",".join(achados) or None
+
+
+def _ytdlp(*, paced=True):
+    """How to invoke yt-dlp here, with the three things every call must carry.
+
+    The invocation itself: a skill command runs under this interpreter, but a
+    subprocess inherits the supervision tree's PATH, which need not hold the
+    venv's bin. Calling it as a module of this interpreter sidesteps that, and
+    falls back to the binary for a dev machine that installed yt-dlp on its own.
+
+    The three additions are a fix, not a style, and each was measured on
+    15/09/2026 after the agent told the owner twice -- on two different days,
+    with two different and contradictory stories -- that YouTube was blocking
+    "this specific video" and then "this server's IP". Both were invented.
+
+    1. A JS RUNTIME. `yt-dlp -v` printed `JS runtimes: none` while node 26.5.1
+       sat in /usr/local/bin, because yt-dlp enables only deno by itself. Its
+       README for this version: "By default, `visionos,web` is used. If no
+       JavaScript runtime/engine is available, then `web` is omitted." So every
+       install so far has run with the web client silently dropped and no n/sig
+       deciphering -- a permanent, invisible handicap on every link.
+
+    2. A PO TOKEN PROVIDER. It does NOT rescue an address YouTube has already
+       flagged: measured here with a freshly minted token bound to matching
+       visitor data, in the player context, and the refusal was identical. It
+       is carried because it is what keeps an install from being flagged in the
+       FIRST place, and this agent is published -- the address it burns belongs
+       to a stranger.
+
+    3. A PACE. This one was ours. A single link used to cost FOUR separate
+       extractions -- channel lookup, title lookup, subtitle pass, download --
+       fired back to back with no sleep at all. See `_facts`, which turned the
+       first two into one, and these sleep options, which space the rest.
     """
     try:
         import yt_dlp  # noqa: F401
-        return [sys.executable, "-m", "yt_dlp"]
+        base = [sys.executable, "-m", "yt_dlp"]
     except Exception:
-        return ["yt-dlp"]
+        base = ["yt-dlp"]
+
+    if rt := _js_runtimes():
+        base += ["--js-runtimes", rt]
+    if os.path.isfile(COOKIES_FILE):
+        base += ["--cookies", COOKIES_FILE]
+    base += ["--extractor-args", f"youtubepot-bgutilhttp:base_url={POT_BASE_URL}"]
+    # Retries are bounded on purpose. yt-dlp's default is ten, and ten retries
+    # against an address that is being refused is how a flagged address stays
+    # flagged: it reads as exactly the burst the wiki warns about.
+    base += ["--retries", "3", "--extractor-retries", "2"]
+    if paced:
+        base += ["--sleep-requests", SLEEP_REQUESTS,
+                 "--sleep-interval", SLEEP_INTERVAL,
+                 "--max-sleep-interval", SLEEP_MAX]
+    return base
+
+
+# The logged-out bot check, in the words yt-dlp actually prints. Matched so the
+# tool can say what is true instead of handing the model a stack of English to
+# improvise a cause from -- which is precisely what happened, twice.
+#
+# The two regexes are separate because they are OPPOSITE claims, and a first
+# draft of this file collapsed them and so told the same lie it was written to
+# stop. `Sign in to confirm you're not a bot` is about this ADDRESS and every
+# link gets it. `Sign in to confirm your age` and `Private video` are about
+# THIS VIDEO and no other link gets them -- and they open with the same four
+# words, so a regex on `sign in to confirm` alone matches both and then
+# announces, in the address message, "not this video: every link gets the same
+# refusal". That sentence would be false exactly when it mattered.
+_BOT_CHECK = re.compile(r"not a bot|HTTP Error 429|Too Many Requests", re.I)
+_ESTE_VIDEO = re.compile(
+    r"confirm your age|age[- ]restricted|private video|members[- ]only|"
+    r"video is unavailable|removed by the uploader", re.I)
+
+
+class FonteBloqueada(RuntimeError):
+    """A refusal that is about this outgoing address, not about this link.
+
+    It subclasses RuntimeError on purpose: every caller in this file already
+    catches RuntimeError, so nothing has to learn a new exception to keep
+    working -- but the paths that must NOT flatten this into "no result" can
+    now tell it apart. `_facts` is the one that must not, and did.
+    """
+
+
+def _porque_bloqueou(label):
+    """The honest reading of a bot-check refusal, with the agent's script.
+
+    Every sentence here is a measurement, and the last paragraph exists because
+    the failure mode of this error is not the download -- it is the agent
+    inventing a cause the owner cannot check.
+    """
+    rt = _js_runtimes() or "none"
+    pot = "reachable" if _pot_alive() else "NOT reachable"
+    cook = "present" if os.path.isfile(COOKIES_FILE) else "absent"
+    return (
+        f"{label}: YouTube refused this from this machine's outgoing address "
+        f"with its logged-out bot check.\n"
+        f"\n"
+        f"  What this is NOT, and you may not say otherwise:\n"
+        f"    - not this video: every link gets the same refusal\n"
+        f"    - not the source's authorisation: that gate already passed\n"
+        f"    - not something that clears up on its own in a few minutes\n"
+        f"\n"
+        f"  What is already in place, so do not offer it as the fix:\n"
+        f"    - JS runtime: {rt}\n"
+        f"    - PO token provider: {pot}\n"
+        f"    - requests are paced, and retries are capped\n"
+        f"    - cookies file ({COOKIES_FILE}): {cook}\n"
+        f"\n"
+        f"  Two things change this answer, and the agent can do neither alone:\n"
+        f"    1. a different outgoing address -- another network, or a VPN\n"
+        f"    2. a cookies file from a signed-in YouTube session at\n"
+        f"       {COOKIES_FILE}. yt-dlp warns this can get that account\n"
+        f"       blocked, so it should be an account nobody minds losing.\n"
+        f"\n"
+        f"  Tell the owner the address is refused and give them those two "
+        f"options. Do not guess at a cause, do not blame the video, and do not "
+        f"promise it will work later.")
+
+
+def _pot_alive():
+    """Is the PO token provider answering? A yes or no, never an exception."""
+    try:
+        with urllib.request.urlopen(POT_BASE_URL + "/ping", timeout=3):
+            return True
+    except Exception:
+        return False
 
 
 def run(args, timeout, label):
@@ -140,7 +284,20 @@ def run(args, timeout, label):
         # and a timeout that escapes as itself reaches the owner as a traceback.
         raise RuntimeError(f"{label} gave up after {timeout}s")
     if done.returncode != 0:
-        tail = (done.stderr or done.stdout or "").strip().splitlines()[-6:]
+        saida = (done.stderr or done.stdout or "")
+        # The bot check is answered here, at the one place every yt-dlp call
+        # passes through, rather than at each call site -- there are nine, and
+        # the one that reached the owner was whichever ran first.
+        #
+        # Scoped to yt-dlp by label, because `run` also carries ffmpeg and
+        # gdown: a 429 from Google Drive would otherwise be answered with a
+        # paragraph about YouTube refusing this address, which is the same
+        # crime -- a confident cause that was never observed -- committed by
+        # the code meant to prevent it.
+        if (label.startswith("yt-dlp")
+                and _BOT_CHECK.search(saida) and not _ESTE_VIDEO.search(saida)):
+            raise FonteBloqueada(_porque_bloqueou(label))
+        tail = saida.strip().splitlines()[-6:]
         raise RuntimeError(f"{label} failed:\n  " + "\n  ".join(tail))
     return done.stdout
 
@@ -288,21 +445,63 @@ def playlist_video_ids(url):
     return {line.strip() for line in out.splitlines() if _YT_ID.match(line.strip())}
 
 
+# One link, one metadata extraction, remembered for the length of the command.
+#
+# This dictionary is the whole of fix 3 from `_ytdlp`. `video_title` and
+# `_channel_facts` each ran a full extraction, and a single trusted link calls
+# both -- then the subtitle pass and the download make four. Four logged-out
+# extractions per link, back to back, against a wiki that says bursts are what
+# get an address flagged. They ask for different fields of the same response,
+# so they are now one request, printed tab separated and kept.
+_FACTS = {}
+_FACTS_CAMPOS = ("title", "channel_id", "uploader_id", "channel_url", "uploader_url")
+
+
+def _facts(url):
+    """Title and channel of a link in ONE extraction, or {} if it gives none."""
+    url = safe_url(url)
+    if url in _FACTS:
+        return _FACTS[url]
+    try:
+        out = run(_ytdlp() + ["--no-warnings", "--no-playlist", "--playlist-items", "1",
+                   "--print", "\t".join("%%(%s)s" % c for c in _FACTS_CAMPOS),
+                   "--", url],
+                  TIMEOUT_DOWNLOAD, "yt-dlp metadata lookup")
+    except FonteBloqueada:
+        # Propagated, never flattened. Flattening it here is what made the very
+        # first version of this fix repeat the original bug with the sign
+        # reversed: `_channel_facts` saw an empty dict and announced that the
+        # address was refused -- for a deleted video, a timeout, a DNS failure,
+        # anything. A tool that states a cause it did not observe is the defect
+        # this whole file is about.
+        raise
+    except Exception:
+        # NOT cached: a refusal is a state of the network, not a fact about the
+        # link, and remembering it would outlive the reason for it.
+        return {}
+    linha = (out.strip().splitlines() or [""])[0]
+    partes = linha.split("\t")
+    achado = {c: (partes[i].strip() if i < len(partes) else "")
+              for i, c in enumerate(_FACTS_CAMPOS)}
+    _FACTS[url] = achado
+    return achado
+
+
 def video_title(url):
     """The title of a video, read off the link, or None if it will not give one.
 
     So the agent can name what it is asking about: 'the video "..." is outside
     the archive -- cut it anyway?' is a question the owner can answer; 'that link'
     is not.
+
+    A blocked address still raises through here, and that is deliberate rather
+    than an oversight: `authorize` matches ids against the campaign's own list
+    and does not need a title to decide, so swallowing the refusal would let it
+    answer "authorised" for a link nothing could read. The owner hears about
+    the block at the one place it is certain -- the download.
     """
-    try:
-        out = run(_ytdlp() + ["--no-warnings", "--no-playlist", "--playlist-items",
-                              "1", "--print", "%(title)s", "--", safe_url(url)],
-                  TIMEOUT_DOWNLOAD, "yt-dlp title lookup")
-    except Exception:
-        return None
-    line = (out.strip().splitlines() or [""])[0].strip()
-    return line or None
+    titulo = (_facts(url).get("title") or "").strip()
+    return titulo if titulo and titulo != "NA" else None
 
 
 def authorize(rules, url):
@@ -367,12 +566,22 @@ def _channel_facts(url):
     trusted-channel entry is matched against -- so 'is this from a channel I
     trust?' is answered, not assumed.
     """
-    out = run(_ytdlp() + ["--no-warnings", "--no-playlist", "--playlist-items", "1",
-               "--print", "%(channel_id)s\t%(uploader_id)s\t%(channel_url)s\t%(uploader_url)s",
-               "--", safe_url(url)],
-              TIMEOUT_DOWNLOAD, "yt-dlp channel lookup")
-    line = (out.strip().splitlines() or [""])[0]
-    return [p.strip().lower() for p in line.split("\t") if p.strip() and p.strip() != "NA"]
+    achado = _facts(url)
+    if not achado:
+        # The lookup is what decides whether a link is trusted, so a failure
+        # here must not read as "not trusted": an empty list would match no
+        # trusted entry and the owner would be told their own channel is not
+        # vouched for. It raises instead -- and it raises the HONEST thing,
+        # which is that the lookup did not answer. It does NOT say the address
+        # was refused: if that were true, `run` would already have raised
+        # FonteBloqueada and this line would never be reached.
+        raise RuntimeError(
+            "could not read the channel behind that link, so whether it is a "
+            "trusted source is unknown -- and unknown is not the same as no. "
+            "Say that you could not check, and do not rule the link out.")
+    return [achado[c].lower() for c in
+            ("channel_id", "uploader_id", "channel_url", "uploader_url")
+            if achado.get(c) and achado[c] != "NA"]
 
 
 def trusted_check(url, entries):
@@ -792,9 +1001,27 @@ def _pull_subs(url, out_dir, stem, template, playlist_args):
             TIMEOUT_FETCH * 4, "yt-dlp (subtitles)")
     except RuntimeError as exc:
         # Uma corrida que falhou não apaga o que já estava no disco. Se a
-        # legenda de uma corrida anterior está aqui, ela serve.
+        # legenda de uma corrida anterior está aqui, ela serve -- inclusive
+        # quando o endereço está recusado, porque o arquivo já é nosso.
         if ja_tinha:
             return os.path.join(out_dir, ja_tinha[0]), None
+        # O endereço recusado NÃO é "esta legenda não veio", e tratá-lo como
+        # tal custou as duas coisas que este arquivo existe para evitar.
+        # Medido em 15/09, no primeiro teste de ponta a ponta do conserto:
+        #
+        # 1. A mensagem honesta tem parágrafos, e ela vinha por aqui achatada
+        #    em 160 caracteres e embutida numa frase de uma linha sobre baixar
+        #    áudio. O dono lia "What this is NOT, and you may not say
+        #    otherwise:, so pulling the audio to transcribe instead" -- o
+        #    diagnóstico cortado no meio da frase que o proibia de inventar.
+        # 2. E então `_pull_text_first` seguia em frente e pedia o ÁUDIO, que
+        #    é outra requisição contra um endereço que acabou de recusar. É a
+        #    rajada que marca o endereço, disparada pelo código escrito para
+        #    parar de marcá-lo.
+        #
+        # Então ela sobe inteira, e a corrida seguinte não acontece.
+        if isinstance(exc, FonteBloqueada):
+            raise
         return None, f"{type(exc).__name__}: {str(exc)[:160]}"
     # O que EXISTE, não o que é novo. A versão anterior comparava o diretório
     # antes e depois, e na segunda corrida o `.srt` já estava lá: não aparecia

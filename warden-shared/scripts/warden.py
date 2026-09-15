@@ -1094,6 +1094,34 @@ def cmd_status(args):
     spec = specs_path()
     print("measured style spec: " + (spec if os.path.isfile(spec)
                                      else f"MISSING at {spec}"))
+    # O estado do downloader, e ele é DUAS perguntas, não uma.
+    #
+    # Medido em 15/09: o agente não conseguia puxar link nenhum do YouTube e
+    # inventou duas causas diferentes em dois dias. O que `yt-dlp -v` dizia era
+    # `JS runtimes: none` e `PO Token Providers: none`, e nada no `status`
+    # perguntava por isso -- então o defeito só aparecia como um download
+    # falhando, que é onde ele lê como problema da fonte.
+    #
+    # Sem runtime JS o yt-dlp derruba o client `web` do conjunto padrão e não
+    # decifra n/sig. Sem o provedor de PO token o endereço desta instalação vai
+    # sendo marcado até o YouTube recusar tudo -- e depois de marcado nem o
+    # token levanta mais, o que faz desta linha um aviso, não um relatório.
+    try:
+        M = _media()
+        rt = M._js_runtimes()
+        print("yt-dlp JS runtime: " + (rt if rt else
+              "MISSING -- yt-dlp drops the `web` client and cannot decipher "
+              "n/sig, so YouTube links fail for a reason that reads like the "
+              "source's fault"))
+        print("PO token provider (%s): " % M.POT_BASE_URL + (
+              "answering" if M._pot_alive() else
+              "NOT answering -- this install's address is being spent without "
+              "one, and YouTube flags addresses that ask without it"))
+        print("yt-dlp cookies file (%s): " % M.COOKIES_FILE + (
+              "present" if os.path.isfile(M.COOKIES_FILE) else
+              "absent (only needed if this address is already refused)"))
+    except Exception as exc:
+        print(f"yt-dlp downloader: could not be read ({type(exc).__name__})")
     # The models arrive after boot rather than inside the image, so whether they
     # are here yet is a real question with a real answer, not a constant.
     # "ainda baixando" e "nunca baixou" eram a mesma linha, e são coisas
