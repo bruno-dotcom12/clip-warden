@@ -66,8 +66,8 @@ QUESTIONS = [
      "The original sound carried in the file, or silent for the platform to add its own?",
      ["embedded", "platform"],
      "embedded keeps the original audio; platform means the file ships silent. "
-     "There is no default: a clip that ships silent by accident is a clip nobody "
-     "asked to be silent, so this is always asked unless the campaign settles it",
+     "The default is embedded, so nothing has to be asked before a clip; the "
+     "campaign that forbids audio still wins in effective()",
      "edit"),
     ("target_s",
      "How long should a clip be, when the campaign leaves room?",
@@ -86,15 +86,30 @@ QUESTIONS = [
      "edit"),
 ]
 
-# No default for `sound`. Every other preference has a safe fallback, but a
-# silent clip is the one output the owner cannot fix after the fact and would
-# never have chosen without being asked -- the campaign silenced a clip that had
-# every right to its audio. So `sound` is deliberately absent here: unset, and
-# with a campaign that does not settle it, it stays undecided and `warden cut`
-# refuses to guess.
+# TODA pergunta do grupo `edit` tem padrão, e `sound` passou a ter o dele em
+# 15/09/2026, por decisão do dono.
+#
+# O comentário que estava aqui defendia a AUSÊNCIA de padrão para `sound`: um
+# clipe mudo por acidente seria o único defeito que a pessoa não conserta
+# depois. O raciocínio continua certo sobre o mudo -- só que o padrão que ele
+# escolheu era "não decidir", e não decidir custava uma PERGUNTA antes do
+# primeiro clipe. Medido no pedido de 15/09: 10min34s dos 26min22s até o único
+# clipe foram perguntas, e nenhuma delas mudou um quadro.
+#
+# O padrão agora é `embedded`, o som que já está no arquivo. É o oposto do
+# acidente que o comentário antigo temia: quem não decide nada fica com o áudio
+# original, e o único jeito de um clipe sair mudo é alguém pedir isso -- a
+# pessoa com `--sound platform`, ou a campanha, que continua vencendo em
+# `effective()` quando `video.audio` é "forbidden".
+#
+# Os outros três números vieram do mesmo pedido: 20s e 2 clipes são o que o
+# dono pede de fato, e `approval` virou "no" porque aprovar janela antes de
+# renderizar é mais um turno de espera por uma resposta que foi "pode ir" nas
+# últimas vezes.
 DEFAULTS = {"region": "both", "niches": "", "platforms": "tiktok", "payout": "any",
             "delivery": "cuts", "captions": "yes", "hook": "pt",
-            "target_s": 30, "batch": 3, "approval": "yes"}
+            "sound": "embedded",
+            "target_s": 20, "batch": 2, "approval": "no"}
 
 KEYS = [q[0] for q in QUESTIONS]
 GROUPS = {q[0]: q[4] for q in QUESTIONS}
@@ -151,13 +166,21 @@ def effective(prefs, rules=None):
         policy = R.get(rules, "video.audio")
         # A campaign that settles the audio decides `sound` whether or not the
         # owner set it -- there is nothing to ask when the rule set is explicit.
+        #
+        # O que vai para `overruled` é o que a campanha tirou do DONO, e por
+        # isso a comparação é com o que ele guardou e não com o efetivo. Desde
+        # que `sound` ganhou padrão (15/09/2026), comparar com o efetivo fazia
+        # toda campanha de áudio proibido reportar "sua escolha foi vencida"
+        # para alguém que nunca escolheu nada -- e `overruled` é exatamente a
+        # lista que o agente lê para dizer ao dono o que não pôde honrar.
+        escolhido = (prefs or {}).get("sound")
         if policy == "forbidden":
-            if out.get("sound") == "embedded":
+            if escolhido == "embedded":
                 overruled.append("this campaign adds the sound on the platform, "
                                  "so the file ships silent")
             out["sound"] = "platform"
         elif policy == "required":
-            if out.get("sound") == "platform":
+            if escolhido == "platform":
                 overruled.append("this campaign requires an audio track in the file")
             out["sound"] = "embedded"
         # policy is null: `sound` stays whatever the owner set, or undecided.

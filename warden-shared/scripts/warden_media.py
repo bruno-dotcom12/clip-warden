@@ -29,6 +29,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import unicodedata
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse
@@ -73,11 +74,47 @@ def _host_is_public(host):
         # let the request proceed and fail as an ordinary unreachable link.
         return True
     for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
+        ip = _desembrulha(ipaddress.ip_address(info[4][0]))
         if (ip.is_private or ip.is_loopback or ip.is_link_local
                 or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
             return False
     return True
+
+
+# Os dois prefixos IPv6 que CARREGAM um endereço IPv4 dentro de si.
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")          # RFC 6052, well-known
+_V4MAPEADO = ipaddress.ip_network("::ffff:0:0/96")     # RFC 4291
+
+
+def _desembrulha(ip):
+    """Um IPv6 que embrulha um IPv4 vira o IPv4 que ele embrulha.
+
+    Medido em 15/09/2026, e é um defeito que estava de pé desde sempre: numa
+    rede NAT64/DNS64 -- que é o que um iPhone em modo roteador serve, e o que
+    toda rede IPv6-only serve -- o resolvedor responde a QUALQUER host só-IPv4
+    com um endereço dentro de `64:ff9b::/96`. `vimeo.com` resolvia para
+    `64:ff9b::a29f:803d`, o `ipaddress` do Python classifica esse bloco como
+    `is_reserved` (ele está no registro de uso especial da IANA), e `safe_url`
+    então recusava o link dizendo:
+
+        "that points inside this machine or its private network"
+
+    O que é falso, e é falso da pior maneira possível: uma causa inventada com
+    confiança, na voz do arquivo escrito para não inventar causas. Numa rede
+    dessas o agente recusaria TODO link só-IPv4 -- a suíte inteira virou
+    vermelha ao trocar de rede no meio do dia, o que foi a medição.
+
+    O conserto é ler o que o embrulho carrega. `64:ff9b::7f00:1` vira
+    `127.0.0.1` e continua recusado, que é o ponto: a proteção não afrouxa, ela
+    passa a olhar o endereço certo. O mesmo vale para `::ffff:a.b.c.d`, a forma
+    IPv4-mapeada, que é o caminho clássico de burlar uma checagem assim.
+    """
+    try:
+        if ip.version == 6 and (ip in _NAT64 or ip in _V4MAPEADO):
+            return ipaddress.ip_address(int(ip) & 0xFFFFFFFF)
+    except Exception:
+        pass
+    return ip
 
 
 def safe_url(url):
@@ -138,8 +175,36 @@ def have(binary):
 # measured, not assumed -- and a cookies file is what yt-dlp itself points at.
 # It is never shipped and never the owner's by default: whoever installs this
 # agent drops their own file here if they need it.
-COOKIES_FILE = os.environ.get(
-    "WARDEN_COOKIES", "/var/lib/hermes/warden/cookies.txt")
+#
+# Duas variáveis, e a nova vem primeiro. `WARDEN_YT_COOKIES` diz de QUAL serviço
+# o arquivo é -- o bloqueio medido em 15/09/2026 é do YouTube, e só dele -- e é
+# o nome que o dono vai ver escrito na mensagem de erro e no compose. A antiga
+# fica porque uma instalação que já a definiu não pode parar de funcionar por
+# causa de um nome melhor.
+#
+# O ARQUIVO NUNCA ENTRA NO REPOSITÓRIO e o conteúdo dele nunca é impresso: um
+# cookies.txt do YouTube é a sessão inteira da conta de quem o exportou, e este
+# agente é publicado. Só o CAMINHO aparece em mensagem, nunca uma linha de
+# dentro. Se isto algum dia precisar depurar, depure o `os.access`, não o texto.
+COOKIES_FILE = (os.environ.get("WARDEN_YT_COOKIES")
+                or os.environ.get("WARDEN_COOKIES")
+                or "/var/lib/hermes/warden/cookies.txt")
+
+
+def _cookies_usaveis():
+    """O arquivo de cookies existe E dá para ler? Um sim ou um não, nunca exceção.
+
+    A pergunta é `isfile` E `access`, não só `isfile`. Medido em 15/09/2026: um
+    `--cookies` apontando para arquivo sem permissão de leitura faz o yt-dlp
+    abortar ANTES de tentar o link, e a mensagem que chega fala de permissão de
+    arquivo no meio de uma frase sobre baixar vídeo. Um arquivo ilegível é o
+    mesmo que arquivo ausente para efeito de decisão -- a diferença é que o
+    dono precisa saber qual dos dois é, e é isso que `_porque_bloqueou` diz.
+    """
+    try:
+        return os.path.isfile(COOKIES_FILE) and os.access(COOKIES_FILE, os.R_OK)
+    except OSError:
+        return False
 
 # Where the PO token provider answers. Bound to loopback on purpose: version
 # 2.0.0 of bgutil exists because binding it to 0.0.0.0 was a remote code
@@ -253,7 +318,7 @@ def _ytdlp(*, paced=True):
 
     if rt := _js_runtimes():
         base += ["--js-runtimes", rt]
-    if os.path.isfile(COOKIES_FILE):
+    if _cookies_usaveis():
         base += ["--cookies", COOKIES_FILE]
     base += ["--extractor-args", f"youtubepot-bgutilhttp:base_url={POT_BASE_URL}"]
     # Retries are bounded on purpose. yt-dlp's default is ten, and ten retries
@@ -308,15 +373,71 @@ def _porque_bloqueou(label):
     """
     rt = _js_runtimes() or "none"
     pot = "reachable" if _pot_alive() else "NOT reachable"
-    cook = "present" if os.path.isfile(COOKIES_FILE) else "absent"
+    # Três estados, não dois. "existe mas não dá para ler" é um conserto de uma
+    # linha do lado do dono e virava "absent", que manda ele exportar de novo um
+    # arquivo que já está lá.
+    if _cookies_usaveis():
+        cook = "present"
+    elif os.path.isfile(COOKIES_FILE):
+        cook = "present but NOT readable by this process"
+    else:
+        cook = "absent"
+    # A CAUSA MEDIDA, numa frase, antes de qualquer parágrafo.
+    #
+    # Medido em 15/09/2026: a explicação honesta tem cinco parágrafos, e cinco
+    # parágrafos é o que o modelo resume -- e resumir foi exatamente como as
+    # causas inventadas nasceram. Então a primeira linha depois do cabeçalho diz
+    # a coisa toda sozinha, inclusive se havia cookies configurados, porque essa
+    # é a única variável que o dono controla e a resposta muda com ela: sem
+    # arquivo, o conserto é exportar um; com arquivo, o conserto é outra rede.
+    if _cookies_usaveis():
+        frase = (f"In one sentence: YouTube is demanding a login to download "
+                 f"from this address (bot check), and the cookies file "
+                 f"configured at {COOKIES_FILE} did not clear it.")
+    elif os.path.isfile(COOKIES_FILE):
+        frase = (f"In one sentence: YouTube is demanding a login to download "
+                 f"from this address (bot check), and the cookies file at "
+                 f"{COOKIES_FILE} exists but this process cannot read it, so it "
+                 f"was never sent.")
+    else:
+        frase = (f"In one sentence: YouTube is demanding a login to download "
+                 f"from this address (bot check), and no cookies file is "
+                 f"configured (WARDEN_YT_COOKIES, looked for at "
+                 f"{COOKIES_FILE}).")
     return (
         f"{label}: YouTube refused this from this machine's outgoing address "
         f"with its logged-out bot check.\n"
+        f"\n"
+        f"  {frase}\n"
         f"\n"
         f"  What this is NOT, and you may not say otherwise:\n"
         f"    - not this video: every link gets the same refusal\n"
         f"    - not the source's authorisation: that gate already passed\n"
         f"    - not something that clears up on its own in a few minutes\n"
+        f"\n"
+        f"  What IS measured, all on 15/09/2026, same container, no cookies:\n"
+        f"    - morning: the home address was refused with this bot check\n"
+        f"    - 15:33, AS26599 Telefonica (189.98.253.32): title read,\n"
+        f"      published subtitle pulled, window downloaded, 830 KiB in 6s\n"
+        f"    - 19:00, AS17222 Mundivox (67.159.227.250), the home provider:\n"
+        f"      title read, window downloaded, 830 KiB in 7s\n"
+        f"  So option 1 below is not a promise from yt-dlp's documentation: it\n"
+        f"  was tried here, twice, and it worked.\n"
+        f"\n"
+        f"  What is NOT measured, and you may not pick a side: nobody wrote\n"
+        f"  down the IP that was refused in the morning, and a residential IP\n"
+        f"  changes on its own -- a modem reconnect, a new lease. So the\n"
+        f"  evening success could mean the flag was lifted, or it could mean\n"
+        f"  the address simply changed. BOTH explanations fit these numbers\n"
+        f"  exactly, which is why neither may be stated. Do not say this\n"
+        f"  clears up on its own, and do not say it is permanent.\n"
+        f"\n"
+        f"  The one rule that survives all of it, and the only actionable\n"
+        f"  one: the refusal travels with the outgoing address, and changing\n"
+        f"  the address was measured working.\n"
+        f"\n"
+        f"  What gets them a clip TODAY: ask for the file itself, or a Google\n"
+        f"  Drive link. Neither goes anywhere near this refusal.\n"
         f"\n"
         f"  What is already in place, so do not offer it as the fix:\n"
         f"    - JS runtime: {rt}\n"
@@ -325,10 +446,15 @@ def _porque_bloqueou(label):
         f"    - cookies file ({COOKIES_FILE}): {cook}\n"
         f"\n"
         f"  Two things change this answer, and the agent can do neither alone:\n"
-        f"    1. a different outgoing address -- another network, or a VPN\n"
+        f"    1. a different outgoing address -- another network, a phone\n"
+        f"       hotspot, or a VPN. This is the one that was MEASURED to work\n"
+        f"       on 15/09/2026; see above.\n"
         f"    2. a cookies file from a signed-in YouTube session at\n"
-        f"       {COOKIES_FILE}. yt-dlp warns this can get that account\n"
+        f"       {COOKIES_FILE}, or anywhere else with WARDEN_YT_COOKIES\n"
+        f"       pointing at it. yt-dlp warns this can get that account\n"
         f"       blocked, so it should be an account nobody minds losing.\n"
+        f"       The file stays on the owner's machine: it is never committed\n"
+        f"       and its contents are never printed, here or anywhere.\n"
         f"\n"
         f"  Tell the owner the address is refused and give them those two "
         f"options. Do not guess at a cause, do not blame the video, and do not "
@@ -368,11 +494,26 @@ def run(args, timeout, label):
         # o texto todo via as duas, concluía "é sobre o vídeo" e devolvia ao
         # modelo a pilha de inglês que este arquivo existe para não devolver.
         # A pergunta certa é se ALGUMA linha é bloqueio e não é sobre o vídeo.
-        bloqueio_na_linha = any(
-            _BOT_CHECK.search(l) and not _ESTE_VIDEO.search(l)
-            for l in saida.splitlines())
-        if label.startswith("yt-dlp") and bloqueio_na_linha:
-            raise FonteBloqueada(_porque_bloqueou(label))
+        linhas_bloqueio = [l for l in saida.splitlines()
+                           if _BOT_CHECK.search(l) and not _ESTE_VIDEO.search(l)]
+        if label.startswith("yt-dlp") and linhas_bloqueio:
+            erro = FonteBloqueada(_porque_bloqueou(label))
+            # 429 e "not a bot" chegam pelo mesmo `_BOT_CHECK` e NÃO são a mesma
+            # coisa, e quem precisa distingui-los é a corrida da legenda.
+            #
+            # Medido em 15/09/2026, 15:33 BRT: pedir `--sub-langs "pt.*"` fez o
+            # yt-dlp escrever DUAS variantes e levar 429 na terceira. Isso não é
+            # o endereço recusado -- é o endereço dizendo "devagar", com a
+            # legenda já em disco. Tratar como bloqueio derrubava o `archive`
+            # inteiro com um parágrafo sobre o YouTube recusar a máquina, tendo
+            # a legenda ali do lado.
+            #
+            # A marca vai no OBJETO porque a mensagem é `_porque_bloqueou`, que
+            # não carrega a saída original: sem isto, quem pega a exceção não
+            # tem como perguntar qual dos dois foi.
+            erro.apenas_429 = not any(re.search(r"not a bot", l, re.I)
+                                      for l in linhas_bloqueio)
+            raise erro
         tail = saida.strip().splitlines()[-6:]
         raise RuntimeError(f"{label} failed:\n  " + "\n  ".join(tail))
     return done.stdout
@@ -536,7 +677,13 @@ def playlist_video_ids(url):
 # get an address flagged. They ask for different fields of the same response,
 # so they are now one request, printed tab separated and kept.
 _FACTS = {}
-_FACTS_CAMPOS = ("title", "channel_id", "uploader_id", "channel_url", "uploader_url")
+#
+# `language` entrou em 15/09/2026 e é o campo mais barato deste arquivo: ele já
+# vem na MESMA resposta do `--print` que traz título e canal, então descobrir a
+# língua original do vídeo custa zero requisição a mais quando `_facts` já rodou
+# -- e uma só, cacheada, quando não rodou. Ver `_sub_langs_para`.
+_FACTS_CAMPOS = ("title", "channel_id", "uploader_id", "channel_url",
+                 "uploader_url", "language")
 
 
 def _facts(url):
@@ -743,8 +890,24 @@ def fiscal(url, rules=None, trusted=None):
     exatamente isto: o portão continua existindo, só muda quem responde.
     """
     if trusted is not None:
-        ok, porque = trusted_check(url, trusted)
-        return ok, porque, None
+        # Decisão do dono, 15/09/2026: quem manda o link já afirmou que pode
+        # usar o material. O agente nunca pede licença.
+        #
+        # `safe_url` FICA, e fica antes de qualquer sim. A decisão é sobre
+        # LICENÇA, não sobre segurança: um link que aponta para 127.0.0.1, para
+        # a rede privada da máquina ou para um esquema que não é http continua
+        # recusado, porque isso nunca foi uma pergunta sobre direitos autorais.
+        #
+        # E isto apaga uma chamada de REDE, não só uma pergunta. O caminho
+        # antigo passava por `trusted_check`, que para um link do YouTube com
+        # entrada de canal chamava `_channel_facts` -> `_facts` -> yt-dlp. Ou
+        # seja: o portão de licença sofria o mesmo bloqueio de bot que o
+        # download, e um link perfeitamente autorizado era recusado -- ou virava
+        # "não consegui checar" -- por uma recusa de rede que nada tinha a ver
+        # com permissão. Um link solto agora custa zero requisição até o
+        # download de verdade começar.
+        safe_url(url)
+        return True, "sent by the person in this conversation", None
     return authorize(rules, url)
 
 
@@ -790,13 +953,21 @@ def baixa_trilha(url, out_dir):
     except Exception:
         titulo = None
     if titulo:
-        limpo = re.sub(r"[^A-Za-z0-9._-]+", "-", titulo).strip("-").lower()[:60]
+        # NFC e depois ASCII, pela mesma razão que `nome_no_disco` existe: um
+        # título com acento em NFD deixava o til para trás como caractere solto,
+        # e `re.sub` o trocava por um hífen -- "Refrão" virava `refra-o`, não
+        # `refrao`. O dono chama a trilha por este nome no `--track`, então o
+        # nome tem de ser o que ele digitaria.
+        achatado = unicodedata.normalize("NFKD", unicodedata.normalize("NFC", titulo))
+        achatado = "".join(c for c in achatado if not unicodedata.combining(c))
+        limpo = re.sub(r"[^A-Za-z0-9._-]+", "-", achatado).strip("-").lower()[:60]
         if limpo:
             alvo = os.path.join(out_dir, limpo + os.path.splitext(baixado)[1])
             if not os.path.exists(alvo):
                 os.replace(baixado, alvo)
                 baixado = alvo
-    return baixado
+    # E o caminho devolvido é um caminho que existe, com o nome que ele tem.
+    return nome_no_disco(baixado)
 
 
 def archive_trusted(url, out_dir, entries, mode="video"):
@@ -805,13 +976,20 @@ def archive_trusted(url, out_dir, entries, mode="video"):
     Mesma função que `archive()` cumpre para a campanha, com o outro portão.
     `mode="text"` é o caminho barato e é o padrão do fluxo: legenda publicada se
     houver, áudio se não houver, vídeo nunca.
+
+    Desde a decisão do dono de 15/09/2026, `fiscal(trusted=...)` não recusa por
+    licença: quem mandou o link já afirmou que pode usar o material. `entries`
+    continua na assinatura porque `warden trusted` ainda existe e ainda lista as
+    fontes do dono -- ela só deixou de ser um portão.
     """
     ok, porque, _ = fiscal(url, trusted=entries)
     if not ok:
-        raise RuntimeError(
-            f"refusing to pull {url}: {porque}. Add the channel or the domain "
-            f"with `warden trusted add <@channel|domain>` if it is a source you "
-            f"vouch for.")
+        # Alcançável hoje só se `fiscal` voltar a recusar por alguma razão que
+        # não seja `safe_url` (essa levanta sozinha, com a própria frase). A
+        # mensagem antiga mandava o dono rodar `warden trusted add`, e depois de
+        # 15/09 isso seria uma instrução falsa: adicionar a fonte não mudaria
+        # resposta nenhuma. Então ela diz o que `fiscal` disse, e nada mais.
+        raise RuntimeError(f"refusing to pull {url}: {porque}")
     os.makedirs(out_dir, exist_ok=True)
     return _download_one(url, out_dir, mode=mode)
 
@@ -1081,12 +1259,99 @@ def origem_da_janela(source):
     return None, None
 
 
-# As línguas de legenda que valem a pena pedir, e por que são só estas.
+# As línguas de legenda que valem a pena pedir, e por que são estas.
 #
 # Cada língua na lista é uma requisição a mais, e cada requisição a mais é uma
 # chance a mais de 429. `en` sozinho já derrubou o `archive` duas vezes num
-# vídeo em português. Então a lista é curta e o ambiente pode trocá-la.
-SUB_LANGS = os.environ.get("WARDEN_SUB_LANGS") or "pt,pt-BR"
+# vídeo em português -- por isso a lista era só `pt,pt-BR`.
+#
+# Mudou em 15/09/2026, e por uma medição: um vídeo EM INGLÊS caía sempre na
+# transcrição (220s medidos) mesmo publicando legenda, porque a única língua que
+# o agente sabia pedir era português. Pagar 220s por um texto que já está
+# publicado é o defeito exato que este caminho existe para evitar, e ele
+# acontecia em toda fonte que não fosse brasileira.
+#
+# O que tornou isso seguro foi outro conserto que já está de pé: a legenda tem a
+# própria corrida (ver `_download_one`), então um 429 no `en` custa a legenda
+# daquela corrida, não a execução inteira -- que era o que o custava em 14/09.
+#
+# E NADA DE CURINGA. Medido no container em 15/09/2026, 15:33 BRT, e foi o que
+# derrubou o primeiro desenho deste conserto:
+#
+#     yt-dlp --skip-download --write-auto-subs --sub-langs "pt.*" --sub-format vtt
+#       -> escreveu t1.pt-BR.vtt (3822 B)
+#       -> escreveu t1.pt-en.vtt (4280 B)
+#       -> ERROR: Unable to download video subtitles for 'pt-PT-en':
+#          HTTP Error 429: Too Many Requests
+#
+# Um `pt.*` sozinho expandiu para TRÊS variantes e a terceira levou 429. Um
+# `pt.*,en.*` mais a língua detectada vira facilmente seis requisições, ou seja,
+# o curinga transforma "pedir a legenda" na rajada que este arquivo inteiro
+# existe para não disparar.
+#
+# Então a lista é CURTA, CONCRETA e em ordem de preferência: no máximo três
+# entradas, sem `.*`. `pt-BR` antes de `pt` porque é a que mais aparece.
+SUB_LANGS_PADRAO = "pt-BR,pt,en"
+SUB_LANGS = os.environ.get("WARDEN_SUB_LANGS") or SUB_LANGS_PADRAO
+
+# Quantas línguas no máximo, e é um teto de REQUISIÇÕES, não de gosto: a terceira
+# variante já levou 429 na medição acima.
+SUB_LANGS_MAX = 3
+
+
+def _sub_langs_para(url):
+    """As línguas a pedir para ESTE link, incluindo a original do vídeo.
+
+    `WARDEN_SUB_LANGS` sobrescreve tudo e nem pergunta: quem definiu a variável
+    decidiu, e uma detecção que passasse por cima dela seria o agente discutindo
+    com o dono.
+
+    Sem a variável, a língua original entra na FRENTE da lista padrão, e a lista
+    é cortada em `SUB_LANGS_MAX`. As duas coisas importam: a frente porque o
+    yt-dlp para no primeiro acerto, e o corte porque a terceira variante já
+    levou 429 na medição de 15/09/2026 registrada acima.
+
+    A língua sai de `_facts`, que é UMA extração cacheada por link e já traz
+    título e canal na mesma resposta -- então isto é, no pior caso, uma
+    requisição a mais no comando inteiro, e zero quando algo já perguntou pelo
+    título.
+
+    Detecção que falha não é erro: cai na lista padrão, calada. Uma legenda a
+    menos é caro; uma execução derrubada por causa de uma consulta de idioma
+    seria pior.
+    """
+    if os.environ.get("WARDEN_SUB_LANGS"):
+        # O dono decidiu, inclusive sobre o teto: se ele quer seis línguas, são
+        # seis. O 429 é um risco que ele escolheu, não um que o agente impôs.
+        return os.environ["WARDEN_SUB_LANGS"]
+    try:
+        lingua = (_facts(url) or {}).get("language") or ""
+    except Exception:
+        # Inclusive `FonteBloqueada`. Se o endereço está recusado, quem vai
+        # dizer isso é a corrida da legenda, com a mensagem honesta inteira --
+        # não uma consulta de idioma vazando por baixo dela.
+        lingua = ""
+    lingua = lingua.strip()
+    if not lingua or lingua.upper() == "NA":
+        return SUB_LANGS
+    # O campo vem do lado de lá: `pt`, `en-US`, e nada garante que seja só isso.
+    # Ele entra numa linha de comando, então passa por um filtro de formato de
+    # tag de idioma antes -- não por confiança, por formato. E sem `.*`: um
+    # curinga vindo do outro lado seria o 429 medido, entregue de graça.
+    if not re.fullmatch(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8}){0,2}", lingua):
+        return SUB_LANGS
+    pedidos = [lingua]
+    base = lingua.split("-")[0].lower()
+    for l in SUB_LANGS.split(","):
+        l = l.strip()
+        if not l or l in pedidos:
+            continue
+        # A raiz já pedida não volta como variante: `en` depois de `en-US` é uma
+        # requisição a mais pela mesma legenda.
+        if l.split("-")[0].lower() == base and len(pedidos) > 1:
+            continue
+        pedidos.append(l)
+    return ",".join(pedidos[:SUB_LANGS_MAX])
 
 
 def _pull_subs(url, out_dir, stem, template, playlist_args):
@@ -1100,18 +1365,28 @@ def _pull_subs(url, out_dir, stem, template, playlist_args):
         return [f for f in sorted(os.listdir(out_dir))
                 if f.startswith(stem) and f.lower().endswith(".srt")]
 
-    ja_tinha = _achadas()
+    # A língua ORIGINAL do vídeo, e não só as nossas. Ver `_sub_langs_para`:
+    # um vídeo em inglês pagava 220s de transcrição com a legenda publicada ao
+    # lado, porque a lista só tinha português.
+    langs = _sub_langs_para(url)
     try:
         run(_ytdlp() + [*playlist_args, "--restrict-filenames", "--skip-download",
-             "--write-auto-subs", "--write-subs", "--sub-langs", SUB_LANGS,
+             "--write-auto-subs", "--write-subs", "--sub-langs", langs,
              "--convert-subs", "srt", "-o", template, "--", url],
             TIMEOUT_FETCH * 4, "yt-dlp (subtitles)")
     except RuntimeError as exc:
-        # Uma corrida que falhou não apaga o que já estava no disco. Se a
-        # legenda de uma corrida anterior está aqui, ela serve -- inclusive
-        # quando o endereço está recusado, porque o arquivo já é nosso.
-        if ja_tinha:
-            return os.path.join(out_dir, ja_tinha[0]), None
+        # Uma corrida que falhou não apaga o que já ESCREVEU, e é por isso que a
+        # pergunta é `_achadas()` e não `ja_tinha`.
+        #
+        # Medido em 15/09/2026, 15:33 BRT: com `--sub-langs "pt.*"` o yt-dlp
+        # escreveu `pt-BR` e `pt-en` e só então levou 429 na terceira variante.
+        # A versão anterior olhava só para o que existia ANTES da corrida, não
+        # via as duas legendas recém-escritas, e seguia para o download do
+        # áudio -- pagando a transcrição com a legenda em disco, que é
+        # exatamente o que este caminho existe para não fazer.
+        agora = _achadas()
+        if agora:
+            return os.path.join(out_dir, agora[0]), None
         # O endereço recusado NÃO é "esta legenda não veio", e tratá-lo como
         # tal custou as duas coisas que este arquivo existe para evitar.
         # Medido em 15/09, no primeiro teste de ponta a ponta do conserto:
@@ -1127,8 +1402,20 @@ def _pull_subs(url, out_dir, stem, template, playlist_args):
         #    parar de marcá-lo.
         #
         # Então ela sobe inteira, e a corrida seguinte não acontece.
-        if isinstance(exc, FonteBloqueada):
+        #
+        # MENOS quando é só 429, e essa distinção é de 15/09/2026, 15:33 BRT.
+        # Um 429 aqui é o YouTube pedindo calma numa variante de legenda, com
+        # nenhuma ou algumas já baixadas -- não é o endereço recusado. Subir com
+        # o parágrafo do bot check derrubava o `archive` inteiro e dizia ao dono
+        # que a máquina dele está bloqueada, o que seria falso. Então vira
+        # "não veio legenda", a transcrição segue, e a requisição NÃO é
+        # repetida: repeti-la é o que transforma um "devagar" em bloqueio.
+        if isinstance(exc, FonteBloqueada) and not getattr(exc, "apenas_429", False):
             raise
+        if isinstance(exc, FonteBloqueada):
+            return None, ("YouTube answered 429 (too many requests) while "
+                          "fetching subtitles in " + langs + ", so there is no "
+                          "published subtitle to use this time")
         return None, f"{type(exc).__name__}: {str(exc)[:160]}"
     # O que EXISTE, não o que é novo. A versão anterior comparava o diretório
     # antes e depois, e na segunda corrida o `.srt` já estava lá: não aparecia
@@ -1137,7 +1424,9 @@ def _pull_subs(url, out_dir, stem, template, playlist_args):
     # temos.
     achadas = _achadas()
     if not achadas:
-        return None, "this video publishes no subtitle in " + SUB_LANGS
+        # `langs`, não `SUB_LANGS`: a frase tem de dizer o que foi PEDIDO nesta
+        # corrida, senão ela mente justamente quando a língua original entrou.
+        return None, "this video publishes no subtitle in " + langs
     return os.path.join(out_dir, achadas[0]), None
 
 
@@ -1185,6 +1474,260 @@ def _pull_text_first(url, out_dir, stem, template, playlist_args):
             "yt-dlp returned neither a subtitle nor anything with sound for "
             "that link, so there is no text to choose a window from.")
     return os.path.join(out_dir, audios[0])
+
+
+def nome_no_disco(caminho):
+    """Renomeia um arquivo recém-baixado para um nome digitável. Devolve o caminho QUE EXISTE.
+
+    Este é o ponto inteiro da função, e a única coisa que ela promete: o caminho
+    devolvido é um caminho que `os.path.isfile` encontra. Quem imprime este
+    caminho está imprimindo algo que a pessoa -- ou o modelo -- pode abrir.
+
+    Medido em 15/09/2026, e custou 5 minutos e 9 chamadas de ferramenta: um
+    arquivo do Drive chamado "Refrão.mp4" desceu com o nome em Unicode NFD, ou
+    seja, `a` + U+0303 (til combinante) em vez do único caractere `ã` (U+00E3).
+    Os dois SE DESENHAM IGUAIS na tela. O agente leu o nome, digitou "Refrão"
+    como qualquer um digitaria -- em NFC, que é o que um teclado produz -- e o
+    arquivo não existia. Nove tentativas, nenhuma mensagem de erro útil, porque
+    do ponto de vista do sistema de arquivos eram dois nomes diferentes.
+    Linux compara bytes; macOS é que normaliza por conta própria.
+
+    Então o conserto é no MOMENTO DO DOWNLOAD, não em quem lê depois: NFC
+    primeiro (o til gruda na letra), e se ainda sobrar caractere que não é ASCII
+    seguro, o nome desce para ASCII. Um nome de arquivo aqui também vira
+    argumento de filtro do ffmpeg mais adiante no pipeline, então tirar aspas,
+    dois-pontos e barras não é estética.
+
+    Um arquivo cujo nome já é seguro não é tocado. Uma colisão não é resolvida
+    sobrescrevendo: o nome ganha um sufixo, porque perder um vídeo do acervo
+    para arrumar um acento seria um conserto pior que o defeito.
+    """
+    if not caminho or not os.path.isfile(caminho):
+        return caminho
+    pasta = os.path.dirname(caminho) or "."
+    base = os.path.basename(caminho)
+    raiz, ext = os.path.splitext(base)
+
+    # 1. NFC: o acento combinante vira um caractere só, que é o que um teclado
+    #    produz e o que o modelo escreve de volta.
+    raiz_nfc = unicodedata.normalize("NFC", raiz)
+    ext = unicodedata.normalize("NFC", ext)
+    # 2. E se ainda não é ASCII, desce para ASCII: `ã` -> `a`, via a decomposição
+    #    de compatibilidade, jogando fora as marcas. Um nome inteiro em cirílico
+    #    ou japonês some nessa conta, então há uma rede embaixo, mais abaixo.
+    limpo = unicodedata.normalize("NFKD", raiz_nfc)
+    limpo = "".join(c for c in limpo if not unicodedata.combining(c))
+    limpo = limpo.encode("ascii", "ignore").decode("ascii")
+    # 3. O que sobra ainda passa por um filtro de caractere, porque isto acaba
+    #    dentro de uma string de filtro do ffmpeg.
+    limpo = re.sub(r"[^A-Za-z0-9._-]+", "-", limpo).strip("-._")[:80]
+    ext_limpa = re.sub(r"[^A-Za-z0-9.]+", "", ext)[:10] or ".mp4"
+    if not limpo:
+        # A rede: um nome que era inteiro não-ASCII não vira nome vazio. Um hash
+        # curto do nome ORIGINAL é feio e é digitável, que é o requisito.
+        limpo = "media-" + hashlib.sha256(base.encode("utf-8")).hexdigest()[:10]
+    alvo = os.path.join(pasta, limpo + ext_limpa)
+    if os.path.abspath(alvo) == os.path.abspath(caminho):
+        return caminho
+    n = 1
+    while os.path.exists(alvo):
+        alvo = os.path.join(pasta, f"{limpo}-{n}{ext_limpa}")
+        n += 1
+    try:
+        os.replace(caminho, alvo)
+    except OSError:
+        # Renomear falhou (disco cheio, permissão, montagem read-only). O nome
+        # feio é melhor que um caminho inventado: devolve o que existe.
+        return caminho
+    return alvo
+
+
+# As extensões que contam como vídeo numa pasta de acervo. Uma lista só, porque
+# ela era copiada em três lugares e uma delas já divergia.
+EXT_VIDEO = (".mp4", ".mov", ".m4v", ".webm", ".mkv")
+
+
+def _drive_lista_pasta(url, destino):
+    """Os arquivos de uma pasta do Drive SEM baixar nenhum. [(nome, id)] ou None.
+
+    Uma requisição, a da página da pasta. `skip_download=True` do gdown devolve
+    `GoogleDriveFileToDownload(id, path, local_path)` para cada item, e é o que
+    permite escolher antes de gastar.
+
+    E UMA LIMITAÇÃO MEDIDA, porque ela muda a regra de escolha: essa listagem
+    NÃO traz o tamanho. O parser do gdown (`_parse_google_drive_file`) lê do
+    HTML da pasta apenas id, nome e tipo -- não há campo de bytes para ler. A
+    CLI também não expõe `--skip-download`, então isto passa pela API Python.
+    Por isso quem chama tem de ter um plano para "vários vídeos e nenhum
+    tamanho"; ver `_drive_maior_video`.
+
+    Devolve None -- e não levanta -- quando não dá para listar. A pasta inteira
+    ainda é um caminho que funciona, e ele continua de pé atrás disto.
+    """
+    try:
+        import gdown
+    except Exception:
+        return None
+    try:
+        itens = gdown.download_folder(
+            url=url, output=destino + os.sep, skip_download=True,
+            quiet=True, use_cookies=False)
+    except Exception:
+        return None
+    if not itens:
+        return None
+    achados = []
+    for it in itens:
+        nome = os.path.basename(getattr(it, "path", "") or "")
+        ident = getattr(it, "id", None)
+        if nome and ident:
+            achados.append((nome, ident))
+    return achados or None
+
+
+def _drive_bytes(ident):
+    """Quantos bytes tem este arquivo do Drive, sem baixá-lo, ou None.
+
+    NÃO MEDIDO CONTRA O DRIVE DE VERDADE -- não havia pasta compartilhada para
+    testar em 15/09/2026, e isto está escrito aqui em vez de ficar implícito.
+
+    O que ela faz: um GET com `Range: bytes=0-0`, que traz um byte e o
+    `Content-Range` com o total. Tudo que não for exatamente isso é tratado como
+    "não sei": o Drive responde à página de confirmação de arquivo grande com
+    um HTML de alguns KB e status 200, e aceitar esse `Content-Length` como
+    tamanho do vídeo faria a escolha pelo maior eleger o HTML mais gordo. Um
+    palpite confiante a partir de uma resposta que não foi observada é o defeito
+    que este arquivo inteiro existe para não cometer, então o `None` aqui é o
+    caminho normal, não a exceção.
+    """
+    alvo = "https://drive.google.com/uc?export=download&id=" + str(ident)
+    try:
+        pedido = urllib.request.Request(alvo, headers={"Range": "bytes=0-0"})
+        with _OPENER.open(pedido, timeout=TIMEOUT_FETCH) as resposta:
+            tipo = (resposta.headers.get("Content-Type") or "").lower()
+            faixa = resposta.headers.get("Content-Range") or ""
+            resposta.read(1)
+    except Exception:
+        return None
+    if "html" in tipo or "/" not in faixa:
+        return None
+    total = faixa.rsplit("/", 1)[-1].strip()
+    return int(total) if total.isdigit() else None
+
+
+def _drive_videos_em(destino):
+    """Os vídeos que já estão em disco sob `destino`, maior primeiro."""
+    videos = []
+    for raiz, _, arquivos in os.walk(destino):
+        for f in arquivos:
+            if os.path.splitext(f)[1].lower() in EXT_VIDEO:
+                videos.append(os.path.join(raiz, f))
+    videos.sort(key=os.path.getsize, reverse=True)
+    return videos
+
+
+def _drive_conta(destino, quantos, escolhido, tamanhos=None):
+    """A linha que diz ao dono o que tem na pasta e o que foi escolhido.
+
+    Ela FICA, e fica igual ao que era: ficar calada sobre o resto do acervo era
+    esconder dele o material dele. Só mudou o que está ao lado do escolhido --
+    antes os outros arquivos, agora os outros nomes.
+    """
+    if quantos <= 1:
+        return
+    print(f"  (this Drive folder holds {quantos} videos. The biggest is the "
+          f"one returned; the others were NOT downloaded -- ask for one by "
+          f"name and it comes down on its own:", file=sys.stderr)
+    for nome, bytes_ in (tamanhos or []):
+        tamanho = f"{bytes_ // (1024*1024)} MB  " if bytes_ else ""
+        marca = "  <- returned" if nome == escolhido else ""
+        print(f"     {tamanho}{nome}{marca}", file=sys.stderr)
+    print(f"   They are in {destino} once pulled.)", file=sys.stderr)
+
+
+def _drive_maior_video(url, destino):
+    """Baixa SÓ o vídeo que vai ser usado de uma pasta do Drive. Devolve o caminho.
+
+    Três caminhos, do mais barato para o mais caro, e o mais caro é o que este
+    arquivo fazia sempre:
+
+      1. Um vídeo só na pasta. Não há o que escolher: desce um arquivo.
+      2. Vários vídeos e os tamanhos respondem sem baixar. Mesma regra de
+         sempre, o maior, e desce um arquivo.
+      3. Vários vídeos e os tamanhos NÃO respondem -- que é o caso esperado,
+         porque a listagem do Drive não traz bytes (ver `_drive_lista_pasta`) e
+         a sonda de tamanho não foi medida contra o Drive de verdade. Aí a pasta
+         inteira desce, como descia antes, e a pessoa é avisada de que foi isso
+         que aconteceu. Um palpite sobre qual é o maior sem ter medido nenhum
+         seria escolher o corte errado da campanha em silêncio.
+    """
+    itens = _drive_lista_pasta(url, destino)
+    videos = [(n, i) for n, i in (itens or [])
+              if os.path.splitext(n)[1].lower() in EXT_VIDEO]
+
+    if itens is not None and not videos:
+        raise RuntimeError(
+            f"{url} is a Drive folder with no video in it. Check that the "
+            f"folder is shared with anyone who has the link, and that the "
+            f"footage is in this folder rather than a subfolder of it.")
+
+    alvo = None
+    tamanhos = []
+    if len(videos) == 1:
+        alvo = videos[0]
+    elif len(videos) > 1:
+        for nome, ident in videos:
+            tamanhos.append((nome, _drive_bytes(ident)))
+        if all(b for _n, b in tamanhos):
+            nome = max(tamanhos, key=lambda p: p[1])[0]
+            alvo = next(v for v in videos if v[0] == nome)
+
+    if alvo is not None:
+        nome, ident = alvo
+        _drive_conta(destino, len(videos), nome, tamanhos)
+        antes = set(os.listdir(destino))
+        run(_gdown() + ["--no-cookies", "-O", destino + os.sep, "--",
+                        "https://drive.google.com/uc?id=" + ident],
+            TIMEOUT_DOWNLOAD, "gdown (one file from folder)")
+        novos = sorted(set(os.listdir(destino)) - antes)
+        if novos:
+            # O nome vem do outro lado, então ele é normalizado AQUI, antes de
+            # alguém tentar abri-lo: foi um nome do Drive em NFD que custou as
+            # nove chamadas. Ver `nome_no_disco`.
+            return nome_no_disco(os.path.join(destino, novos[0]))
+        # gdown não escreveu nada por este caminho: cai para a pasta inteira em
+        # vez de dizer que a pasta não tem vídeo, o que seria falso.
+        print("  (pulling that one file wrote nothing, so falling back to the "
+              "whole folder.)", file=sys.stderr)
+
+    # O caminho caro, e ele é anunciado.
+    if len(videos) > 1:
+        print(f"  (this Drive folder holds {len(videos)} videos and Drive does "
+              f"not publish their sizes in the folder listing, so there is no "
+              f"way to tell which is biggest without pulling them. Pulling all "
+              f"of them:", file=sys.stderr)
+        for nome, _ident in videos:
+            print(f"     {nome}", file=sys.stderr)
+        print("  )", file=sys.stderr)
+    run(_gdown() + ["--folder", "--no-cookies", "-O", destino, "--", url],
+        TIMEOUT_DOWNLOAD, "gdown (folder)")
+    em_disco = _drive_videos_em(destino)
+    if not em_disco:
+        raise RuntimeError(
+            f"{url} is a Drive folder with no video in it. Check that the "
+            f"folder is shared with anyone who has the link, and that the "
+            f"footage is in this folder rather than a subfolder of it.")
+    em_disco = [nome_no_disco(v) for v in em_disco]
+    em_disco.sort(key=os.path.getsize, reverse=True)
+    if len(em_disco) > 1:
+        print(f"  (this Drive folder holds {len(em_disco)} videos. The "
+              f"biggest is the one returned; the others are beside it in "
+              f"{destino} and any of them can be cut:", file=sys.stderr)
+        for v in em_disco:
+            print(f"     {os.path.getsize(v) // (1024*1024)} MB  "
+                  f"{os.path.basename(v)}", file=sys.stderr)
+        print("  )", file=sys.stderr)
+    return em_disco[0]
 
 
 def _download_one(url, out_dir, mode="video"):
@@ -1251,10 +1794,14 @@ def _download_one(url, out_dir, mode="video"):
         # cortes oficiais. Antes disto o link caía no caminho de arquivo, o
         # `--fuzzy` não casava com uma pasta, e o dono recebia o usage do gdown.
         #
-        # Uma pasta não é UM arquivo, e esta função devolve um. Então ela baixa
-        # a pasta inteira e devolve o maior vídeo, dizendo em voz alta quais são
-        # os outros: escolher sozinha qual corte da campanha usar seria decidir
-        # no lugar da pessoa, e ficar calada seria esconder o acervo dela.
+        # Uma pasta não é UM arquivo, e esta função devolve um. A regra de
+        # escolha não mudou -- o maior vídeo -- mas a ORDEM mudou, e é onde
+        # estava o custo.
+        #
+        # Medido em 15/09/2026: a pasta trazia cinco cortes oficiais, a versão
+        # anterior baixava os CINCO (671 MB em 87s) e usava um. Os outros 537 MB
+        # desceram para serem pesados e descartados. Agora a pasta é LISTADA
+        # primeiro, o alvo é escolhido, e só ele desce.
         if not _tem_gdown():
             raise RuntimeError(
                 "this is a Google Drive folder and gdown is neither importable "
@@ -1262,29 +1809,7 @@ def _download_one(url, out_dir, mode="video"):
         destino = os.path.join(out_dir, "drive-" +
                                hashlib.sha256(url.encode()).hexdigest()[:12])
         os.makedirs(destino, exist_ok=True)
-        run(_gdown() + ["--folder", "--no-cookies", "-O", destino, "--", url],
-            TIMEOUT_DOWNLOAD, "gdown (folder)")
-        videos = []
-        for raiz, _, arquivos in os.walk(destino):
-            for f in arquivos:
-                if os.path.splitext(f)[1].lower() in (
-                        ".mp4", ".mov", ".m4v", ".webm", ".mkv"):
-                    videos.append(os.path.join(raiz, f))
-        if not videos:
-            raise RuntimeError(
-                f"{url} is a Drive folder with no video in it. Check that the "
-                f"folder is shared with anyone who has the link, and that the "
-                f"footage is in this folder rather than a subfolder of it.")
-        videos.sort(key=os.path.getsize, reverse=True)
-        if len(videos) > 1:
-            print(f"  (this Drive folder holds {len(videos)} videos. The "
-                  f"biggest is the one returned; the others are beside it in "
-                  f"{destino} and any of them can be cut:", file=sys.stderr)
-            for v in videos:
-                print(f"     {os.path.getsize(v) // (1024*1024)} MB  "
-                      f"{os.path.basename(v)}", file=sys.stderr)
-            print("  )", file=sys.stderr)
-        return videos[0]
+        return _drive_maior_video(url, destino)
     if "drive.google.com" in parsed.netloc:
         if not _tem_gdown():
             raise RuntimeError(
@@ -1312,7 +1837,10 @@ def _download_one(url, out_dir, mode="video"):
             hashlib.sha256(url.encode()).hexdigest()[:12],
             os.path.splitext(new[0])[1].lower() or ".mp4"))
         os.replace(got, ours)
-        return ours
+        # Já é um nome nosso e ASCII; passa por aqui assim mesmo para que o
+        # contrato "o caminho devolvido é o caminho que existe" seja da FUNÇÃO,
+        # não de quem se lembrou dele. Uma extensão exótica é o que sobra.
+        return nome_no_disco(ours)
     # `have("yt-dlp")` perguntava pelo BINÁRIO no PATH. O venv da imagem instala
     # o yt-dlp como módulo, e o PATH que um subprocesso herda da árvore de
     # supervisão não tem o bin do venv -- então em máquina limpa o `archive`
@@ -1383,22 +1911,66 @@ def _download_one(url, out_dir, mode="video"):
 SMALL_CEILING_S = 900
 
 
-def pick_model(duration_s):
+def pick_model(duration_s, janela=None):
     """The model this source can afford.
 
-    An override always wins: someone who set WARDEN_WHISPER has a reason. With
-    no override, short sources get `small`, which is the better text, and long
-    ones get `base`, which is roughly three times faster and still good enough
-    to choose a moment from. The trade is deliberate and it is stated to the
-    owner rather than hidden, because the captions are burned from this text.
+    An override always wins: someone who set WARDEN_WHISPER has a reason.
+
+    `janela` é o PROPÓSITO, e desde 15/09/2026 ele decide antes da duração --
+    porque a duração nunca foi a pergunta certa. As duas transcrições deste
+    projeto querem coisas diferentes:
+
+      - `janela=False`: transcrever a FONTE INTEIRA para escolher o momento.
+        Ninguém lê esse texto e nada é queimado a partir dele; ele responde
+        "onde vale a pena olhar?". `base` é ~3x mais rápido que `small` e
+        responde essa pergunta igual de bem. Medido em 15/09/2026: 79s de
+        `small` para 2min30s de áudio.
+      - `janela=True`: transcrever uma janela JÁ ESCOLHIDA. Este texto vira
+        legenda queimada, e legenda queimada errada é um clipe refeito. `small`,
+        sempre -- a janela é curta por construção, então o modelo bom cabe.
+
+    E é por isso que o erro de palavra do `base` fica coberto: ele nunca chega à
+    tela. O que a pessoa lê na legenda vem SEMPRE da segunda passada, com
+    `small`, sobre os segundos que viraram clipe.
+
+    `janela=None` é "não disseram", e aí vale a regra antiga por duração: curto
+    ganha `small`, longo ganha `base`. Fica para não mudar a resposta de quem
+    chama `pick_model(seconds)` como sempre chamou.
     """
     override = os.environ.get("WARDEN_WHISPER")
     if override:
         return override, "set by WARDEN_WHISPER"
+    if janela is True:
+        return "small", "a window already chosen, and its words get burned in"
+    if janela is False:
+        return "base", ("the whole source, only to choose a moment from it: "
+                        "~3x faster, and the burned caption comes from the "
+                        "window pass with `small`")
     if duration_s and duration_s > SMALL_CEILING_S:
         return "base", (f"source is {duration_s / 60:.0f} minutes, so the faster "
                         "model, to keep this under ten minutes")
     return "small", "short enough for the better model"
+
+
+# Quantas threads o faster-whisper pode usar na CPU.
+#
+# Medido em 15/09/2026: 79s para transcrever 2min30s de áudio. O padrão do
+# ctranslate2 quando ninguém diz nada é UMA thread por sessão em boa parte das
+# construções, e a imagem tem mais de um núcleo parado. `os.cpu_count()` é o que
+# o container enxerga, e o `or 4` cobre a plataforma onde ele devolve None.
+#
+# O ambiente pode trocar porque o dono pode querer deixar núcleo livre para o
+# ffmpeg, que costuma estar rodando ao lado.
+def _whisper_threads():
+    do_ambiente = os.environ.get("WARDEN_WHISPER_THREADS")
+    if do_ambiente:
+        try:
+            n = int(do_ambiente)
+            if n > 0:
+                return n
+        except ValueError:
+            pass                      # um valor sem sentido não derruba a corrida
+    return os.cpu_count() or 4
 
 
 def duration_of(path):
@@ -1538,7 +2110,7 @@ def model_wait_note(size):
 
 
 def transcribe(path, model_size=None, window=None, prefer_lang=None,
-               progress=None):
+               progress=None, proposito=None):
     """Words with timing. A published subtitle beats a transcription.
 
     When the archive shipped subtitles, using them is not a shortcut, it is the
@@ -1550,6 +2122,15 @@ def transcribe(path, model_size=None, window=None, prefer_lang=None,
     23-minute source scanned with `tiny` to find the candidates, then the good
     model on the two minutes that actually become clips, instead of 23 minutes
     of the good model to use forty seconds of it.
+
+    `proposito` diz PARA QUE esta transcrição serve, e é o que escolhe o modelo
+    quando ninguém passou `model_size`:
+
+      - `"fonte"`: a fonte inteira, só para escolher o momento -> `base`.
+      - `"janela"`: uma janela já escolhida, cujo texto vira legenda -> `small`.
+      - `None`: não disseram, e vale a regra de sempre (janela -> `small`,
+        senão pela duração). Está aqui para não mudar a resposta de nenhum
+        chamador que já existe.
     """
     say = progress or (lambda line: print(line, file=sys.stderr, flush=True))
     if window is None:
@@ -1584,6 +2165,10 @@ def transcribe(path, model_size=None, window=None, prefer_lang=None,
 
     if model_size:
         size, why = model_size, "asked for"
+    elif proposito == "janela":
+        size, why = pick_model(seconds, janela=True)
+    elif proposito == "fonte":
+        size, why = pick_model(seconds, janela=False)
     elif window:
         # A janela é curta por construção, então o modelo bom cabe nela sempre.
         size, why = "small", f"only the {span / 60:.1f} minutes of this window"
@@ -1603,9 +2188,25 @@ def transcribe(path, model_size=None, window=None, prefer_lang=None,
                 raise RuntimeError(espera)
         say(f"transcribing {span / 60:.1f} minutes with faster-whisper {size} "
             f"({why})...")
-        model = WhisperModel(size, device="cpu", compute_type="int8")
+        # `cpu_threads`: sem isto o ctranslate2 fica com o padrão dele, que na
+        # prática é uma thread trabalhando e os outros núcleos da imagem
+        # parados. Medido em 15/09/2026: 79s para 2min30s de áudio.
+        model = WhisperModel(size, device="cpu", compute_type="int8",
+                             cpu_threads=_whisper_threads())
+        # `beam_size=1` é busca gulosa. O padrão do faster-whisper é 5, ou seja,
+        # cinco hipóteses por passo -- e este projeto não usa nada que dependa
+        # dessa margem: o texto da fonte serve para escolher o momento, e o
+        # texto da janela é conferido por quem olha o contact sheet antes de
+        # publicar.
+        #
+        # E NÃO ligamos `batch_size=8`. O benchmark oficial do faster-whisper
+        # mede 3608 MB de pico com pipeline em lote, e o compose desta imagem
+        # declara `mem_limit: 3g`. 3608 > 3072: o ganho de velocidade seria um
+        # OOM kill no meio da transcrição, que é a falha mais cara que existe
+        # aqui -- silenciosa, e depois de já ter gasto o tempo todo.
         segments, _info = model.transcribe(audio, vad_filter=True,
-                                           word_timestamps=True)
+                                           word_timestamps=True,
+                                           beam_size=1)
         rows = []
         # Dez minutos de silêncio num chat lê como agente morto. O whisper
         # devolve um gerador, então dá para contar o que já saiu enquanto sai --
@@ -1643,7 +2244,15 @@ def scan(path, progress=None):
 
 
 # A ordem em que uma legenda publicada é preferida. `archive` baixa com
-# `--sub-langs pt,pt-BR,en`, então os dois arquivos existem lado a lado.
+# `SUB_LANGS` mais a língua original do vídeo (ver `_sub_langs_para`), então
+# vários arquivos podem existir lado a lado.
+#
+# Esta lista é de PREFERÊNCIA, não de permissão, e continua curta de propósito.
+# Desde 15/09/2026 a língua original entra no pedido, então um vídeo em espanhol
+# pode deixar um `.es.srt` aqui: se for o único, `_subtitle_beside` o devolve --
+# é a legenda do vídeo. Se houver mais de uma e nenhuma conhecida, ele PARA e
+# pede `--lang`, que é o conserto de quando o inglês foi queimado sobre um hook
+# em português. Escolher por ordem alfabética é o que não pode voltar.
 SUBTITLE_LANGS = ("pt-br", "pt_br", "pt-BR", "pt", "en")
 
 
