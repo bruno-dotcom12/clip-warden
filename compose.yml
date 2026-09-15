@@ -20,6 +20,69 @@ services:
       # below, not localhost: the provider is a sibling container, and the
       # tool's own default (127.0.0.1) is for someone running it on the host.
       WARDEN_POT_URL: ${WARDEN_POT_URL:-http://pot:4416}
+      # ── A REGRA DESTE BLOCO ────────────────────────────────────────────
+      # O QUE ENTRA NA IMAGEM É PÚBLICO, porque este agente é publicado.
+      # Credencial, cookie e chave de API entram da MÁQUINA DE QUEM INSTALA,
+      # em tempo de execução, e a ausência de qualquer uma desliga só o recurso
+      # dela -- nunca o boot.
+      #
+      # Isto não é cautela teórica: até 15/09/2026 o cliente OAuth do Google era
+      # embutido na imagem por build-arg, e um `pull` ANÔNIMO do ghcr devolvia
+      # `WARDEN_YT_CLIENT_SECRET` com valor. Já vazou uma vez.
+      # ───────────────────────────────────────────────────────────────────
+
+      # O cliente OAuth do Google, de quem instala e nunca da imagem.
+      #
+      # A política III.D.1 dos Serviços de API do YouTube proíbe, com essas
+      # palavras, "embed your API Credentials in open source projects" -- e o
+      # `ENV` de uma imagem pública é lido com um `docker image inspect`, ou
+      # direto do registro, sem sequer baixar as camadas. Agora ele segue a
+      # mesma regra do `plow-credentials`: é de UMA PESSOA, então entra da
+      # máquina dela.
+      #
+      # De onde o compose lê: a variável exportada no shell, ou um arquivo
+      # `.env` ao lado deste compose.yml -- que o compose lê sozinho, que já
+      # está no `.gitignore` e no `.dockerignore`, e que é o lugar certo para um
+      # segredo que não deve virar histórico de shell:
+      #
+      #   WARDEN_YT_CLIENT_ID=...apps.googleusercontent.com
+      #   WARDEN_YT_CLIENT_SECRET=...
+      #
+      # AUSENTE É O ESTADO NORMAL, e degrada declaradamente: `:-` faz as duas
+      # chegarem vazias em vez de faltarem, `warden_youtube` vê o par vazio e
+      # só `warden youtube` recusa, nomeando as duas variáveis. O boot, o corte,
+      # a legenda e a entrega não mudam. Ver docs/INSTALL.md.
+      WARDEN_YT_CLIENT_ID: ${WARDEN_YT_CLIENT_ID:-}
+      WARDEN_YT_CLIENT_SECRET: ${WARDEN_YT_CLIENT_SECRET:-}
+
+      # A chave do intermediário de publicação, também de quem instala.
+      #
+      # `warden post youtube` fala com um serviço intermediário (Upload-Post)
+      # cujo app JÁ passou pela auditoria do YouTube. É por isso que ele
+      # publica de verdade: medido em 15/09/2026, com um envio real, a API do
+      # YouTube devolveu `privacyStatus: public` e a página abre deslogada.
+      # Isso é outra coisa de `warden youtube publish`, que usa o projeto de
+      # API deste repositório, não auditado, e cujo envio fica TRANCADO como
+      # privado.
+      #
+      # A chave é de UMA PESSOA -- é a conta dela no intermediário, com o
+      # limite e a fatura dela. Mesma regra do `plow-credentials` e do cliente
+      # do Google: entra da máquina, nunca da imagem.
+      #
+      # SEM ELA O COMANDO FICA DESLIGADO, e esse é o estado padrão de quem
+      # instala: o agente entrega o arquivo na conversa e a pessoa sobe pelo
+      # app. Nada mais muda.
+      WARDEN_POST_API_KEY: ${WARDEN_POST_API_KEY:-}
+      WARDEN_POST_PROVIDER: ${WARDEN_POST_PROVIDER:-upload-post}
+      WARDEN_POST_PROFILE: ${WARDEN_POST_PROFILE:-}
+
+      # Onde o arquivo de cookies do YouTube está, quando existe.
+      #
+      # Só o CAMINHO passa por aqui. O arquivo mora num volume, montado pelo
+      # `volumes:` abaixo, e nunca na imagem: ele é uma sessão logada de uma
+      # pessoa, e uma sessão dentro de uma imagem publicada é uma sessão
+      # publicada. Ver "Putting the cookies file in" em docs/INSTALL.md.
+      WARDEN_YT_COOKIES: ${WARDEN_YT_COOKIES:-}
     depends_on:
       - pot
     volumes:

@@ -71,13 +71,25 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
-          # O cliente OAuth do Google entra AQUI, do segredo do repositório,
-          # e não do código-fonte -- ver o comentário no Dockerfile. Se os
-          # segredos não estiverem definidos, o build passa e a imagem sai sem
-          # publicação no YouTube, que é degradação declarada e não quebra.
-          build-args: |
-            WARDEN_YT_CLIENT_ID=${{ secrets.WARDEN_YT_CLIENT_ID }}
-            WARDEN_YT_CLIENT_SECRET=${{ secrets.WARDEN_YT_CLIENT_SECRET }}
+          # NENHUMA CREDENCIAL ENTRA AQUI, e isto é uma regra, não uma omissão.
+          #
+          # Até 15/09/2026 este passo passava `WARDEN_YT_CLIENT_ID` e
+          # `WARDEN_YT_CLIENT_SECRET` como build-args, e o Dockerfile os
+          # transformava em `ENV`. `ENV` de imagem pública é texto legível por
+          # qualquer pessoa: `docker pull` e `docker image inspect`, ou o blob de
+          # configuração direto do registro, sem sequer baixar as camadas.
+          # Medido no manifesto publicado de `:latest`: as duas variáveis
+          # estavam lá, com valor.
+          #
+          # A política III.D.1 dos Serviços de API do YouTube proíbe, com essas
+          # palavras, "embed your API Credentials in open source projects".
+          # Build-arg não é esconderijo: o destino era uma imagem pública.
+          #
+          # O cliente OAuth agora vem do ambiente de QUEM INSTALA, pelo
+          # `environment:` do compose.yml -- o mesmo caminho do
+          # `plow-credentials`, que também nunca esteve na imagem. Sem ele o
+          # agente sobe igual e só o comando do YouTube fica desligado, dito em
+          # voz alta por `warden status`.
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # Cache no próprio registro, não no serviço de cache do Actions: a cota

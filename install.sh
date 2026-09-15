@@ -165,6 +165,22 @@ done
 [ "$FALTA" -eq 0 ] || pare "o agente subiu sem algo de que precisa para cortar.
 Isso é um defeito da imagem, não da sua máquina: abra uma issue com a saída acima."
 
+# O par OAuth do Google não vem na imagem, e não pode vir: a imagem é pública e
+# um `ENV` nela é lido por qualquer um com um pull anônimo -- foi o que
+# aconteceu com o par antigo deste projeto, em 15/09/2026. Então ele entra da
+# máquina de quem instala, por `.env`, e a ausência dele é o estado NORMAL.
+#
+# Um aviso, nunca um erro: sem o par o agente corta, legenda e entrega igual.
+# Só `warden youtube connect` fica desligado, e quem nunca quis publicar pela
+# API do YouTube não perde nada.
+if [ ! -f "$RAIZ/.env" ]; then
+    printf '\n  \033[33mnota:\033[0m sem `.env`, o `warden youtube connect` fica desligado.\n'
+    printf '  Cortar, legendar e entregar na conversa funcionam igual -- isto é opcional.\n'
+    printf '  Para ligar, crie %s/.env com o seu cliente OAuth do Google\n' "$RAIZ"
+    printf '  (WARDEN_YT_CLIENT_ID e WARDEN_YT_CLIENT_SECRET) e rode `docker compose up -d`.\n'
+    printf '  O passo a passo está em docs/INSTALL.md, "Handing a clip to YouTube or TikTok".\n'
+fi
+
 diga "pronto"
 cat <<'FIM'
   Mande uma mensagem para a linha do agente com um link de campanha, um link de

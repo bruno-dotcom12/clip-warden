@@ -1,0 +1,175 @@
+#!/opt/hermes/.venv/bin/python3
+"""Turn on the deterministic tool-result prune, once, at boot.
+
+WHY THIS EXISTS
+---------------
+This agent's window is a million tokens and the compressor's `threshold` is a
+RATIO of it (0.50 by default), so compaction only fires at ~500k. Measured on
+this install on 15/09/2026: a session with 542 messages and `sum(compacted) = 0`
+-- compaction had never run, not once, while every bulky tool result in that
+history was re-sent and re-billed on every single turn.
+
+`compression.proactive_prune_tokens` is the key for exactly that case. It is a
+DETERMINISTIC prune of OLD tool-result payloads: it dedupes identical results,
+summarizes oversized ones and truncates large tool-call arguments, protecting
+the recent tail. It never calls a model, so it costs nothing and cannot
+hallucinate a summary. 48000 is the value the runtime's own annotated config
+suggests to enable it ("Try 48000 to enable").
+
+WHAT THIS DELIBERATELY DOES NOT TOUCH
+-------------------------------------
+* `model.context_length` -- the owner said no, and shrinking the window would
+  change what the agent can hold rather than what it re-sends.
+* `compression.micro_compact` -- it breaks the cached prefix on EVERY turn.
+  This install has 66.6M tokens of cache-read across 266 calls to protect, and
+  `proactive_prune_min_reclaim_tokens` exists precisely so the prune's cache
+  breaks stay episodic instead of per-turn.
+
+There is no session reset to enable here and this service does not pretend
+otherwise: the runtime's own docs say gateway conversations do not reset on
+inactivity or at a day boundary, and that legacy `session_reset` settings and
+reset timers are ignored. The base image writes a `reset_by_type` idle rule into
+gateway.json that upstream ignores. Nothing below tries to fix that.
+
+HOW IT BEHAVES
+--------------
+* As the AGENT (uid 10000), never as root. The `up` file drops privileges
+  before this runs. A root process writing inside $HERMES_HOME is how this
+  install's usage reporting died on 15/09.
+* IDEMPOTENT, and it yields to the owner: a `proactive_prune_tokens` already on
+  record is left exactly as it is, whatever its value -- including 0, which is
+  how somebody turns this off for good.
+* TEXT-APPEND, not a YAML round-trip. The file is parsed to DECIDE and edited as
+  lines to ACT, because `yaml.safe_dump` would throw away the annotated comment
+  block the seed ships at the bottom of that file.
+* NEVER FATAL. Anything unexpected is reported on stderr and exits 0. A oneshot
+  that fails is a boot that fails, and a context tuning knob is not worth the
+  agent not starting.
+"""
+import os
+import sys
+
+import yaml
+
+CONFIG = os.environ.get("HERMES_CONFIG", "/var/lib/hermes/config.yaml")
+
+# 48000 is the runtime's own suggested "on" value. 4096 is the runtime's own
+# default for the reclaim gate; it is written explicitly anyway, so that the
+# cache-break hysteresis is visible in the file rather than implied by a default
+# that a future version could move.
+QUERO = {
+    "proactive_prune_tokens": 48000,
+    "proactive_prune_min_reclaim_tokens": 4096,
+}
+
+# The one key whose presence means "the owner has an opinion here". If it is on
+# record, this service does nothing at all -- it does not top up the other key
+# either, because a half-applied pair is a state nobody chose.
+CHAVE_DECISIVA = "proactive_prune_tokens"
+
+
+def diz(msg):
+    print("warden-context: " + msg, file=sys.stderr)
+
+
+def bloco_novo():
+    linhas = ["", "compression:"]
+    linhas += ["  %s: %d" % (k, v) for k, v in QUERO.items()]
+    return "\n".join(linhas) + "\n"
+
+
+def insere_em_bloco_existente(texto):
+    """Put the missing keys directly under an existing top-level `compression:`.
+
+    Line surgery rather than a dump, and it is safe because the anchor is a
+    top-level key: a line that is exactly `compression:` at column zero. The new
+    lines go immediately after it, at two spaces, which is the indentation the
+    seed file already uses throughout.
+    """
+    linhas = texto.splitlines()
+    for i, linha in enumerate(linhas):
+        if linha.rstrip() == "compression:" and not linha.startswith((" ", "\t")):
+            novas = ["  %s: %d" % (k, v) for k, v in QUERO.items()]
+            return "\n".join(linhas[:i + 1] + novas + linhas[i + 1:]) + "\n"
+    return None
+
+
+def main():
+    if not os.path.isfile(CONFIG):
+        diz("%s is not there yet -- nothing to tune, and that is not an error."
+            % CONFIG)
+        return
+
+    with open(CONFIG) as fh:
+        texto = fh.read()
+
+    try:
+        config = yaml.safe_load(texto) or {}
+    except Exception as erro:
+        diz("could not read %s as YAML (%s) -- leaving it exactly as it is."
+            % (CONFIG, type(erro).__name__))
+        return
+
+    atual = config.get("compression")
+    if isinstance(atual, dict) and CHAVE_DECISIVA in atual:
+        diz("%s is already on record as %r -- leaving it alone."
+            % (CHAVE_DECISIVA, atual[CHAVE_DECISIVA]))
+        return
+
+    if atual is None:
+        novo = texto
+        if novo and not novo.endswith("\n"):
+            novo += "\n"
+        novo += bloco_novo()
+    elif isinstance(atual, dict):
+        novo = insere_em_bloco_existente(texto)
+        if novo is None:
+            diz("there is a `compression` section but no plain `compression:` "
+                "line to write under -- not guessing. Set "
+                "%s: %d there by hand."
+                % (CHAVE_DECISIVA, QUERO[CHAVE_DECISIVA]))
+            return
+    else:
+        diz("`compression` is a %s, not a section -- somebody meant something "
+            "by that. Not touching it." % type(atual).__name__)
+        return
+
+    # Read back before committing. A config the runtime cannot parse is an agent
+    # that does not start, so the new text has to survive a parse HERE, in a
+    # string, before it reaches the file.
+    try:
+        conferido = yaml.safe_load(novo) or {}
+        assert conferido["compression"][CHAVE_DECISIVA] == QUERO[CHAVE_DECISIVA]
+    except Exception as erro:
+        diz("the edit did not read back clean (%s) -- discarded, %s untouched."
+            % (type(erro).__name__, CONFIG))
+        return
+
+    # Written beside the file and renamed: a boot interrupted halfway through
+    # must not leave a half-written config.yaml, which is the one file the agent
+    # cannot start without.
+    temp = CONFIG + ".warden-context.tmp"
+    try:
+        with open(temp, "w") as fh:
+            fh.write(novo)
+        os.replace(temp, CONFIG)
+    except OSError as erro:
+        diz("could not write %s (%s) -- nothing changed." % (CONFIG, erro))
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        return
+
+    diz("tool-result prune on: %s = %d, %s = %d."
+        % (CHAVE_DECISIVA, QUERO[CHAVE_DECISIVA],
+           "proactive_prune_min_reclaim_tokens",
+           QUERO["proactive_prune_min_reclaim_tokens"]))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as erro:  # noqa: BLE001 -- a boot is not worth a traceback
+        diz("stood down on %s: %s" % (type(erro).__name__, erro))
+    sys.exit(0)

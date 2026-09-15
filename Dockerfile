@@ -204,24 +204,39 @@ RUN set -eu; \
 COPY --chmod=0755 image/bin/warden /usr/local/bin/warden
 RUN ln -sf /usr/local/bin/warden /usr/bin/warden
 
-# O cliente OAuth do Google, da imagem e não do código-fonte.
+# O CLIENTE OAUTH DO GOOGLE NÃO ENTRA NESTA IMAGEM. Nem por ARG, nem por ENV,
+# nem por COPY. Isto é a correção de um defeito, não uma preferência.
 #
-# Medido em 15/09/2026: com o par no repositório, a proteção de segredos do
-# GitHub recusa o push -- e ela está certa. "O Google diz que o secret deste
-# tipo de cliente não é confidencial" é um argumento sobre risco, não sobre
-# higiene, e um par commitado é um push bloqueado toda vez, para sempre.
+# O que estava aqui até 15/09/2026:
 #
-# Aqui ele é um argumento de build alimentado pelo segredo do CI, então a
-# imagem publicada traz e o repositório não. Quem constrói do código-fonte sem
-# passar os seus recebe um build que FUNCIONA -- só não publica no YouTube, e
-# `warden status` diz exatamente isso em vez de falhar no meio de um envio.
+#   ARG WARDEN_YT_CLIENT_ID=""
+#   ENV WARDEN_YT_CLIENT_ID=${WARDEN_YT_CLIENT_ID}
+#   (e o mesmo par para o SECRET)
 #
-# Tão tarde quanto possível no arquivo: mudar a credencial não deve invalidar a
-# camada dos pacotes nem a do modelo.
-ARG WARDEN_YT_CLIENT_ID=""
-ARG WARDEN_YT_CLIENT_SECRET=""
-ENV WARDEN_YT_CLIENT_ID=${WARDEN_YT_CLIENT_ID}
-ENV WARDEN_YT_CLIENT_SECRET=${WARDEN_YT_CLIENT_SECRET}
+# alimentado pelos segredos do repositório no `publish.yml`. O raciocínio era
+# "o par não está no código-fonte, então não está exposto". Está: um `ARG` que
+# vira `ENV` é gravado na configuração da imagem, e a imagem é PÚBLICA no ghcr.
+# Ler não exige nem baixar as camadas -- o blob de configuração vem por HTTP
+# com um token anônimo de pull. MEDIDO no manifesto publicado de `:latest` em
+# 15/09/2026: `WARDEN_YT_CLIENT_ID` e `WARDEN_YT_CLIENT_SECRET` estavam no
+# `Env`, com valor.
+#
+# A política III.D.1 dos Serviços de API do YouTube proíbe literalmente
+# "embed your API Credentials in open source projects". Um repositório público
+# MIT que publica uma imagem pública é exatamente isso, e o argumento de que o
+# Google não trata o secret de cliente "TV e entrada limitada" como
+# confidencial responde a outra pergunta: ele fala do RISCO daquele par, não da
+# regra do programa, e a auditoria da API é lida contra a regra.
+#
+# COMO A CREDENCIAL CHEGA AGORA: pelo ambiente de quem instala, no
+# `environment:` do compose.yml, que a lê do shell ou do `.env` ao lado dele --
+# o mesmo caminho do `plow-credentials`, que também nunca esteve na imagem, e
+# pelo mesmo motivo: é de uma pessoa, não da imagem.
+#
+# AUSENTE, DEGRADA E DIZ: `warden_youtube.py` lê as duas do ambiente e
+# `_cliente_configurado()` devolve falso quando faltam. O boot não muda, nenhum
+# outro comando muda, e só `warden youtube` recusa, nomeando o que falta. Ver
+# docs/INSTALL.md, "Handing a clip to YouTube or TikTok".
 
 COPY image/s6-overlay/ /etc/s6-overlay/
 

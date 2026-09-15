@@ -234,14 +234,20 @@ and `./install.sh --remover` does not know about it, so delete it yourself.
 
 ### The knobs
 
-`WARDEN_POT_URL` is the only one `compose.yml` already passes through. The
-others have to be added to the `environment:` block there to reach the
-container — it does not inherit your shell, the same as `WARDEN_DIRECTORIES`.
+`compose.yml` already passes these through from your shell or your `.env`, all
+empty by default: `WARDEN_POT_URL`, `WARDEN_YT_COOKIES`, the pair
+`WARDEN_YT_CLIENT_ID` / `WARDEN_YT_CLIENT_SECRET`, and the trio
+`WARDEN_POST_API_KEY` / `WARDEN_POST_PROVIDER` / `WARDEN_POST_PROFILE` — see
+"Handing a clip to YouTube or TikTok" for what the credentials are, and why
+none of them lives in the image. The others below have to be added to the
+`environment:` block there to reach the container — it does not inherit your
+shell, the same as `WARDEN_DIRECTORIES`.
 
 | | |
 | --- | --- |
 | `WARDEN_POT_URL` | where the token provider answers, `http://pot:4416` |
-| `WARDEN_COOKIES` | the cookies path, `/var/lib/hermes/warden/cookies.txt` |
+| `WARDEN_YT_COOKIES` | the cookies path, when it is not the default below. It says which service the cookies are for; a YouTube `cookies.txt` is a whole signed-in session, so it is a file in a volume and never anything the image carries |
+| `WARDEN_COOKIES` | the older name for the same thing; `WARDEN_YT_COOKIES` wins when both are set |
 | `WARDEN_SLEEP_REQUESTS` | seconds between requests, `1.5` |
 | `WARDEN_SLEEP_INTERVAL` | the minimum wait before a download, `1` |
 | `WARDEN_SLEEP_MAX` | the ceiling on that wait, `5` |
@@ -358,7 +364,222 @@ reaches three more hosts, all pinned by digest or sha256 in the repository:
   `compose.yml` and set it — the container does not inherit your shell, so
   exporting it on the host alone does nothing.
 
-There is no login to any social platform in this agent, and no posting.
+Three more hosts exist, and they are reached **only** when you have supplied a
+credential for them yourself and you run the command that uses it:
+
+- **`api.upload-post.com`**, for `warden post youtube`.
+- **`oauth2.googleapis.com` and `googleapis.com`**, for `warden youtube`.
+- **`open.tiktokapis.com`**, for `warden tiktok`.
+
+None of those credentials is in the image, so on a fresh install none of those
+hosts is ever contacted. The next section is what they are and what they do
+not do.
+
+## Handing a clip to YouTube or TikTok
+
+The ordinary delivery is the chat: the agent sends you the MP4 and you post it
+from the app you already post from. That is the default, it needs nothing
+configured, and everything below is optional on top of it.
+
+### The rule that governs this whole section
+
+**What goes into the image is public, because this agent is published.** Every
+credential below therefore comes from your own machine, at run time, through
+the `environment:` block in `compose.yml` — never from the image.
+
+That is not a precaution copied out of a policy document. Until 15/09/2026 this
+project's own Google OAuth secret was baked into the published image as an
+`ENV`, and an **anonymous** pull from ghcr handed it over to anyone who asked.
+It has leaked once already, which is why it now works the way `plow-credentials`
+always has.
+
+A missing credential switches off its own command and nothing else. The boot,
+the cut, the caption and the delivery do not change.
+
+### `warden post youtube` — the one that actually publishes
+
+This is the command that puts a **public** video on your channel. It does not
+use this project's API credentials at all: it hands the file to a publishing
+intermediary (Upload-Post) whose own app has already passed YouTube's audit, so
+the upload arrives with the standing of an audited app instead of an unaudited
+one.
+
+**Measured on 15/09/2026, with a real send:** the YouTube Data API reported
+`privacyStatus: public` for the resulting video and the watch page opens in a
+signed-out browser. That is the whole difference from the command in the next
+section.
+
+What you supply, in `.env` beside `compose.yml`:
+
+```
+WARDEN_POST_API_KEY=...
+WARDEN_POST_PROFILE=...      # optional: which connected profile to post as
+WARDEN_POST_PROVIDER=upload-post   # the default; you rarely set this
+```
+
+The key is an account **you** hold with that intermediary — your quota, your
+bill, your connected channel. It is not something the image can carry on your
+behalf, for the reason in the rule above.
+
+**Without `WARDEN_POST_API_KEY` the command is simply off**, and that is the
+normal state of a fresh install. The agent hands you the file and you post it.
+
+### `warden youtube` — it uploads, and the upload is locked private
+
+`warden youtube connect` prints a code you type into Google's own screen, on a
+browser already signed into the channel. Your Google password never reaches
+this agent. `warden youtube publish <clip>` then uploads to that channel.
+
+**Read this before you rely on it.** YouTube restricts every upload made
+through `videos.insert` by an API project it has not audited to private
+viewing. This project has not been audited. That state has three properties
+people get wrong:
+
+- The video is **locked** as private. YouTube's help page
+  (`support.google.com/youtube/answer/7300965`) says the restriction is not
+  appealable.
+- **You cannot flip it public yourself afterwards** — not in YouTube Studio,
+  not in the app. Anything that tells you it is one tap in Studio is wrong,
+  including, today, the wording the agent itself prints after an upload.
+- The way to actually publish that clip is to **upload the same file again**
+  from the YouTube app or from youtube.com, by hand.
+
+So today this command is useful for getting a file onto the right channel and
+for checking that the chain works end to end — **not for publishing**. If what
+you want is a public video, the command is `warden post youtube`, one section
+up. The request that would change this one is written out in
+`docs/AUDITORIA-YOUTUBE.md`; Google publishes no timeline for it and this
+repository will not invent one.
+
+**Supplying the credential.** The image does not carry a Google OAuth client
+and will not: a published image is public, and the YouTube API Services policy
+(III.D.1) forbids embedding API credentials in open-source projects. It is
+your client, from your own Google Cloud project, the same way `plow-credentials`
+is your Plow token.
+
+1. Go to `https://console.cloud.google.com/`, create a project, and turn on
+   **YouTube Data API v3** (under APIs & Services → Library).
+2. In the same place, under **APIs & Services → Credentials**, click **Create
+   credentials → OAuth client ID** and pick the type **TVs and Limited Input
+   devices**. Google then shows you two strings: a **Client ID**, which ends in
+   `.apps.googleusercontent.com`, and a **Client secret**. Copy both now — the
+   secret is shown once.
+3. Write them into a file called **`.env`**, in this folder, next to
+   `compose.yml`. From a terminal in this folder, with your own two values
+   pasted in place of the dots:
+
+   ```sh
+   printf 'WARDEN_YT_CLIENT_ID=...\nWARDEN_YT_CLIENT_SECRET=...\n' > .env
+   chmod 600 .env
+   ```
+
+   `chmod 600` means only your user account can read the file. **That file never
+   goes into the repository and never goes into the image** — it is already
+   listed in `.gitignore` and `.dockerignore`, and `compose.yml` reads it at the
+   moment the container starts. Exporting the two in your shell works too. What
+   does **not** work is putting them anywhere else: the container does not
+   inherit your shell.
+4. `docker compose up -d` to recreate the container with them, then
+   `docker compose exec -u 10000:10000 agent warden youtube connect`.
+
+**Without them, nothing breaks.** The container boots the same, every cut,
+caption and delivery works the same, and only `warden youtube connect` refuses —
+naming both variables, rather than failing halfway through an upload.
+
+**If you ever replace the OAuth client, reconnect.** The agent stores the
+approval it got from Google in `/var/lib/hermes/warden/youtube.json`, and that
+approval belongs to the client that issued it. Create a new client — or delete
+the old one — and the stored approval stops working: the next
+`warden youtube publish` fails while renewing, and today it fails with Google's
+own wording about a revoked grant, which is **not** what happened. Run
+`warden youtube connect` again after any client change and the problem goes
+away.
+
+**Why this is not shipped for you.** Until 15/09/2026 this project baked its own
+Google client into the published image. An **anonymous** pull from ghcr — no
+account, no login — handed the secret to anyone who looked. That client has since
+been replaced, and the rule that replaced it is the one at the top of this
+section: what goes into the image is public.
+
+### `warden tiktok` — it fills your inbox, it does not post
+
+`warden tiktok <clip>` sends the file to the **inbox** of one TikTok account,
+where it sits as a draft. You open TikTok, find it under notifications, write
+the caption and post it. The agent does not choose the caption on the platform,
+does not schedule, and cannot publish.
+
+It needs an access token for **that account**, written to
+`/var/lib/hermes/warden/tiktok.json` inside the container. The image carries no
+token and never will — it belongs to a person, not to an image anyone can pull.
+The API also does not accept a caption on this endpoint, so the caption
+`warden package` prints is something you paste in the app.
+
+## Keeping a long conversation cheap
+
+A conversation with this agent never resets on its own, and a long one carries
+every big command output it has ever produced back to the model on every single
+message — which is slow and is billed every time. At boot the container turns on
+a setting that quietly throws away the **old, bulky command outputs** once the
+conversation gets large, keeping the recent ones. Nothing you said is touched,
+and no summary is written by a model, so there is nothing to get wrong.
+
+To turn it off, open `compose.yml`'s volume — the setting lives in the agent's
+own `config.yaml`, at `compression: proactive_prune_tokens`. Set it to `0` and
+it stays `0`: the container only writes that setting when it is not already
+there, so a value you chose is never overwritten.
+
+## "MCP server 'plow' failed initial connection"
+
+If `docker compose logs agent` repeats this every five minutes:
+
+```
+WARNING tools.mcp_tool: MCP server 'plow' failed initial connection after 3
+attempts, parking until a reconnect is requested
+```
+
+nothing in this repository is broken, and nothing here can fix it. This is what
+it is, measured rather than guessed:
+
+- That MCP server is **Plow Latch** — a separate Mac app that lets an agent act
+  on its owner's Mac. It is not part of Clip Warden and Clip Warden does not
+  use it for anything.
+- It is configured **by the base image, not by this repository**. `plow-init`
+  asks Plow who this credential belongs to; if that answer carries a relay URL
+  — which it does when the Plow **account** has a Mac registered — it exports
+  `PLOW_MCP_URL` and turns the `plow` MCP server on in the agent's
+  `config.yaml`. That key is rewritten from the same answer on **every boot**,
+  so editing `config.yaml` by hand does not stick.
+- The 503s mean the account has a Mac **registered** but the Latch app is not
+  **connected**. A registered-and-offline Mac is the worst of the two states:
+  the base image's chat plugin injects a paragraph into the agent's system
+  prompt telling it that "your owner's Mac is connected through Latch", with a
+  signed-in browser and accounts, while the relay answers 503 and zero `plow_`
+  tools exist. The agent is told it has hands it does not have, and it will
+  occasionally answer as if it did.
+
+**The fix is on the Plow account, not here.** Unregister the Mac from the Plow
+account (or, if you want Latch, install it and keep it open). Once Plow stops
+returning a relay URL, `PLOW_MCP_URL` is not exported, the `plow` MCP server is
+switched off on the next boot, the 503s stop, and the paragraph disappears from
+the system prompt. Clip Warden loses nothing: it has never used a `plow_` tool,
+and the chat line you talk to it on is a different mechanism entirely — the
+`plow-chat-platform` plugin — which has been working this whole time with that
+MCP server at zero tools.
+
+**Two things that look like fixes and are not:**
+
+- Setting `enabled: false` under `mcp_servers.plow` in the agent's
+  `config.yaml` does not last. `plow-init` rewrites that exact key from Plow's
+  answer on every boot.
+- Even if it did last, it would not remove the paragraph. The paragraph is
+  gated on `PLOW_MCP_URL` being exported, not on whether the MCP server is
+  switched on.
+
+Do not expect Latch to post clips for you either way. Its browser tool has no
+file-upload action (`fill` takes text and select fields only), and persistent
+sign-in was closed as "not planned" upstream. Uploading to YouTube Studio or
+TikTok through it is not supported, this project does not attempt it, and the
+command that does publish — `warden post youtube` — has nothing to do with it.
 
 ## Usage reporting
 

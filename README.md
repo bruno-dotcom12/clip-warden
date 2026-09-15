@@ -13,9 +13,42 @@ already sit inside the rules, and sends the files back in the chat with the
 caption to paste. The video is the last thing it downloads, and it downloads
 only the seconds it is going to use.
 
-You post. It does not post for you, and that is on purpose: the platform's
-posting API locks an unaudited app's uploads to private, so a clip it published
-would be a clip nobody sees.
+The clips come back **in the chat**, as files. That is the delivery, and for
+most people it is the whole flow: you post them yourself, from the app you
+already post from.
+
+Three delivery commands exist beyond that. **Every one of them is off until you
+supply a credential yourself**, and they are not interchangeable — one of them
+publishes, two of them do not:
+
+- **`warden post youtube`** — **this is the one that actually publishes.** It
+  goes through a publishing intermediary whose app has already been audited by
+  YouTube, so the video comes out **public** on your channel. Measured on
+  15/09/2026 with a real send: the YouTube API reported `privacyStatus: public`
+  and the page opens signed out. It needs `WARDEN_POST_API_KEY`, which is an
+  account **you** hold with that intermediary — your quota, your bill. Without
+  the key the command is off.
+- **`warden youtube connect` / `warden youtube publish`** — the direct YouTube
+  Data API path, using this project's own API project, which Google has **not**
+  audited. An upload from an unaudited project is **locked as private**, and
+  locked is the word: YouTube's own help page says the restriction cannot be
+  appealed and the owner cannot make the video public afterwards. Useful for
+  getting a file onto the right channel; **not** a way to publish. To publish
+  that clip, upload the same file again from the YouTube app or youtube.com.
+  `docs/AUDITORIA-YOUTUBE.md` is the audit request that would change this;
+  nobody here can promise it will be granted, and Google publishes no timeline.
+- **`warden tiktok`** puts the file in the **inbox** of your own TikTok account,
+  where it waits as a draft you open, caption and post in the app. It needs an
+  access token for that account. The image carries none, and never will: that
+  token belongs to a person, not to a published image.
+
+**Why none of these ship with a credential in them:** what goes into the image
+is public, because this agent is published. That is not a precaution written
+after reading a policy — until 15/09/2026 this project's Google OAuth secret
+was baked into the published image, and an **anonymous** pull from ghcr handed
+it over. It has leaked once already. Credentials, cookies and API keys now come
+from the machine of whoever installs, at run time, and a missing one switches
+off its own feature and nothing else.
 
 ## The promise, and its edge
 
@@ -36,7 +69,12 @@ hides its blind spots is how somebody learns a rule from a rejection notice.
 - Take footage from anywhere but the links the brief publishes, and those have
   to be http or https: a brief is a stranger's text, and anything else in it is
   an instruction rather than a link.
-- Post, schedule, or touch your social accounts. There is no login in this agent.
+- Post anything on its own. The three delivery commands above run only when you
+  run them, only with a credential you supplied, and on a fresh install none of
+  them is switched on. Nothing here schedules a post, nothing here posts to an
+  account you did not connect, and nothing here logs in with a password — the
+  direct YouTube path is a code you approve on Google's own screen, and the
+  other two are keys you paste in.
 
 ## Where it connects
 
@@ -64,7 +102,20 @@ reaches out, and why:
   `clipradar.co`, `realoficial.com.br` — only when you ask it to go find a
   campaign, and only through `warden discover`.
 
-It does not reach anywhere else. There is no social login, and it never posts.
+It reaches nowhere else **on its own**. Two more hosts become reachable only
+after you have supplied a credential for them yourself, and only while a
+delivery command is running:
+
+- **`api.upload-post.com`**, for `warden post youtube`. Off unless
+  `WARDEN_POST_API_KEY` is set.
+- **`googleapis.com` / `oauth2.googleapis.com`**, for `warden youtube`. Off
+  unless `WARDEN_YT_CLIENT_ID` and `WARDEN_YT_CLIENT_SECRET` are set.
+- **`open.tiktokapis.com`**, for `warden tiktok`. Off unless your account's
+  token file is there.
+
+All of them come from the `environment:` block of `compose.yml`, which reads
+your shell or your `.env`. **None of them is in the published image.** With no
+credential present, no command runs and no host is contacted.
 
 ## Install
 
@@ -93,8 +144,10 @@ an address that keeps asking without one gets flagged. It is there to keep that
 from happening, which is not the same as fixing it — see "I can't download
 anything from YouTube" below.
 
-Then text the agent a campaign link. Nothing else to configure: no API keys, no
-OAuth, no accounts. Its first question will be whether clips keep the original
+Then text the agent a campaign link. Nothing else to configure **to get clips**:
+no API keys, no OAuth, no accounts. The two delivery commands are the one
+exception and they are opt-in — `docs/INSTALL.md` has what you supply, and what
+you still do by hand afterwards. Its first question will be whether clips keep the original
 sound or ship silent for you to add a track in the app -- it asks once and
 stores the answer.
 
@@ -173,6 +226,9 @@ it rather than from the model's reading.
 | `warden check <clip> --campaign <id> --caption -` | the first gate: exit 1 means do not post |
 | `warden package --campaign <id> --hook "..."` | the caption the campaign requires |
 | `warden log --campaign <id> ...` | this install's own count, which the cap reads |
+| `warden post youtube <clip>` | **the one that publishes.** Through an intermediary whose app YouTube already audited, so the video comes out public — measured 15/09/2026, `privacyStatus: public`. Needs `WARDEN_POST_API_KEY`, which is your account with that intermediary |
+| `warden youtube connect\|status\|publish <clip>` | the direct API path, on this project's unaudited API project. **The upload lands locked as private**, and that lock takes no appeal: to publish, upload the file again from the YouTube app or site. Needs a client you supply |
+| `warden tiktok <clip>` | the file into your TikTok **inbox**, as a draft you finish in the app. Needs that account's token; the image has none |
 
 ## Tests
 

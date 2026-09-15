@@ -10,11 +10,17 @@ services:
   agent:
     build:
       context: .
-      # Passados do ambiente de quem constrói, para o build local ter a mesma
-      # capacidade que a imagem publicada. Sem eles, o build funciona e o
-      # YouTube fica indisponível, dito em voz alta pelo `warden status`.
-      args:
-        WARDEN_YT_CLIENT_ID: ${WARDEN_YT_CLIENT_ID:-}
-        WARDEN_YT_CLIENT_SECRET: ${WARDEN_YT_CLIENT_SECRET:-}
+      # SEM `args:`, e isso é a correção de um defeito.
+      #
+      # Até 15/09/2026 o cliente OAuth do Google entrava por build-arg aqui e no
+      # `publish.yml`, e o Dockerfile o gravava como `ENV`. Numa imagem pública
+      # isso é texto que qualquer pessoa lê com `docker image inspect`, e numa
+      # imagem local é texto que fica na imagem e vaza no dia em que ela for
+      # empurrada para algum lugar. A política III.D.1 do YouTube proíbe embutir
+      # credencial de API em projeto de código aberto.
+      #
+      # A credencial agora entra em TEMPO DE EXECUÇÃO, pelo `environment:` do
+      # compose.yml, igual para quem puxa a imagem e para quem a constrói. Este
+      # arquivo não precisa saber que ela existe.
     image: clip-warden-agent:local
     pull_policy: never

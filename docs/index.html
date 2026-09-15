@@ -50,10 +50,26 @@ connect an account, this is exactly what happens:</p>
       Clip Warden sends a finished clip to the drafts inbox of your own TikTok
       account. It does not publish. You open TikTok, review the draft, edit it if
       you want, choose who can see it, and post it yourself.</li>
-  <li><strong>Instagram.</strong> With your permission, Clip Warden can publish a
-      Reel to your own Instagram professional account, using the caption you
-      approved beforehand.</li>
+  <li><strong>YouTube.</strong> There are two different things here, and they are
+      not the same:
+    <ul>
+      <li>With a publishing key you provide, Clip Warden uploads a finished clip
+          to <em>your own</em> YouTube channel through an audited publishing
+          service, and the video is public. This is off unless you configure that
+          key yourself.</li>
+      <li>Without that key, Clip Warden does not publish to YouTube. It hands you
+          the finished file, the title and the description, and you upload it from
+          the YouTube app or site. A direct upload through the YouTube Data API by
+          an application Google has not yet audited is
+          <strong>locked as private</strong> — the channel owner cannot make it
+          public and cannot appeal — so Clip Warden does not offer that as
+          publishing.</li>
+    </ul>
+  </li>
 </ul>
+<p>Clip Warden does not publish to Instagram. An earlier version of this page said
+it could; that was wrong, and there has never been an Instagram command in the
+software.</p>
 <p>Clip Warden only ever touches accounts you connected yourself. It cannot post to
 anyone else's account, and it does not read your feed, your followers, your
 messages, or your analytics.</p>
@@ -78,7 +94,7 @@ including installation instructions.</p>
 
 <footer>
   Clip Warden is an independent open-source project by Bruno Arantes. It is not
-  affiliated with, endorsed by, or sponsored by TikTok, Instagram, Meta, YouTube,
+  affiliated with, endorsed by, or sponsored by TikTok, YouTube, Google,
   or any clipping campaign.
 </footer>
 

@@ -70,11 +70,23 @@ that makes the feature work:</p>
       own account's drafts so that you can review and post it yourself. Clip Warden
       does not request permission to publish directly, and does not request access
       to your profile data, your videos, your followers, or your analytics.</li>
-  <li><strong>Instagram</strong> — the permissions needed to publish a Reel to your own
-      professional account and to confirm which account is connected. Clip Warden
-      does not read your feed, your comments, your direct messages, or your
-      insights.</li>
+  <li><strong>YouTube</strong> — <code>youtube.upload</code>, to upload a finished
+      clip to your own channel, and <code>youtube.readonly</code>, only to confirm
+      which channel is connected and to read back the upload's own status. Clip
+      Warden does not request permission to manage, edit or delete anything else on
+      your channel, and does not read your subscribers, your comments or your
+      analytics.</li>
 </ul>
+<p>Clip Warden does not connect to Instagram. An earlier version of this page listed
+Instagram permissions; that was wrong, and no Instagram integration has ever
+existed in the software.</p>
+<p>Clip Warden's use of information received from Google APIs adheres to the
+<a href="https://developers.google.com/terms/api-services-user-data-policy">Google
+API Services User Data Policy</a>, including the Limited Use requirements. Using
+the YouTube features also means you are bound by the
+<a href="https://www.youtube.com/t/terms">YouTube Terms of Service</a>, and your
+data at Google is handled under the
+<a href="https://policies.google.com/privacy">Google Privacy Policy</a>.</p>
 <p>Data obtained from these platforms is used solely to carry out the action you
 requested. It is never sold, never shared with third parties, never used for
 advertising, and never used to train any model.</p>
@@ -85,8 +97,9 @@ platform's own settings, without needing the software:</p>
 <ul>
   <li><strong>TikTok:</strong> Profile → Settings and privacy → Security and permissions →
       Manage app permissions → remove Clip Warden.</li>
-  <li><strong>Instagram / Meta:</strong> Settings → Website permissions → Apps and websites →
-      remove Clip Warden.</li>
+  <li><strong>Google / YouTube:</strong> open
+      <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>,
+      find Clip Warden, and choose Remove access.</li>
 </ul>
 <p>Revoking access immediately invalidates the stored token.</p>
 
@@ -123,7 +136,7 @@ date, and the change is recorded in the project's public source history.</p>
 
 <footer>
   Clip Warden is an independent open-source project. It is not affiliated with,
-  endorsed by, or sponsored by TikTok, Instagram, Meta, or YouTube.
+  endorsed by, or sponsored by TikTok or YouTube.
 </footer>
 
 </body>

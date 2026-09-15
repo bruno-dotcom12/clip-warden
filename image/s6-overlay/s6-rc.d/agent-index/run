@@ -38,7 +38,53 @@ if [ -z "$AGENT_ID" ]; then
   exec sleep 86400
 fi
 
+# The uid the Dockerfile gives the agent. Numeric, and the same literal the
+# Dockerfile uses: `hermes` is a name this image assigns, and a chown by name
+# fails as an error nobody reads if a future base renames it.
+HERMES_UID=10000
+HERMES_GID=10000
+
+# Hand the reporter's own state back to the agent, every hour, before asking
+# the client anything.
+#
+# WHY THIS EXISTS: measured 15/09/2026 -- `/var/lib/hermes/.agent-index.json`
+# was owned by root since 14:15, because a `docker compose exec` that entered
+# as root ran the client and the client created its state as root. The client
+# runs as hermes (uid 10000); it exits 2, "Permission denied", and every hour
+# after that reports nothing. The damage is silent: the service keeps looping
+# and the Index simply stops hearing from this install.
+#
+# WHY `-h`, AND WHY SYMLINKS ARE SKIPPED OUTRIGHT: $HERMES_HOME is a directory
+# the agent itself controls. A chown that FOLLOWS a symlink lets hermes point
+# `.agent-index.json` at /etc/shadow and be handed ownership of the target by a
+# root process. That is privilege escalation, written by us, once an hour. So
+# this refuses to touch anything that is a symlink, and `-h` is kept as the
+# second lock: even if the test were wrong, chown would act on the link and
+# never on what it points at.
+#
+# Not fatal either way. A home where this cannot be fixed is a bad hour, and a
+# bad hour is reported below rather than crashing a longrun into a respawn loop.
+# Inside the loop, not once at boot: root can break this again at any hour of
+# an install's life -- that is exactly how it broke -- and a repair that only
+# ran at boot would need a restart to take, which is the one thing an owner
+# with a session open should not have to do.
+devolve_o_estado() {
+  for f in "$HERMES_HOME"/.agent-index*.json "$HERMES_HOME/.agent-index.lock"; do
+    # An unmatched glob stays literal in sh, so the path is tested, not assumed.
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    if [ -L "$f" ]; then
+      echo "agent-index: $f is a symlink -- not touching it. The agent's own" >&2
+      echo "home is not a place root follows links into." >&2
+      continue
+    fi
+    /bin/chown -h "$HERMES_UID:$HERMES_GID" "$f" 2>/dev/null \
+      || echo "agent-index: could not give $f back to uid $HERMES_UID" >&2
+  done
+}
+
 while :; do
+  devolve_o_estado
+
   # The pinned client owns assertion exchange, aik_ format and atomic storage.
   # The image only invokes it; no image-owned HTTP path can hand the broad Plow
   # bearer to the Index.
