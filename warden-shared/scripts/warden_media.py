@@ -165,6 +165,37 @@ def _js_runtimes():
     return ",".join(achados) or None
 
 
+def _gdown():
+    """Como invocar o gdown aqui, pela mesma razão que `_ytdlp` existe.
+
+    Medido em 15/09/2026: `have("gdown")` perguntava pelo BINÁRIO no PATH. O
+    venv da imagem instala o gdown em `/opt/hermes/.venv/bin/gdown`, que **não**
+    está no PATH que um subprocesso herda da árvore de supervisão -- então TODO
+    link do Google Drive morria dizendo "this is a Google Drive link and gdown
+    is not installed", com o gdown instalado e importável.
+
+    É a mesma armadilha que `_ytdlp` já resolvia, no arquivo que já a descrevia,
+    deixada de pé no caminho ao lado. O Drive é o acervo que mais aparece depois
+    do YouTube, e desde que o YouTube passou a recusar este endereço ele é o
+    caminho principal -- o defeito ficou invisível porque ninguém tinha chegado
+    nele.
+    """
+    try:
+        import gdown  # noqa: F401
+        return [sys.executable, "-m", "gdown"]
+    except Exception:
+        return ["gdown"]
+
+
+def _tem_gdown():
+    """Dá para usar o gdown? A pergunta é se dá para IMPORTAR, não se está no PATH."""
+    try:
+        import gdown  # noqa: F401
+        return True
+    except ImportError:
+        return have("gdown")
+
+
 def _ytdlp(*, paced=True):
     """How to invoke yt-dlp here, with the three things every call must carry.
 
@@ -1089,17 +1120,31 @@ def _pull_text_first(url, out_dir, stem, template, playlist_args):
     print(f"  ({porque}, so pulling the audio to transcribe instead of the "
           f"video: measured 15 MB against 361 MB for the same words.)",
           file=sys.stderr)
+    # `ba/w` e não `ba`, e o `/w` é o conserto de 15/09/2026.
+    #
+    # `ba` pede uma faixa SÓ de áudio, que é o que torna este caminho barato num
+    # podcast do YouTube. Mas nem toda fonte publica uma: o TikTok serve apenas
+    # formatos combinados -- medido, doze formatos, todos com vídeo e áudio
+    # juntos --, então `ba` não casava com nada e o caminho inteiro morria
+    # dizendo "neither a subtitle nor an audio track", como se a fonte não
+    # tivesse fala. E a ironia: o menor combinado do TikTok tem 1,11 MiB, ou
+    # seja, é mais barato que o "caminho caro" que esta função existe para
+    # evitar.
+    #
+    # `w` é o pior formato disponível, que é exatamente o que se quer quando o
+    # arquivo serve só para ser ouvido: o whisper não olha a imagem.
     run(_ytdlp() + [*playlist_args, "--restrict-filenames",
-         "--max-filesize", str(MAX_DIRECT_BYTES), "-f", "ba",
+         "--max-filesize", str(MAX_DIRECT_BYTES), "-f", "ba/w",
          "-o", template, "--", url], TIMEOUT_DOWNLOAD, "yt-dlp (audio)")
+    ouvivel = (".m4a", ".webm", ".opus", ".mp3", ".ogg",
+               ".mp4", ".mkv", ".mov", ".aac", ".flac")
     audios = sorted(f for f in os.listdir(out_dir)
                     if f.startswith(stem)
-                    and os.path.splitext(f)[1].lower() in
-                    (".m4a", ".webm", ".opus", ".mp3", ".ogg"))
+                    and os.path.splitext(f)[1].lower() in ouvivel)
     if not audios:
         raise RuntimeError(
-            "yt-dlp returned neither a subtitle nor an audio track for that "
-            "link, so there is no text to choose a window from.")
+            "yt-dlp returned neither a subtitle nor anything with sound for "
+            "that link, so there is no text to choose a window from.")
     return os.path.join(out_dir, audios[0])
 
 
@@ -1162,10 +1207,12 @@ def _download_one(url, out_dir, mode="video"):
                 fh.write(chunk)
         return target
     if "drive.google.com" in parsed.netloc:
-        if not have("gdown"):
-            raise RuntimeError("this is a Google Drive link and gdown is not installed")
+        if not _tem_gdown():
+            raise RuntimeError(
+                "this is a Google Drive link and gdown is neither importable by "
+                "this interpreter nor on PATH, so it cannot be pulled")
         before = set(os.listdir(out_dir))
-        run(["gdown", "--fuzzy", "-O", out_dir + os.sep, "--", url],
+        run(_gdown() + ["--fuzzy", "-O", out_dir + os.sep, "--", url],
             TIMEOUT_DOWNLOAD, "gdown")
         new = sorted(set(os.listdir(out_dir)) - before)
         if not new:
@@ -1286,13 +1333,28 @@ def duration_of(path):
 
 
 def _dimensions(path):
-    """(width, height) of the first video stream, as integers."""
+    """(width, height) of the first video stream, as integers.
+
+    Um arquivo SEM stream de vídeo é o caso comum, não o exótico: é exatamente
+    o que `archive --text-first` produz de propósito -- só áudio, para o whisper
+    ouvir. Medido em 15/09/2026, um desses chegou ao `cut` e a resposta foi
+    `ValueError: not enough values to unpack (expected 2, got 1)` embrulhado
+    numa frase sobre dimensões. Um crash vazando não diz à pessoa que ela pediu
+    para cortar o arquivo errado, nem qual é o certo.
+    """
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
          "stream=width,height", "-of", "csv=p=0", path],
         capture_output=True, text=True).stdout.strip()
-    w, h = out.split(",")[:2]
-    return int(w), int(h)
+    partes = [p for p in out.split(",")[:2] if p.strip()]
+    if len(partes) < 2:
+        raise RuntimeError(
+            f"{os.path.basename(path)} has no video stream -- it is sound only. "
+            f"This is what `archive --text-first` writes on purpose, for "
+            f"`transcribe` to listen to; it is not footage and there is nothing "
+            f"to frame. Pull the picture with `warden archive --window <a>-<b>` "
+            f"for the window you chose, and cut THAT file.")
+    return int(partes[0]), int(partes[1])
 
 
 # Tamanho aproximado de cada modelo já convertido para int8, em MB. Serve só
