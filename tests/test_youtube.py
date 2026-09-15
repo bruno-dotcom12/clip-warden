@@ -1108,3 +1108,33 @@ class StatusConta(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContaSemCanal(Base):
+    """Uma conta Google que autoriza tudo e não tem canal no YouTube.
+
+    Medido em 15/09/2026 numa conta recém-criada: os dois escopos concedidos, o
+    refresh_token gravado, e `channels?mine=true` com zero itens -- porque uma
+    conta Google não ganha canal junto. O envio falharia lá na frente com
+    `youtubeSignupRequired`, vários minutos e três passos depois.
+
+    O que este teste trava é a HONESTIDADE do status: "conectado (canal não
+    registrado)" era a mesma frase para dois estados, e um deles impede
+    publicar. Chamar de conectado uma conta que não publica é a meia-verdade
+    que faz a pessoa descobrir no meio de uma entrega.
+    """
+
+    def test_sem_canal_o_status_reprova_e_diz_o_que_fazer(self):
+        self.grava_token(canal_ausente=True)
+        ok, porque = Y.status_conta()
+        self.assertFalse(ok, "uma conta que não publica não está 'conectada'")
+        self.assertIn("não tem canal", porque)
+        self.assertIn("youtube.com", porque)
+
+    def test_consulta_que_nao_respondeu_nao_e_a_mesma_coisa(self):
+        """O outro estado: a consulta falhou, mas o canal existe. Isso é
+        cosmético e NÃO pode reprovar."""
+        self.grava_token()
+        ok, porque = Y.status_conta()
+        self.assertTrue(ok, "consulta falha não é conta sem canal")
+        self.assertNotIn("não tem canal", porque)

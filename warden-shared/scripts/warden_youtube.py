@@ -973,6 +973,22 @@ def conecta(*, progresso=None, espera=300):
         dados["canal_id"] = canal_id
         _grava_ou_explica(dados, "conexão")
         _fala(progresso, f"conectado ao canal: {nome}")
+    elif nome == "" and canal_id is None:
+        # A conta NÃO tem canal, e isso é gravado para o `status` poder dizer
+        # sem tocar a rede.
+        #
+        # Medido em 15/09/2026 numa conta recém-criada do dono: ela autorizou o
+        # app inteiro, os dois escopos foram concedidos, o refresh_token veio --
+        # e `channels?mine=true` voltou com zero itens, porque uma conta Google
+        # não ganha canal do YouTube junto. O primeiro envio falharia com
+        # `youtubeSignupRequired`, três passos e vários minutos depois.
+        #
+        # Sem esta marca, `status_conta` (que nunca toca a rede, de propósito)
+        # dizia apenas "canal não registrado" -- a mesma frase para "a consulta
+        # não respondeu", que é cosmético, e para "não há canal", que impede
+        # publicar. Uma frase para dois estados, um deles bloqueante.
+        dados["canal_ausente"] = True
+        _grava_ou_explica(dados, "conexão")
     frouxo = _modo_frouxo(TOKEN_FILE)
     if frouxo:
         avisos.append(frouxo)
@@ -1131,8 +1147,17 @@ def status_conta():
                 "depois disso a renovação acontece sem você.")
 
         quem = dados.get("canal")
+        if dados.get("canal_ausente"):
+            # `ok=False`, e não um aviso no fim de uma frase que começa com
+            # "conectado": esta conta autorizou tudo e NÃO PUBLICA. Chamar isso
+            # de conectado é o tipo de meia-verdade que faz a pessoa descobrir
+            # no meio de uma entrega.
+            return (False,
+                    "a conta autorizada não tem canal no YouTube, então nenhum "
+                    "envio vai funcionar. Abra youtube.com nessa conta, crie o "
+                    "canal, e rode a conexão de novo.")
         recado = f"conectado ao canal {quem}" if quem else \
-            f"conectado (canal não registrado em {TOKEN_FILE})"
+            f"conectado (a consulta de canal não respondeu; o envio deve funcionar)"
         if falta is None:
             recado += ", sem data de validade no arquivo (não dá para saber)"
         elif falta <= MARGEM_RENOVACAO:
