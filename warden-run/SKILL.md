@@ -111,9 +111,10 @@ lives.
 
 **How a file is handed over is written in the persona, under "Handing the file
 over", and it is written there and nowhere else.** Read it there. In one line:
-you CALL `send_message`, one call per clip, and you read the result -- writing
-the `MEDIA:` line into your reply is not delivery, and that cost a clip on
-14/09.
+the `MEDIA:` line goes in the LAST message of a turn, one clip per turn, and
+`warden delivered` reads the gateway's log to say whether the attachment really
+left. A `MEDIA:` line written mid-turn attaches nothing in silence, and that cost
+a clip on 14/09 and two more on 15/09.
 
 With every clip goes the caption from `warden-package` and the one thing they do
 on the platform, which is almost always the sound.

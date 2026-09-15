@@ -1197,8 +1197,8 @@ class BatchContract(unittest.TestCase):
     da ferramenta.
 
     O contrato mudou de propósito, e a palavra mudou junto. `cmd_cut_plan` não
-    entrega nada: quem entrega é uma chamada de `send_message`, que este
-    processo não faz. Enquanto o lote dizia "2 of 2 delivered", a ferramenta
+    entrega nada: quem entrega é a MENSAGEM FINAL de um turno, que este processo
+    não escreve. Enquanto o lote dizia "2 of 2 delivered", a ferramenta
     afirmava uma entrega que não tinha acontecido -- que é o defeito de 14/09
     dito pela outra ponta. Os testes abaixo continuam provando a quantidade
     (dois pedidos, dois arquivos; um curto sai com 1 e nomeia o que faltou) e
@@ -1211,7 +1211,7 @@ class BatchContract(unittest.TestCase):
         """Nenhum "delivered" afirmativo em lugar nenhum da saída.
 
         Negar a entrega é legítimo ("...so it is not delivered:"), afirmá-la
-        não é: este comando não chamou `send_message` nenhuma vez.
+        não é: este comando não escreveu mensagem final nenhuma.
         """
         for m in self.ENTREGUE.finditer(texto):
             comeco = texto.rfind("\n", 0, m.start()) + 1
@@ -1276,7 +1276,7 @@ class BatchContract(unittest.TestCase):
         # clipe passou, inclusive num lote curto, porque clipe pronto que
         # ninguém manda é clipe perdido. O que ela tem de continuar dizendo é
         # quantos e com que ferramenta.
-        self.assertIn("send the 2 that cleared, one send_message each",
+        self.assertIn("deliver the 2 that cleared, one per turn",
                       erro.getvalue())
         self._nunca_afirma_entrega(erro.getvalue() + saida.getvalue())
 
@@ -4290,6 +4290,20 @@ class ContagemDeEntregas(unittest.TestCase):
         self._antigo = os.environ.get("WARDEN_DIR")
         os.environ["WARDEN_DIR"] = self.dir
         self.addCleanup(self._restaura)
+        # Confirmar deixou de ser acreditar no modelo e passou a ser ler o log
+        # do gateway. Estes testes medem a CONTAGEM, não a verificação, então
+        # eles escrevem um log em que o anexo saiu -- e apontam o comando para
+        # ele, em vez de para o log real da máquina, que os tornaria
+        # dependentes do que esta máquina fez hoje.
+        self.log = os.path.join(self.dir, "gateway.log")
+        agora = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S,000")
+        with open(self.log, "w", encoding="utf-8") as fh:
+            for _ in range(8):
+                fh.write(f"{agora} INFO gateway.platforms.base: [Plow_Chat] "
+                         f"Sending video attachment (.mp4) to cht_abc\n")
+        self._log_antigo = warden.GATEWAY_LOG
+        warden.GATEWAY_LOG = self.log
+        self.addCleanup(setattr, warden, "GATEWAY_LOG", self._log_antigo)
 
     def _restaura(self):
         if self._antigo is None:
@@ -4924,3 +4938,132 @@ class AContagemDeMensagensEUmNumeroNaoUmaImpressao(unittest.TestCase):
         self.W.CONVERSAS_DB = os.path.join(self.dir, "nao-existe.db")
         with self.assertRaises(SystemExit):
             self._rodar()
+
+
+class AConfirmacaoDeEntregaEUmaLeituraNaoUmaPromessa(unittest.TestCase):
+    """Antes, `warden delivered` acreditava no modelo. Isso valia zero.
+
+    O caso que se quer pegar é exatamente aquele em que o modelo ACHA que
+    entregou e não entregou -- foi o que aconteceu três vezes seguidas em
+    15/09: `MEDIA:` escrito no meio do turno, texto entregue, arquivo não, e
+    nada em lugar nenhum acusando.
+
+    Não existe ferramenta `send_message` neste runtime, então não há resultado
+    de envio para ler. O único registro independente de que um anexo saiu é o
+    log do gateway. Então a confirmação passou a ser uma leitura dele.
+    """
+
+    def setUp(self):
+        import warden as W
+        self.W = W
+        self.dir = _temp(self, prefix="warden-conf-")
+        self.estado = os.path.join(self.dir, "estado")
+        os.makedirs(self.estado, exist_ok=True)
+        self._env = os.environ.get("WARDEN_DIR")
+        os.environ["WARDEN_DIR"] = self.estado
+        self.addCleanup(self._repoe_env)
+        self.log = os.path.join(self.dir, "gateway.log")
+        self._log_antigo = W.GATEWAY_LOG
+        W.GATEWAY_LOG = self.log
+        self.addCleanup(setattr, W, "GATEWAY_LOG", self._log_antigo)
+        self.clipe = os.path.join(self.dir, "corte-01.mp4")
+        with open(self.clipe, "wb") as fh:
+            fh.write(b"x")
+
+    def _repoe_env(self):
+        if self._env is None:
+            os.environ.pop("WARDEN_DIR", None)
+        else:
+            os.environ["WARDEN_DIR"] = self._env
+
+    def _escreve_log(self, linhas):
+        agora = datetime.now(timezone.utc)
+        with open(self.log, "w", encoding="utf-8") as fh:
+            for texto in linhas:
+                carimbo = agora.strftime("%Y-%m-%d %H:%M:%S,000")
+                fh.write(f"{carimbo} INFO gateway.platforms.base: {texto}\n")
+
+    def _confirma(self):
+        class _Args:
+            clip = self.clipe
+        err = io.StringIO()
+        antigo = sys.stderr
+        sys.stderr = err
+        try:
+            code = self.W.cmd_delivered(_Args())
+        finally:
+            sys.stderr = antigo
+        return code, err.getvalue()
+
+    def test_envio_que_falhou_nao_e_riscado_e_o_comando_manda_reenviar(self):
+        self.W.entregas_registra(self.clipe)
+        self._escreve_log([
+            "[Plow_Chat] Delivering 1 non-image MEDIA attachment(s)",
+            "[Plow_Chat] Failed to send media (.mp4): upstream refused",
+        ])
+        code, err = self._confirma()
+        self.assertEqual(code, 1, err)
+        self.assertIn("NOT confirming", err)
+        self.assertIn("Send it again", err)
+        # E continua devendo, que é o que faz o turno não terminar.
+        self.assertEqual(len(self.W.entregas_pendentes()), 1)
+
+    def test_depois_do_reenvio_bem_sucedido_o_clipe_e_riscado(self):
+        self.W.entregas_registra(self.clipe)
+        self._escreve_log(["[Plow_Chat] nothing to do with media"])
+        code, _ = self._confirma()
+        self.assertEqual(code, 1, "sem anexo no log não podia ter riscado")
+        # O reenvio acontece e agora o gateway registra o anexo saindo.
+        self._escreve_log([
+            "[Plow_Chat] Failed to send media (.mp4): upstream refused",
+        ])
+        code, err = self._confirma()
+        self.assertEqual(code, 1, err)
+        self._escreve_log([
+            "[Plow_Chat] Sending video attachment (.mp4) to cht_abc",
+        ])
+        code, err = self._confirma()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.W.entregas_pendentes(), [])
+
+    def test_sem_anexo_nenhum_no_log_recusa_e_diz_onde_a_linha_tem_que_estar(self):
+        # Este é o defeito de 15/09: `MEDIA:` no meio do turno não anexa nada.
+        self.W.entregas_registra(self.clipe)
+        self._escreve_log(["[Plow_Chat] nothing to do with media"])
+        code, err = self._confirma()
+        self.assertEqual(code, 1, err)
+        self.assertIn("no attachment", err)
+        self.assertIn("LAST message", err)
+
+    def test_anexo_anterior_ao_clipe_nao_conta_como_entrega_dele(self):
+        # Um envio que aconteceu ANTES de o clipe existir não pode confirmá-lo.
+        with open(self.log, "w", encoding="utf-8") as fh:
+            fh.write("2020-01-01 00:00:00,000 INFO gateway.platforms.base: "
+                     "[Plow_Chat] Sending video attachment (.mp4) to cht_abc\n")
+        self.W.entregas_registra(self.clipe)
+        code, err = self._confirma()
+        self.assertEqual(code, 1, err)
+        self.assertIn("no attachment", err)
+
+    def test_log_ilegivel_risca_mas_diz_em_voz_alta_que_nao_verificou(self):
+        # "Não consegui olhar" não é "está tudo certo", e também não pode
+        # travar a entrega para sempre. O meio-termo é dizer.
+        self.W.entregas_registra(self.clipe)
+        self.W.GATEWAY_LOG = os.path.join(self.dir, "nao-existe.log")
+        code, err = self._confirma()
+        self.assertEqual(code, 0, err)
+        self.assertIn("NOT verified", err)
+
+    def test_o_numero_reportado_e_o_de_envios_e_nao_o_de_arquivos(self):
+        outro = os.path.join(self.dir, "corte-02.mp4")
+        with open(outro, "wb") as fh:
+            fh.write(b"x")
+        self.W.entregas_registra(self.clipe)
+        self.W.entregas_registra(outro)
+        self._escreve_log([
+            "[Plow_Chat] Sending video attachment (.mp4) to cht_abc",
+        ])
+        code, _ = self._confirma()
+        # Dois arquivos no disco, um confirmado: ainda deve um.
+        self.assertEqual(code, 1)
+        self.assertEqual(len(self.W.entregas_pendentes()), 1)

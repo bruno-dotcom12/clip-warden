@@ -216,7 +216,7 @@ lines per cue, the longest cue, whether the scale moved, and — when `--seconds
 was passed — the duration the person asked for against the duration delivered.
 Those are the numbers the Definition of Done is checked against, and `cut`
 refuses to print `MEDIA:` when one of them fails, which is also why a clip that
-fails one of them has no path to hand to `send_message`.
+fails one of them has no path to put in a final message.
 
 ## And none of it replaces looking
 

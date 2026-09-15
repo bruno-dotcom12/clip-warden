@@ -268,3 +268,132 @@ review` e `warden style` — três que outras skills mandam usar pelo nome.
   conversa.
 - A entrega continua apontando para uma ferramenta que não existe. É a FASE 3, a
   seguir, e é o que faz a mensagem 2 e a 3 chegarem sem arquivo.
+
+---
+
+## FASE 3 — Entregar todos os arquivos, sem você cobrar
+
+**A pergunta era: a confirmação é lida e ignorada, ou não é lida? Se ela não
+existe de fato nesse caminho, não é regra, é frase.**
+
+A resposta: **ela não existe, e a regra era frase.**
+
+### O caminho realmente usado
+
+A persona e o `warden-clip` mandavam entregar cada clipe chamando uma ferramenta
+chamada `send_message`, ler o resultado, e reenviar se falhasse. Medido:
+
+- Nas três conversas o agente chamou **cinco ferramentas** — `terminal`,
+  `vision_analyze`, `search_files`, `read_file` e `patch`. **Zero chamadas de
+  `send_message`.**
+- `send_message` não existe neste runtime. Procurando no sistema inteiro, ele só
+  aparece nos nossos próprios arquivos de instrução e em bibliotecas de
+  terceiros sem relação.
+
+Então a instrução mais enfática do documento — a que tem mais evidência anexada
+— mandava chamar algo que não está lá. E "leia o resultado" não tinha resultado
+para ler. Frase, não regra.
+
+**O que entrega de verdade** é a linha `MEDIA:<caminho>` na **última mensagem do
+turno**. O gateway lê essa mensagem, extrai cada caminho e manda cada um como
+anexo. Duas linhas `MEDIA:` na mesma mensagem final entregam dois arquivos — foi
+medido duas vezes, e nas duas foi o reenvio depois de você cobrar.
+
+Uma linha `MEDIA:` em qualquer outro ponto do turno **não anexa nada, em
+silêncio**, e o texto em volta chega normalmente. É isso que torna o defeito
+caro: você lê "aqui está o primeiro corte" e nenhum arquivo aparece.
+
+### O que mudou
+
+**1. A entrega passou a ser descrita pelo caminho que existe.** Persona,
+`warden-clip`, `warden-run`, `warden-style` e as linhas que o próprio `warden
+cut` imprime: todas falavam de `send_message`. Nenhuma fala mais.
+
+**2. Um clipe por turno, e o render seguinte é o que te acorda.** Como só a
+mensagem final entrega, não dá para mandar o clipe 1 no meio do turno nem
+segurá-lo até o clipe 2 ficar pronto. O caminho medido é outro: começar o render
+do clipe 2 **em segundo plano** antes de encerrar o turno. Quando um comando de
+fundo termina, o agente é acordado com o resultado — foi exatamente assim que a
+transcrição de 15/09 o trouxe de volta quatro minutos depois.
+
+```
+1. renderiza o clipe 1, olha o mosaico
+2. dispara o render do clipe 2 em segundo plano
+3. encerra o turno com a linha MEDIA: do clipe 1   -> entregue
+4. o render terminando te acorda; olha o mosaico do clipe 2
+5. encerra esse turno com a linha MEDIA: do clipe 2 -> entregue
+```
+
+Três mensagens, dois arquivos, nenhum esperando o outro.
+
+**3. A confirmação virou uma leitura.** Antes, `warden delivered <clipe>`
+acreditava no agente: ele dizia "entreguei" e o clipe era riscado. Isso valia
+zero, porque o caso que se quer pegar é justamente aquele em que o agente ACHA
+que entregou e não entregou.
+
+Agora o comando vai ao log do gateway — o único registro independente de que um
+anexo saiu — e pergunta se algum saiu depois que aquele clipe foi liberado:
+
+| O que o log diz | O que o comando faz |
+|---|---|
+| Nenhum anexo desde que o clipe foi liberado | **Recusa riscar**, e diz que a linha `MEDIA:` tem que estar na mensagem final |
+| Uma falha de envio registrada | **Recusa riscar**, e manda reenviar com uma linha avisando |
+| Um anexo saiu | Risca, e diz quantos saíram |
+| O log não está legível | Risca, **e diz em voz alta que não verificou** |
+
+Esse último caso é deliberado: "não consegui olhar" não é "está tudo certo", mas
+travar a entrega para sempre porque o log mudou de lugar seria pior que o
+defeito. O meio-termo é dizer.
+
+### O teste que força a falha
+
+Pedido: um teste que force uma falha de envio e prove que o reenvio acontece.
+São seis, e eles falhariam sem o conserto:
+
+1. **Envio que falhou não é riscado e o comando manda reenviar** — o log recebe
+   `Failed to send media (.mp4): upstream refused`, o comando sai 1, diz "NOT
+   confirming" e "Send it again", e o clipe **continua devendo**, que é o que
+   impede o turno de terminar.
+2. **Depois do reenvio bem-sucedido o clipe é riscado** — o mesmo clipe passa
+   por três estados em sequência: sem anexo (sai 1), falha (sai 1), anexo
+   registrado (sai 0 e a dívida zera).
+3. **Sem anexo nenhum no log, recusa e diz onde a linha tem que estar** — é o
+   defeito de 15/09 exatamente: `MEDIA:` no meio do turno.
+4. **Um anexo anterior ao clipe não conta como entrega dele.**
+5. **Log ilegível risca mas diz em voz alta que não verificou.**
+6. **O número reportado é o de envios, não o de arquivos** — dois no disco, um
+   confirmado, ainda deve um.
+
+### Auditoria da FASE 3
+
+**As quatro regras pedidas, e onde cada uma está:**
+
+| Regra | Onde |
+|---|---|
+| Um envio por clipe, e o agente lê o retorno | Um TURNO por clipe; o retorno é o log, lido por `warden delivered` |
+| Se um não confirmar, reenvia sozinho e avisa em uma linha | O comando recusa riscar e imprime a frase de reenvio; teste 1 e 2 |
+| Nunca escreve "os N estão prontos" antes de os N chegarem | Guarda já existente, e ele me pegou |
+| O número reportado é o de envios confirmados | Teste 6 |
+
+**Um guarda de teste antigo me corrigiu, e eu mudei a frase em vez do guarda.**
+Existe um teste que proíbe a saída do lote de afirmar entrega que não aconteceu.
+Minha primeira redação dizia "Each one **is delivered** by ending a turn with..."
+e ele reprovou. Está certo: a frase afirma no presente uma coisa que o comando
+não fez. Ficou "reaches the person only when a turn ENDS with...".
+
+**Dois testes antigos passaram a depender do log da máquina, e isso era um
+defeito meu.** `ContagemDeEntregas` confirmava clipes e, com a mudança, passou a
+consultar o log real do container — que não tem envio recente. Eles agora
+escrevem o próprio log e apontam o comando para ele. Um teste que depende do que
+a máquina fez hoje não é um teste.
+
+**A suíte: 356 testes, todos passando.**
+
+**O que ficou aberto:**
+
+- O laço completo — render, entrega, despertar pelo render seguinte — só é
+  exercido de ponta a ponta numa conversa real. É a FASE 8.
+- O log do gateway diz que **um** anexo saiu, não **qual**. Com dois clipes
+  entregues no mesmo segundo, a contagem prova que dois saíram, mas não casa
+  arquivo com envio. Para o defeito que isso existe para pegar — nenhum anexo,
+  ou uma falha — a contagem basta.

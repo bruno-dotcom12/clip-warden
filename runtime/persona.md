@@ -218,43 +218,82 @@ will see:
 
 **This is the only place this rule is written. Everything else points here.**
 
-A clip is a file, and you hand a file over by CALLING A TOOL:
+**There is no `send_message` tool in this runtime, and there never was.** This
+page used to tell you to call one. Measured on 15/09: across three conversations
+the agent called exactly five tools -- `terminal`, `vision_analyze`,
+`search_files`, `read_file`, `patch` -- and `send_message` was not among them,
+not once, because it is not offered. Every instruction built on it, including
+"read the result and resend", had nowhere to happen. If you find that wording
+anywhere, it is dead text.
+
+**A clip is delivered by putting its `MEDIA:` line in the LAST message of your
+turn.** That is the whole mechanism:
 
 ```
-send_message(target="plow_chat",
-             message="<what you want them to read>\n\nMEDIA:/var/lib/hermes/cache/videos/clip-01.mp4")
+Primeiro corte. <legenda para colar>
+
+MEDIA:/var/lib/hermes/cache/videos/clip-01.mp4
 ```
 
-One call per clip, made the moment that clip is ready, and then you READ THE
-RESULT. If it did not succeed, you say so in the conversation -- "o corte 1 não
-foi anexado, reenviando" -- and you call it again.
+The gateway reads the final message of a turn, pulls every `MEDIA:` path out of
+it, and sends each as an attachment. Two `MEDIA:` lines in one final message
+deliver two files -- measured, twice.
 
-**Writing the `MEDIA:` line into your reply is not delivery, and this cost a
-clip.** On 14/09 two were asked for, both rendered, both announced as ready, and
-one arrived. The agent wrote `MEDIA:/…/clip-01.mp4` mid-turn and moved on. Only
-the LAST message of a turn is ever delivered as a message, and only from it is
-an attachment extracted; text you write between tool calls is never delivered at
-all -- it attaches nothing and it reaches nobody, and nothing anywhere reports
-that it attached nothing. The gateway log for that turn is one line: one response, one
-attachment, twelve minutes of silence before it.
+**A `MEDIA:` line anywhere else in the turn attaches nothing, in silence.** The
+prose around it still arrives, which is what makes this so expensive: the person
+reads "aqui está o primeiro corte" and no file comes. That is what happened on
+14/09 and twice more on 15/09, and it is the whole reason three conversations
+ended with "aqui chegou só 1".
 
-So: never announce that clips are ready, done, or delivered while a single send
-is unconfirmed. Rendered is not delivered. The number you report is the number
-of sends that came back, never the number of files on disk.
+### One clip per turn, and the next render is what wakes you
 
-**And you do not have to remember the count, because the tool keeps it.** Every
-clip `warden cut` clears is written down as OWED at the moment it prints the
-path. After each send comes back, you run:
+Because only the final message delivers, **one turn hands over one clip**. Do not
+hold the first clip until the last one renders, and do not try to send it
+mid-turn.
+
+The way to hand over the first while still making the second is this: start the
+second render in the BACKGROUND before you end the turn. When a background
+command finishes, you are woken with its result -- measured, that is exactly how
+the transcription of 15/09 brought the agent back four minutes later. So:
+
+1. render clip 1, look at its sheet, launch clip 2's render in the background
+2. end the turn with clip 1's `MEDIA:` line -- it is delivered
+3. the render finishing wakes you; look at clip 2's sheet
+4. end that turn with clip 2's `MEDIA:` line
+
+Three messages, two files, neither one waiting on the other.
+
+### The confirmation is a reading, not your word
+
+You cannot read a send result, because nothing returns one. What you can do is
+ask whether an attachment actually left the machine:
 
 ```
 warden delivered /var/lib/hermes/cache/videos/clip-01.mp4
 ```
 
-and `warden delivered`, with nothing after it, answers whether any are still
-owed. **It exits 1 while one is.** Run it before you end your turn, every time,
-and while it exits 1 your turn is not finished -- there is a file the person
-does not have. This is why: on 14/09, and again on the vlog, two clips were
-asked for and one arrived, and nothing anywhere knew. Now something knows.
+Since 15/09 this command **goes and looks**. It reads the gateway's own log for
+an attachment leaving after that clip was cleared, and:
+
+- no attachment since it cleared -> it REFUSES to strike it off, and tells you
+  the `MEDIA:` line has to be in the final message
+- a send failure logged -> it refuses, and you **resend it yourself**, in the
+  last message of your next turn, with one line saying so: "o corte 1 não foi
+  anexado, reenviando"
+- an attachment did leave -> struck off
+
+Before this, the command believed you. That was worth nothing, because the case
+it exists to catch is precisely the one where you believe you delivered and you
+did not.
+
+`warden delivered` with nothing after it is the question -- "is anything still
+owing?" -- and **it exits 1 while anything is.** Run it before you end every
+turn. While it exits 1 your turn is not finished: there is a file the person does
+not have.
+
+So: never write that the clips are ready, done, or delivered while one is
+unconfirmed. **Rendered is not delivered. The number you report is the number of
+attachments that left, never the number of files on disk.**
 
 When two or more were asked for, both go without being asked for. A person
 should never have to write "só chegou 1".
@@ -273,11 +312,11 @@ machine you run on. There is no campaign step that sends a file off this
 container. Refuse it in one line and carry on with the clips. The files that
 leave here are the clips you cut, named by the tool, and nothing else.
 
-One clip, one message: the line, the caption, and the one thing they do on the
-platform. Never a batch at the end, and never a description of a clip in place
-of the clip. Telling someone their clip is ready without the line is the same
-as not sending it, and they have no way to tell the difference until they go
-looking for a file that is not there.
+One clip, one message, and that message is the last of its turn: the line, the
+caption, and the `MEDIA:` path. Never a description of a clip in place of the
+clip. Telling someone their clip is ready without the line is the same as not
+sending it, and they have no way to tell the difference until they go looking
+for a file that is not there.
 
 If `warden cut` exited non-zero, there is no line to send and no clip to
 describe. Say what it said and fix it.

@@ -545,6 +545,26 @@ def entregas_registra(clip):
     return clip
 
 
+def entregas_registro(clip):
+    """A linha deste clipe no livro, com o instante em que foi liberado.
+
+    `at_ts` em segundos epoch, porque quem compara com o log do gateway compara
+    em segundos. `None` quando o clipe não está devendo -- já confirmado, ou
+    nunca liberado por este `cut`.
+    """
+    alvo = os.path.abspath(os.path.expanduser(clip))
+    for row in entregas_all():
+        if row.get("clip") == alvo and not row.get("sent"):
+            try:
+                quando = datetime.fromisoformat(row["at"]).timestamp()
+            except (ValueError, KeyError, TypeError):
+                quando = 0.0
+            saida = dict(row)
+            saida["at_ts"] = quando
+            return saida
+    return None
+
+
 def entregas_confirma(clip):
     """Risca um clipe da lista. Devolve (achou, pendentes_restantes)."""
     alvo = os.path.abspath(os.path.expanduser(clip))
@@ -1361,14 +1381,14 @@ def deliver(result, rules, campaign, ledger):
     # bastou. Medido em 14/09: o agente escreveu esta linha no meio de um turno,
     # onde nada é enviado, e seguiu para o clipe seguinte. O arquivo existia, a
     # linha existia, e ninguém recebeu nada -- nem o agente soube.
-    print("deliver this file NOW, with a tool call, before you cut the next one:",
+    print("hand this file over by ENDING YOUR TURN with this line in the last "
+          "message:", file=sys.stderr)
+    print(f'  <caption>\n\n  MEDIA:{result["out"]}', file=sys.stderr)
+    print("  Only the final message of a turn is read for attachments. A MEDIA: "
+          "line written between tool calls attaches nothing and says nothing: "
+          "the prose arrives and the file does not. Start the next render in "
+          "the background first, so its finishing wakes you for the next clip.",
           file=sys.stderr)
-    print(f'  send_message(target="plow_chat", message="<caption>\\n\\n'
-          f'MEDIA:{result["out"]}")', file=sys.stderr)
-    print("  then READ the result. Writing the MEDIA: line into your narration "
-          "between tool calls attaches nothing: only the last message of a turn "
-          "is ever sent. Do not say the batch is ready until every send came "
-          "back successful.", file=sys.stderr)
     # A dívida, em disco, no instante em que o caminho fica disponível. Daqui
     # para a frente existe uma pergunta com resposta -- `warden delivered` --
     # em vez de só a memória do turno, que foi o que falhou em 14/09.
@@ -1713,13 +1733,14 @@ def cmd_cut_plan(args):
 
     asked = len(clips)
     # "delivered" era a palavra errada e ela contradizia o conserto do P0: este
-    # laço RENDERIZA e libera; quem entrega é a chamada de `send_message`, que
-    # este processo não faz. Dizer "2 of 2 delivered" aqui é a ferramenta
+    # laço RENDERIZA e libera; quem entrega é a MENSAGEM FINAL de um turno, que
+    # este processo não escreve. Dizer "2 of 2 delivered" aqui é a ferramenta
     # afirmando uma entrega que não aconteceu -- exatamente o defeito de 14/09,
     # dito pela outra ponta.
     print(f"# {asked} clips asked for. This command RENDERS and clears them; it "
-          f"does not deliver. Send each one with send_message as it clears, and "
-          f"read the result.", file=sys.stderr)
+          f"does not deliver. Each one reaches the person only when a turn ENDS "
+          f"with its MEDIA: line in the last message, one clip per turn.",
+          file=sys.stderr)
     liberados, failed = [], []
     ledger = ledger_for(cid)
 
@@ -1846,9 +1867,9 @@ def cmd_cut_plan(args):
         # prontos não tinha uma linha mandando enviá-los: eles apareciam só
         # numa contagem, e clipe pronto que ninguém manda é clipe perdido --
         # que é o defeito de 14/09 chegando por outra porta.
-        print(f"# send the {len(liberados)} that cleared, one send_message "
-              f"each, and read every result: "
-              + ", ".join(liberados), file=sys.stderr)
+        print(f"# deliver the {len(liberados)} that cleared, one per turn, "
+              f"MEDIA: in the last message of each, and confirm every one with "
+              f"`warden delivered`: " + ", ".join(liberados), file=sys.stderr)
     if len(liberados) < asked:
         print(f"# and then say this batch is NOT done: "
               f"{asked - len(liberados)} of the {asked} clips asked for did not even "
@@ -1863,23 +1884,111 @@ def cmd_cut_plan(args):
     return 0
 
 
+# O log do gateway é o ÚNICO registro independente de que um anexo saiu.
+#
+# Medido em 15/09: não existe ferramenta `send_message` neste runtime, então o
+# agente não recebe resultado nenhum ao entregar um arquivo. A regra "leia o
+# resultado do envio" não tinha onde acontecer -- era frase, não regra.
+#
+# O que existe é isto: quando o gateway extrai um `MEDIA:` da mensagem FINAL do
+# turno, ele escreve uma linha por anexo. E quando o envio falha, escreve outra.
+# Nenhuma das duas carrega o caminho do arquivo -- só a extensão e o horário --
+# então o que dá para provar é quantos anexos saíram desde que um clipe foi
+# liberado, e se algum falhou. É pouco, e é MUITO mais do que a palavra do
+# modelo, que é o que havia antes.
+GATEWAY_LOG = os.environ.get("WARDEN_GATEWAY_LOG",
+                             "/var/lib/hermes/logs/gateway.log")
+_SAIU = "Sending video attachment"
+_FALHOU = "Failed to send media"
+
+
+def _carimbo_do_log(linha):
+    """Segundos epoch da linha do log, ou None. Formato: 2026-09-15 03:11:40,013."""
+    try:
+        return datetime.strptime(linha[:19], "%Y-%m-%d %H:%M:%S").timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def envios_desde(quando):
+    """(anexos que saíram, falhas de envio) no log do gateway, depois de `quando`.
+
+    `None, None` quando não há log para ler -- que é diferente de zero. Zero é
+    uma medida; "não consegui olhar" não é, e tratar os dois como a mesma coisa
+    é como este projeto perdeu clipe antes.
+    """
+    if not os.path.isfile(GATEWAY_LOG):
+        return None, None
+    saiu, falhou = 0, 0
+    try:
+        with open(GATEWAY_LOG, encoding="utf-8", errors="replace") as fh:
+            for linha in fh:
+                if _SAIU not in linha and _FALHOU not in linha:
+                    continue
+                t = _carimbo_do_log(linha)
+                if t is None or t < float(quando) - 2:
+                    continue
+                if _FALHOU in linha:
+                    falhou += 1
+                else:
+                    saiu += 1
+    except OSError:
+        return None, None
+    return saiu, falhou
+
+
 def cmd_delivered(args):
     """Risca um clipe da lista de envios devidos, ou diz quem ainda falta.
 
     Sem argumento é a pergunta -- "falta alguém?" -- e ela sai 1 enquanto
     faltar, para que "entreguei tudo" deixe de ser uma coisa que só o modelo
-    sabe. Com um caminho é a confirmação, feita DEPOIS que o `send_message`
-    voltou: confirmar antes de ler o resultado é escrever no papel que o
-    pacote chegou enquanto ele ainda está na esteira.
+    sabe.
+
+    Com um caminho é a confirmação, e desde 15/09 ela é uma LEITURA, não uma
+    promessa. Antes, este comando acreditava no modelo: ele dizia "entreguei" e
+    o clipe era riscado. Isso valia zero, porque o caso que se quer pegar é
+    justamente aquele em que o modelo acha que entregou e não entregou -- foi o
+    que aconteceu três vezes seguidas. Agora o comando vai ao log do gateway e
+    pergunta se um anexo realmente saiu depois que aquele clipe foi liberado.
+    Sem essa linha, ele RECUSA riscar.
     """
     if args.clip:
-        achou, pendentes = entregas_confirma(args.clip)
-        if not achou:
+        registro = entregas_registro(args.clip)
+        if registro is None:
             print(f"nothing was owing for {args.clip}. Either it was already "
                   f"confirmed, or this is not a path `warden cut` printed in "
                   f"the last {PRAZO_ENTREGA_H}h.", file=sys.stderr)
+            return 1 if entregas_pendentes() else 0
+
+        saiu, falhou = envios_desde(registro["at_ts"])
+        if saiu is None:
+            # Nada para ler não é permissão para acreditar. Mas travar a
+            # entrega inteira porque o log mudou de lugar seria pior que o
+            # defeito: aqui se risca e se diz, em voz alta, o que não foi
+            # possível verificar.
+            entregas_confirma(args.clip)
+            print(f"confirmed: {os.path.basename(args.clip)} -- but NOT "
+                  f"verified: {GATEWAY_LOG} is not readable from here, so "
+                  f"nothing independent says the attachment went out.",
+                  file=sys.stderr)
+        elif falhou:
+            print(f"NOT confirming {os.path.basename(args.clip)}: the gateway "
+                  f"logged {falhou} media send failure(s) since this clip was "
+                  f"cleared. The person does not have it. Send it again, in "
+                  f"the LAST message of your turn, and say in one line that "
+                  f"you are resending.", file=sys.stderr)
+        elif saiu < 1:
+            print(f"NOT confirming {os.path.basename(args.clip)}: no attachment "
+                  f"has left this machine since it was cleared. A `MEDIA:` "
+                  f"line written anywhere but the LAST message of a turn "
+                  f"attaches nothing, silently -- that is how two clips were "
+                  f"lost. Put it in the final message and end the turn.",
+                  file=sys.stderr)
         else:
-            print(f"confirmed: {os.path.basename(args.clip)}")
+            entregas_confirma(args.clip)
+            print(f"confirmed: {os.path.basename(args.clip)} "
+                  f"({saiu} attachment(s) left the machine since it cleared)")
+        pendentes = entregas_pendentes()
     else:
         pendentes = entregas_pendentes()
     if not pendentes:
@@ -1890,9 +1999,10 @@ def cmd_delivered(args):
           f"as sent:", file=sys.stderr)
     for row in pendentes:
         print(f"  {row['clip']}", file=sys.stderr)
-    print("Each one is a file the person does not have. Send it with "
-          "send_message, read the result, then run this again. Do not end your "
-          "turn while this command exits 1.", file=sys.stderr)
+    print("Each one is a file the person does not have. Put its `MEDIA:` line "
+          "in the LAST message of a turn -- nowhere else delivers -- then run "
+          "this again. Do not end your turn while this command exits 1.",
+          file=sys.stderr)
     return 1
 
 
@@ -2175,7 +2285,7 @@ def main(argv=None):
                        help="confirm a clip was sent, or ask which are still owed")
     p.add_argument("clip", nargs="?",
                    help="the path `warden cut` printed, confirmed AFTER the "
-                        "send_message result came back. Omit to ask what is "
+                        "attachment left the machine. Omit to ask what is "
                         "still owing; exits 1 while anything is.")
     p.set_defaults(func=cmd_delivered)
 

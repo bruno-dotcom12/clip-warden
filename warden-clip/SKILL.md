@@ -301,8 +301,9 @@ render is running. That line is for YOU, in the command output; it is not
 something to relay. The person heard a number in your first message and that is
 the whole of what they hear until a clip exists.
 
-That order matters for delivery: look at clip 1's sheet and `send_message` it
-straight away. Do not hold the first clip hostage to the last one.
+That order matters for delivery: look at clip 1's sheet and end your turn with
+its `MEDIA:` line straight away. Do not hold the first clip hostage to the
+last one.
 
 ### Do not re-cut four times to find the window
 
@@ -327,8 +328,8 @@ SHEET:/var/lib/hermes/cache/videos/clip-01-contato.jpg
 MEDIA:/var/lib/hermes/cache/videos/clip-01.mp4
 ```
 
-**Open that image with the Read tool before you call `send_message` for that
-clip** -- the sheet is what stands between a render and a delivery, and section 7
+**Open that image with the Read tool before you put that clip's `MEDIA:` line in
+a final message** -- the sheet is what stands between a render and a delivery, and section 7
 is where the delivery happens. Then say, in your own words, what you saw -- in
 your THINKING, which is the only place in this runtime that is private. Not in
 prose between tool calls -- that is delivered as a message, measured. Looking at
@@ -352,76 +353,81 @@ verification" about a file you have not seen.
 If `warden cut` says it could not build the sheet, that is not a detail to
 mention in passing: nothing has looked at that clip, so it does not ship. It
 withholds the `MEDIA:` path itself in that case, so there is no path to put in a
-`send_message` and that clip is not one of the ones you deliver.
+`MEDIA:` line, and that clip is not one of the ones you deliver.
 
 ## 7. Send, and deliver the number that was asked for
 
-### Deliver each clip with `send_message`. Writing MEDIA: in your narration does nothing.
+### A clip is delivered by the LAST message of a turn. Nothing else delivers.
 
 **The rule itself lives in the persona, under "Handing the file over". It is
 written there and nowhere else; what follows is the evidence behind it and what
 it means for a batch.**
 
-It was written from a measurement.
+**There is no `send_message` tool in this runtime.** Measured 15/09: three
+conversations, five tools ever called (`terminal`, `vision_analyze`,
+`search_files`, `read_file`, `patch`), zero calls to `send_message`, because it
+is not offered. Every older instruction built on it is dead text.
 
-On 14/09 two clips were asked for, both rendered, both announced as ready, and
-**one arrived**. The agent wrote `MEDIA:/…/clip-piloto-emirates.mp4` at 21:57:59
-in the middle of a turn and moved on to the next clip. The gateway log for that
-turn is one line: at 21:59:18 it sent one response and delivered one attachment
-— the second clip's. Between 21:46:59 and 21:59:18 nothing at all left the
-machine. Four assistant messages from that turn, including the one carrying the
-first clip, are in the database and were never sent.
+What delivers is the `MEDIA:` line in the **final message of your turn**. The
+gateway reads that message, pulls out every `MEDIA:` path, and sends each as an
+attachment. Two lines in one final message deliver two files — measured twice,
+both times while re-sending after the person complained.
 
-**Only the last message of a turn is delivered.** Text you write between tool
-calls IS delivered as a message -- the gateway's interim sends are on -- but it
-goes out through a status path that never looks for `MEDIA:`. So the prose
-arrives and the file does not, and nothing anywhere reports that it attached
-nothing.
+A `MEDIA:` line written anywhere else in the turn **attaches nothing, in
+silence**, and the prose around it still arrives. That is the expensive part:
+the person reads "aqui está o primeiro corte" and no file comes.
 
-So a clip is delivered by CALLING A TOOL, never by writing a line and hoping:
+| Conversation | `MEDIA:` mid-turn | `MEDIA:` in the final message |
+|---|---|---|
+| 15/09, 00:53 | did not arrive | 01:00:38 arrived |
+| 15/09, 02:48 | did not arrive | 02:50:56 arrived |
+
+### One clip per turn, and clip 2's render is what wakes you
+
+Only the final message delivers, so **one turn hands over one clip**. Do not hold
+the first until the last renders, and do not try to send it mid-turn.
+
+Start the NEXT render in the background before you end the turn. A background
+command finishing wakes you with its result — measured, that is how the
+transcription of 15/09 brought the agent back four minutes later.
 
 ```
-send_message(target="plow_chat",
-             message="Corte 1: <caption>\n\nMEDIA:/var/lib/hermes/cache/videos/clip-01.mp4")
+1. render clip 1, look at its sheet
+2. launch clip 2's render in the background
+3. end the turn with clip 1's MEDIA: line          -> delivered
+4. the render finishing wakes you; look at clip 2's sheet
+5. end that turn with clip 2's MEDIA: line         -> delivered
 ```
 
-`send_message` is what the file rides on — its own description says so: "To send
-an image or file, include MEDIA:<local_path> in the message — the platform will
-deliver it as a native media attachment." One call per clip, and the call
-happens **immediately after you looked at that clip's contact sheet**, not at
-the end of the batch. `--plan` batches the renders; it does not batch the sends.
+Three messages, two files, neither waiting on the other.
 
-### Read the result, then tell the tool. A send you did not confirm is not a delivery.
+### The confirmation is a reading of the gateway's log, not your word
 
-`send_message` returns a result. Read it. If it did not succeed, say so in the
-conversation, in words, and call it again:
-
-> "O corte 1 não foi anexado na primeira tentativa. Reenviando."
-
-Going on to the next clip without looking at the result is how the first one
-disappeared with nobody — not even the agent — noticing.
-
-When the result came back successful, and only then:
+Nothing returns a send result, so there is none to read. What you can ask is
+whether an attachment actually left:
 
 ```
 warden delivered /var/lib/hermes/cache/videos/clip-01.mp4
 ```
 
-`cut` wrote that clip down as OWED at the moment it printed the path; this is
-what strikes it off. And `warden delivered` with no path is the question — "is
-anything still owing?" — which **exits 1 while anything is**, and names the
-files. Run it before you end your turn.
+It goes and looks at the gateway's own log:
 
-Until now that count lived only in your memory of the turn, which is precisely
-the thing that failed: twice, two clips were asked for, one arrived, and no
-component anywhere knew the difference. Now one does.
+- **nothing left since that clip cleared** → it refuses to strike it off, and
+  says the `MEDIA:` line has to be in the final message
+- **a send failure logged** → it refuses, and you resend it yourself in the last
+  message of your next turn, with one line: "o corte 1 não foi anexado,
+  reenviando"
+- **an attachment left** → struck off
+
+Before 15/09 it simply believed you, which was worth nothing: the case it exists
+to catch is the one where you believe you delivered and you did not.
 
 ### "Os N clipes estão prontos" is a forbidden sentence until every file is confirmed
 
 Do not write that the batch is ready, or done, or delivered, in any wording,
 while a single clip is still unconfirmed. **Rendered is not delivered. Pronto is
 in the person's hand, not on the disk.** The count you report is the count of
-`send_message` calls that came back successful — never the count of files you
+attachments the gateway logged leaving — never the count of files you
 rendered.
 
 The last message of the turn says what actually arrived, by name:
@@ -477,14 +483,14 @@ it says so itself on its first line:
 # 2 clips asked for. This command RENDERS and clears them; it does not deliver.
 ...
 # 2 of 2 cleared for delivery. NONE of them has been sent by this command.
-# now send the 2 of them, one send_message each, and read every result.
+# now deliver the 2 of them, one per turn, MEDIA: in the last message of each.
 ```
 
 That last line is your instruction, not a summary: N clips cleared on disk are N
-`send_message` calls still owed. Work down the list in order -- read that clip's
-sheet, send that clip, read the result, then the next -- and send the first one
-as soon as its sheet is clear instead of holding the batch until the last one is
-open.
+turns still owed. Work down the list in order -- read that clip's sheet, end a
+turn with that clip, confirm it with `warden delivered`, then the next -- and
+hand over the first as soon as its sheet is clear instead of holding the batch
+until the last one is open.
 
 `--plan` exits non-zero when a clip is missing and names which and why. A clip it
 did not clear has no `MEDIA:` path, so it is not sent and it does not count: say
@@ -498,7 +504,7 @@ sentence is not a clip yet.
 The number you give in your FIRST message is the whole of what they hear before
 the first clip: an hour of source is ten to thirty minutes. You say that once,
 there, and never again.
-The first clip leaves on its own confirmed `send_message` as soon as its sheet is
-clear; nothing waits for the last render. "As soon as it exists" means sent and
-confirmed, not rendered -- a file on disk that nobody called `send_message` for
-is the clip that vanished on 14/09.
+The first clip leaves in its own final message as soon as its sheet is clear;
+nothing waits for the last render. "As soon as it exists" means delivered and
+confirmed, not rendered -- a file on disk whose `MEDIA:` line never reached a
+final message is the clip that vanished on 14/09 and twice more on 15/09.
