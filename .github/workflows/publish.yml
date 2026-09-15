@@ -101,6 +101,15 @@ jobs:
       # palavra, e o filtro `ass` é opção de compilação do ffmpeg. Uma base que
       # perca o `--enable-libass` publica verde aqui e faz TODO corte com
       # legenda parar na máquina de quem instalou.
+      #
+      # O runtime JS e o provedor de PO token entram aqui em 15/09/2026, e o
+      # motivo é que a falta deles NÃO recusa: degrada em silêncio. Sem runtime
+      # JS o yt-dlp derruba o client `web` do conjunto padrão e não decifra
+      # n/sig; sem o provedor, o endereço de quem instalou vai sendo marcado até
+      # o YouTube recusar tudo. Os dois faltavam, ninguém viu, e o defeito
+      # chegou ao dono como duas causas inventadas para um link que não baixava.
+      # Uma base que perca o node, ou um wheel que o resolvedor rebaixe, tem de
+      # ficar vermelho AQUI.
       - name: o que a imagem precisa ter
         run: |
           IMG="ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
@@ -114,7 +123,15 @@ jobs:
           assert M.ffmpeg_tem_filtro('ass'), 'este ffmpeg nao tem o filtro ass: sem libass nenhum corte queima legenda'
           assert os.path.isfile('/opt/hermes/skills/SPECS/estilo-aprovado-scenepack.json')
           import PIL, numpy, faster_whisper, yt_dlp
-          print('ok:', why)
+          assert M._js_runtimes(), 'sem runtime JS: o yt-dlp derruba o client web e nao decifra n/sig'
+          import yt_dlp.plugins as P
+          from yt_dlp.globals import plugin_specs
+          [P.load_plugins(spec) for spec in plugin_specs.value.values()]
+          from yt_dlp.extractor.youtube.pot._registry import _pot_providers as reg
+          nomes = sorted(reg.value.keys())
+          assert any('bgutil' in n.lower() for n in nomes), \
+              'o yt-dlp nao enxerga provedor de PO token, so ' + repr(nomes)
+          print('ok:', why, '| js:', M._js_runtimes(), '| pot:', nomes)
           "
 
       # Um pacote novo no GHCR nasce PRIVADO, mesmo num repositório público, e
