@@ -18,6 +18,31 @@ below.
 It stops and tells you what to do when something is missing. It does not
 continue past a problem.
 
+## What you have when it finishes, and what is still switched off
+
+**Clips, in the chat.** The agent sends you the finished MP4 with the title,
+description and caption ready to paste, and you post it from the app you already
+post from. Nothing else to configure for that: no API key, no OAuth, no account
+beyond Plow.
+
+**Publishing straight from the chat is off, and turning it on is about three
+minutes.** That is not missing work and nothing is broken — what goes into a
+published image is public, so a credential that posts to *your* channel cannot
+ship inside it. The command that actually puts a **public** video on your
+channel is `warden post youtube`, and the five steps that switch it on are here:
+
+> → **[`warden post youtube` — the one that actually publishes](#warden-post-youtube--the-one-that-actually-publishes)**,
+> and inside it
+> **[Setting it up — five steps, about three minutes](#setting-it-up--five-steps-about-three-minutes)**.
+
+The other two delivery commands do **not** publish, however you configure them,
+and it is worth knowing which is which before you spend time on one:
+`warden youtube` uploads to your channel but the upload lands **locked private
+with no appeal**, because this project's API project has not been audited by
+YouTube; `warden tiktok` leaves a **draft in your inbox** that you finish in the
+app. Both are covered in
+[Handing a clip to YouTube or TikTok](#handing-a-clip-to-youtube-or-tiktok).
+
 ## What you need
 
 - **Docker, running, with Docker Compose**, and its VM set to **at least
@@ -42,8 +67,9 @@ continue past a problem.
   anyway, for development: `WARDEN_BUILD=1 ./install.sh`.
 
 You do **not** need Python on the host. Everything runs in the container. Python
-3 is only for running the test suite (`python3 -m unittest discover -s tests`),
-which is not part of installing.
+3 is only for running the test suite, which is not part of installing — and if
+you do run it, read [Running the tests](#running-the-tests) first, because on a
+Mac that suite passes while skipping the caption tests in silence.
 
 ## What the script will ask you
 
@@ -354,6 +380,66 @@ docker compose -f compose.yml -f compose.build.yml up --build -d
 To watch it come up: `docker compose logs -f agent`, and wait for
 `plow-init: configured … as cht_`. That line means the agent has claimed its
 line and is listening.
+
+## Running the tests
+
+```sh
+python3 -m unittest discover -s tests
+```
+
+Measured on a Mac on 15/09/2026: `Ran 877 tests` … `OK (skipped=27)`.
+
+**Read the `skipped=27`. It is not a footnote — it is the caption.** A skipped
+test is not a passing test, and on a host those 27 are the part of the product
+you can actually see:
+
+| how many | why it skipped | what is not being exercised |
+| --- | --- | --- |
+| **24** | `this ffmpeg has no subtitles filter (no libass)` | **the burned caption** — the whole ASS path, word-by-word highlight included |
+| **3** | `faster-whisper não está instalado` | transcription with the real engine |
+
+`libass` is an ffmpeg **compile** option, not a package: the image's ffmpeg is
+built with `--enable-libass`, and a Homebrew ffmpeg on a Mac usually is not. So
+a green `OK` on your laptop means 850 of 877 ran, and the 27 that did not are
+the two things this agent is for. Nothing in the output shouts about it — the
+suite exits `0` and prints `OK` — which is exactly why it is written down here.
+
+`warden status` reports the same fact from the other side, and that one is a
+gate: `libass (burned captions): yes, the ass filter is here` inside the
+container, versus a Mac where the filter is absent.
+
+### Running them where they are not skipped
+
+**Inside the container**, which has both libass and faster-whisper. The suite is
+not in the published image — `tests` is listed in `.dockerignore`, on purpose,
+because it is not something an install needs — so the repository is bind-mounted
+in for the run:
+
+```sh
+docker run --rm \
+  --entrypoint /opt/hermes/.venv/bin/python3 \
+  -u 10000:10000 \
+  -v "$PWD:/src" -w /src \
+  ghcr.io/bruno-dotcom12/clip-warden:latest \
+  -m unittest discover -s tests
+```
+
+`--entrypoint` is not optional: the image's own entrypoint starts the s6
+supervision tree and the agent, not a test run. `-u 10000:10000` is the same
+rule as every `docker compose exec` above — root inside a bind mount leaves
+root-owned files in your own checkout.
+
+What to look for is the **`skipped=` count, not the `OK`**: in there it should
+be **0**, because every dependency the suite skips on is present in the image.
+A skip that survives that run is a finding rather than a nuisance — it means the
+image is missing something `warden status` is supposed to catch at install.
+(The 877/27 above were measured on the host; the in-container count has not been
+measured on this machine, so treat the 0 as what to check rather than as a
+number to quote.)
+
+To run them against a locally built image instead, build first
+(`docker compose -f compose.yml -f compose.build.yml build`) and put that image's
+tag in place of the `ghcr.io/...` one.
 
 ## Where it connects
 

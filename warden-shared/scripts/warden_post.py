@@ -117,6 +117,7 @@ Só biblioteca padrão, como o resto do projeto. O multipart é montado à mão.
 A CLI não mora aqui: este arquivo é função pura, `status()`,
 `publish_youtube()` e `wait_for()`.
 """
+import ipaddress
 import json
 import mimetypes
 import os
@@ -224,6 +225,101 @@ def _dorme(segundos):
     time.sleep(segundos)
 
 
+def _abre(pedido, timeout):
+    """Abre o pedido pelo opener GUARDADO, nunca pelo `urlopen` cru.
+
+    A diferença é um cabeçalho. Toda chamada daqui leva `Authorization: Apikey
+    <chave>`, e o `urlopen` cru segue um 302 para outro host copiando os
+    cabeçalhos do pedido anterior -- então um redirecionamento entregava a
+    chave do dono a quem respondesse o segundo endereço. O opener do
+    `warden_media` refaz a checagem de endereço a cada salto e larga o
+    `Authorization` quando o host muda.
+
+    Importado aqui dentro e não no topo: este módulo é carregado sozinho em
+    boa parte da suíte, e o `warden_media` traz o PIL e o ffmpeg atrás.
+    """
+    import warden_media
+    return warden_media.opener_guardado().open(pedido, timeout=timeout)
+
+
+def _e_loopback(host):
+    """O host é esta máquina, e só ela?
+
+    `localhost` e `127.0.0.1` são o único endereço que pode ser `http` aqui, e
+    a razão é que eles não são uma saída: quem conseguiu escrever
+    `WARDEN_POST_BASE_URL` no ambiente deste processo também consegue ler
+    `WARDEN_POST_API_KEY` dele. Mandar a chave para 127.0.0.1 não entrega nada
+    a ninguém que já não a tivesse. É o que deixa a suíte subir um
+    `http.server` de verdade e montar o multipart de verdade, que é a parte
+    que um mock não prova.
+
+    `10.0.0.5` é OUTRA coisa e continua recusado: ali a chave atravessa a
+    fronteira da máquina.
+    """
+    if not host:
+        return False
+    host = host.strip("[]").lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+_BASES_CONFERIDAS = {}
+
+
+def _base_url():
+    """O endereço do intermediário, CONFERIDO. `https` e host público, ou nada.
+
+    `WARDEN_POST_BASE_URL` existia sem portão nenhum: qualquer valor no
+    ambiente virava o endereço para onde `Authorization: Apikey <chave>` ia. Um
+    `http://` mandava a chave do dono em texto claro; um `https://coletor.ruim`
+    mandava a chave para quem escreveu a variável; um `http://169.254.169.254`
+    apontava a mesma chave para o serviço de metadados da nuvem. Nenhuma das
+    três precisava de um defeito no código para acontecer -- bastava a
+    variável.
+
+    Quem sabe fazer essa pergunta é o `safe_url` do `warden_media`, e é ele que
+    responde: esquema aceitável, host que resolve, e nenhum endereço privado,
+    de loopback, link-local ou de metadados atrás do nome. Aqui em cima dele
+    fica a exigência de `https`, que o `safe_url` não faz porque a fonte de
+    vídeo dele não carrega segredo nenhum e esta chamada carrega.
+
+    O resultado é lembrado por valor: `safe_url` resolve o nome, e resolver o
+    mesmo nome a cada requisição de uma sessão de upload é uma consulta de DNS
+    por pedido sem responder nada de novo.
+    """
+    bruto = (os.environ.get(ENV_BASE) or BASE_PADRAO).rstrip("/")
+    if bruto in _BASES_CONFERIDAS:
+        return _BASES_CONFERIDAS[bruto]
+    partes = urllib.parse.urlparse(bruto)
+    esquema = (partes.scheme or "").lower()
+    if _e_loopback(partes.hostname) and esquema in ("http", "https"):
+        _BASES_CONFERIDAS[bruto] = bruto
+        return bruto
+    if esquema != "https":
+        raise PostIndisponivel(
+            f"{ENV_BASE}={bruto!r} não é `https`. A chave desta conta vai no "
+            f"cabeçalho de toda chamada a esse endereço, e em `http` ela viaja "
+            f"em texto claro por cada roteador do caminho. Corrija a variável "
+            f"ou apague-a — sem ela o endereço é {BASE_PADRAO}.")
+    try:
+        import warden_media
+        warden_media.safe_url(bruto)
+    except PostIndisponivel:
+        raise
+    except Exception as exc:
+        raise PostIndisponivel(
+            f"{ENV_BASE}={bruto!r} não serve como endereço do intermediário: "
+            f"{exc}. A chave desta conta iria para lá no cabeçalho de toda "
+            f"chamada. Corrija a variável ou apague-a — sem ela o endereço é "
+            f"{BASE_PADRAO}.")
+    _BASES_CONFERIDAS[bruto] = bruto
+    return bruto
+
+
 def _http(metodo, url, *, corpo=None, cabecalhos=None, timeout=TIMEOUT_API):
     """A ÚNICA porta para fora do processo. -> (código HTTP, corpo em bytes).
 
@@ -234,7 +330,7 @@ def _http(metodo, url, *, corpo=None, cabecalhos=None, timeout=TIMEOUT_API):
     pedido = urllib.request.Request(url, data=corpo, method=metodo,
                                     headers=cabecalhos or {})
     try:
-        with urllib.request.urlopen(pedido, timeout=timeout) as resposta:
+        with _abre(pedido, timeout) as resposta:
             return resposta.getcode(), resposta.read()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read()
@@ -434,8 +530,9 @@ class UploadPost(Provedor):
     nome = "upload-post"
 
     def url(self, caminho, consulta=None):
-        base = (os.environ.get(ENV_BASE) or BASE_PADRAO).rstrip("/")
-        endereco = base + caminho
+        # `_base_url()`, não `os.environ` direto: o endereço para onde a chave
+        # vai passa por um portão antes de virar requisição. Ver a função.
+        endereco = _base_url() + caminho
         if consulta:
             endereco += "?" + urllib.parse.urlencode(consulta)
         return endereco

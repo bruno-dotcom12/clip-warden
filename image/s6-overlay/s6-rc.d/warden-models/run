@@ -19,8 +19,42 @@ chown -R 10000:10000 /var/lib/hermes/warden /var/lib/hermes/models 2>/dev/null |
 # the runtime will attach a clip from, so an operator's `docker compose exec`
 # creating it as root is the difference between a clip that arrives and a clip
 # the owner is told about and never receives.
-install -d -o 10000 -g 10000 -m 0755 /var/lib/hermes/cache /var/lib/hermes/cache/videos
-chown 10000:10000 /var/lib/hermes/cache /var/lib/hermes/cache/videos 2>/dev/null || true
+#
+# WHY THE SYMLINK TEST, AND WHY `-h`: /var/lib/hermes is the agent's OWN home
+# and the agent writes in it. A chown that FOLLOWS a symlink lets hermes point
+# `cache/videos` at /etc/shadow and be handed ownership of the target by a root
+# process, at every boot. That is privilege escalation, written by us. So a
+# symlink is refused outright, and `-h` is the second lock: even if the test
+# were wrong, chown acts on the link and never on what it points at. The same
+# guard, for the same reason, is in the sibling service's `devolve_o_estado`
+# (image/s6-overlay/s6-rc.d/agent-index/run) -- this is that discipline, not a
+# new one.
+#
+# `install -d` is inside the guard too: on a path that is already a symlink to
+# a directory it succeeds by following the link, and then applies -o and -m to
+# whatever is on the other end. Same hole, different command -- and `install`
+# has no `-h`, so for that one the test is the only lock there is. It is also
+# why a refused path stops the loop instead of skipping one entry: the list is
+# parent first, and there is no point creating `cache/videos` through a `cache`
+# we just declared we would not follow.
+#
+# The pair above stays as it is: `chown -R` without -L never dereferences a
+# symlink, neither on the command line nor while descending -- that was
+# measured. This one is not -R, which is exactly why it needs the guard spelled
+# out.
+devolve_a_entrega() {
+  for d in /var/lib/hermes/cache /var/lib/hermes/cache/videos; do
+    if [ -L "$d" ]; then
+      echo "warden-models: $d is a symlink -- not touching it. The agent's own" >&2
+      echo "home is not a place root follows links into." >&2
+      return
+    fi
+    install -d -o 10000 -g 10000 -m 0755 "$d" 2>/dev/null || true
+    /bin/chown -h 10000:10000 "$d" 2>/dev/null \
+      || echo "warden-models: could not give $d back to uid 10000" >&2
+  done
+}
+devolve_a_entrega
 
 /command/s6-setuidgid hermes \
   env HOME=/var/lib/hermes HF_HOME=/var/lib/hermes/models \

@@ -133,6 +133,19 @@ def safe_url(url):
     return str(url)
 
 
+# Cabeçalhos que NUNCA atravessam uma troca de host num redirecionamento.
+#
+# Este agente tem três módulos que falam com API autenticada -- `warden_post`
+# (chave do intermediário), `warden_tiktok` e `warden_youtube` (token OAuth) --
+# e os três mandavam o segredo por um `urlopen` cru. O urllib monta o pedido
+# seguinte de um 302 COPIANDO os cabeçalhos do anterior, tirando só
+# `Content-Length` e `Content-Type`: um 302 para outro host levava
+# `Authorization` junto, e quem respondesse a esse endereço ficava com a chave.
+# Nenhuma versão do Python em que este agente roda pode ser assumida como a que
+# corrige isso sozinha, então a regra fica escrita aqui.
+_CABECALHOS_DE_SEGREDO = ("authorization", "proxy-authorization", "cookie")
+
+
 class _GuardedRedirect(urllib.request.HTTPRedirectHandler):
     """Re-check every redirect the way the first URL was checked.
 
@@ -140,15 +153,55 @@ class _GuardedRedirect(urllib.request.HTTPRedirectHandler):
     follows one to http://169.254.169.254 without a word. safe_url is the same
     gate the first hop passed, so a redirect that lands on a private host or a
     non-http scheme is refused with the same message rather than followed.
+
+    E o segredo NÃO viaja para outro host. Um endereço público que redireciona
+    para outro endereço público passa por `safe_url` sem uma queixa -- é um
+    redirecionamento legítimo para qualquer instrumento aqui -- e é exatamente
+    a forma de um servidor comprometido, ou de um `WARDEN_POST_BASE_URL`
+    hostil, colher a chave de API que ia no cabeçalho. Mesmo esquema e mesmo
+    host: o cabeçalho segue, porque é o mesmo servidor a que ele já foi
+    mostrado. Qualquer um dos dois diferente -- inclusive um `https` que vira
+    `http` no mesmo host, que é o segredo descendo em texto claro -- e o
+    cabeçalho fica para trás; quem chamou recebe o 401 do outro lado em vez de
+    um vazamento silencioso.
     """
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         safe_url(newurl)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        novo = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if novo is None:
+            return None
+        origem = ((req.type or "").lower(), (req.host or "").lower())
+        destino = ((novo.type or "").lower(), (novo.host or "").lower())
+        if origem != destino:
+            for nome in _CABECALHOS_DE_SEGREDO:
+                # As duas grafias: `Request.headers` guarda a chave
+                # capitalizada (`Authorization`) e `unredirected_hdrs` a que
+                # quem chamou escreveu. Remover só uma delas não remove nada.
+                novo.headers.pop(nome.capitalize(), None)
+                novo.unredirected_hdrs.pop(nome.capitalize(), None)
+                for chave in [k for k in list(novo.headers)
+                              if k.lower() == nome]:
+                    novo.headers.pop(chave, None)
+                for chave in [k for k in list(novo.unredirected_hdrs)
+                              if k.lower() == nome]:
+                    novo.unredirected_hdrs.pop(chave, None)
+        return novo
 
 
 # One opener for both readers, so the redirect guard cannot be forgotten at a
 # call site. Built once; urllib openers are thread-safe for our use.
 _OPENER = urllib.request.build_opener(_GuardedRedirect())
+
+
+def opener_guardado():
+    """O opener com o guarda de redirecionamento. A porta para fora, para TODOS.
+
+    Existe como função pública e não como constante importada porque os três
+    módulos de publicação são carregados sozinhos nos testes, e porque ler o
+    global na hora da chamada é o que deixa a suíte trocar o opener por um
+    dublê sem abrir socket nenhum.
+    """
+    return _OPENER
 
 # The name this agent answers to, on EVERY request the opener makes.
 #
@@ -421,20 +474,34 @@ def _porque_bloqueou(label):
         f"      published subtitle pulled, window downloaded, 830 KiB in 6s\n"
         f"    - 19:00, AS17222 Mundivox (67.159.227.250), the home provider:\n"
         f"      title read, window downloaded, 830 KiB in 7s\n"
-        f"  So option 1 below is not a promise from yt-dlp's documentation: it\n"
-        f"  was tried here, twice, and it worked.\n"
+        f"  What those three lines measure, exactly and no more: the same\n"
+        f"  container downloaded this footage over TWO different outgoing\n"
+        f"  addresses, at two later times of day, after being refused in the\n"
+        f"  morning. One of the two was the HOME provider -- the same one that\n"
+        f"  was refused that morning.\n"
         f"\n"
-        f"  What is NOT measured, and you may not pick a side: nobody wrote\n"
+        f"  What is NOT measured, and you may not pick a side: WHY any of it\n"
+        f"  happened -- nobody wrote\n"
         f"  down the IP that was refused in the morning, and a residential IP\n"
         f"  changes on its own -- a modem reconnect, a new lease. So the\n"
         f"  evening success could mean the flag was lifted, or it could mean\n"
         f"  the address simply changed. BOTH explanations fit these numbers\n"
         f"  exactly, which is why neither may be stated. Do not say this\n"
-        f"  clears up on its own, and do not say it is permanent.\n"
+        f"  clears up on its own, and do not say it is permanent -- and do not\n"
+        f"  read the home address working at 19:00 as evidence FOR option 1\n"
+        f"  below: if that address never changed, that line is evidence\n"
+        f"  AGAINST it. It is the same ambiguity a second time, not a second\n"
+        f"  measurement.\n"
+        f"\n"
+        f"  So option 1 is not a promise from yt-dlp's documentation, and it is\n"
+        f"  not a proven cause either: it is a thing that was tried here and\n"
+        f"  came back with the video, on an address that was not the one\n"
+        f"  refused in the morning. That is the whole claim.\n"
         f"\n"
         f"  The one rule that survives all of it, and the only actionable\n"
-        f"  one: the refusal travels with the outgoing address, and changing\n"
-        f"  the address was measured working.\n"
+        f"  one: the refusal travels with the outgoing address, so the only\n"
+        f"  lever anyone here has is to change it -- and what gets them a clip\n"
+        f"  today is the next line, not that lever.\n"
         f"\n"
         f"  What gets them a clip TODAY: ask for the file itself, or a Google\n"
         f"  Drive link. Neither goes anywhere near this refusal.\n"
@@ -447,8 +514,9 @@ def _porque_bloqueou(label):
         f"\n"
         f"  Two things change this answer, and the agent can do neither alone:\n"
         f"    1. a different outgoing address -- another network, a phone\n"
-        f"       hotspot, or a VPN. This is the one that was MEASURED to work\n"
-        f"       on 15/09/2026; see above.\n"
+        f"       hotspot, or a VPN. On 15/09/2026 a download came back over an\n"
+        f"       address that was not the refused one; whether the address is\n"
+        f"       what changed the answer is NOT measured. See above.\n"
         f"    2. a cookies file from a signed-in YouTube session at\n"
         f"       {COOKIES_FILE}, or anywhere else with WARDEN_YT_COOKIES\n"
         f"       pointing at it. yt-dlp warns this can get that account\n"
@@ -656,6 +724,72 @@ def _is_playlist(url):
             or ("list=" in q and "v=" not in q))
 
 
+# As abas de um canal. Nenhuma delas é um vídeo: são listas, e o yt-dlp trata
+# cada uma como playlist. `/shorts/<id>` e `/live/<id>` são vídeos e NÃO caem
+# aqui, porque o que termina o caminho deles é o id e não a aba.
+_ABAS_DE_CANAL = ("/videos", "/shorts", "/streams", "/live", "/featured",
+                  "/playlists", "/podcasts", "/releases")
+
+
+def _e_colecao(url):
+    """O link aponta para uma LISTA de vídeos em vez de um vídeo?
+
+    Playlist, canal, ou uma aba de canal. A pergunta existe porque o yt-dlp
+    responde a um link desses baixando TUDO o que está atrás dele, e o nome de
+    saída deste projeto não tem índice nenhum: um canal varrido por cima de um
+    template só escreve um arquivo em cima do outro e devolve o último que
+    sobrou, que não é um vídeo que alguém escolheu.
+    """
+    if _is_playlist(url):
+        return True
+    parsed = urlparse(str(url or ""))
+    if _norm_host(parsed.netloc or "") not in ("youtube.com",
+                                               "youtube-nocookie.com"):
+        return False
+    caminho = (parsed.path or "").rstrip("/")
+    if caminho.startswith(("/@", "/c/", "/channel/", "/user/")):
+        # `/@canal/videos` e `/@canal` são os dois uma lista; `/@canal` sozinho
+        # é a aba inicial, que o yt-dlp também expande.
+        return True
+    return caminho.endswith(_ABAS_DE_CANAL)
+
+
+def _playlist_args(url):
+    """Os argumentos de playlist do yt-dlp para este link. UMA resolução, uma só.
+
+    ESTE É O CONSERTO DE UM DEFEITO SILENCIOSO, e ele não tem sintoma: o clipe
+    sai de outro vídeo e parece certo.
+
+    Antes daqui havia duas resoluções. O `archive` -- o preparo, que baixa a
+    fonte e é quem o dono vê escolher -- separava playlist de vídeo e pedia
+    `--yes-playlist --playlist-items 1` numa playlist. O `archive_window` e o
+    `archive_windows` -- o render, que baixa só a janela que vira o corte --
+    fixavam `--no-playlist`, sempre. `--no-playlist` num link que é playlist e
+    não vídeo não é "pegue o primeiro": é indefinido, e o yt-dlp resolve
+    expandindo a lista inteira por cima do MESMO template de saída, que não
+    carrega índice. O arquivo que sobra é o último que terminou de escrever.
+    Preparo e render podiam escolher vídeos diferentes do mesmo link, e nada em
+    lugar nenhum diria isso -- o corte sai com duração certa, hook certo,
+    legenda casada pela ficha `.origem.json`, e a imagem de outro vídeo.
+
+    Um link de canal era pior ainda: nenhum dos dois caminhos o reconhecia, e
+    os dois varriam o canal inteiro.
+
+    Agora a pergunta é feita uma vez e respondida igual nos dois lados. O link
+    que nomeia um vídeo continua com `--no-playlist`, exatamente como antes. O
+    link que nomeia uma coleção pega o item 1 dela, nos dois caminhos: item 1
+    do preparo é item 1 do render, porque é a mesma conta sobre a mesma URL.
+    """
+    if video_id(url):
+        # O link NOMEIA um vídeo (`watch?v=`, `youtu.be/`, `/shorts/<id>`),
+        # mesmo quando traz um `&list=` junto. `--no-playlist` é literalmente a
+        # opção para este caso, e é o que os dois caminhos já faziam.
+        return ["--no-playlist"]
+    if _e_colecao(url):
+        return ["--yes-playlist", "--playlist-items", "1"]
+    return ["--no-playlist"]
+
+
 def playlist_video_ids(url):
     """Every video id in a playlist, as a set, read without downloading a byte.
 
@@ -695,8 +829,13 @@ def _facts(url):
         # `paced=False`: `--print` implica `--simulate`, então esta chamada não
         # baixa byte nenhum e o sono de download é espera pura. O
         # `--sleep-requests` continua valendo, que é o que protege o endereço.
-        out = run(_ytdlp(paced=False) + ["--no-warnings", "--no-playlist",
-                   "--playlist-items", "1",
+        # A MESMA resolução que o download vai usar, e limitada a um item de
+        # qualquer jeito: o título e o canal que o fiscal confere têm de ser os
+        # do vídeo que vai descer, não os de outro item da mesma lista.
+        quais = _playlist_args(url)
+        if "--playlist-items" not in quais:
+            quais = quais + ["--playlist-items", "1"]
+        out = run(_ytdlp(paced=False) + ["--no-warnings", *quais,
                    "--print", "\t".join("%%(%s)s" % c for c in _FACTS_CAMPOS),
                    "--", url],
                   TIMEOUT_DOWNLOAD, "yt-dlp metadata lookup")
@@ -930,7 +1069,11 @@ def baixa_trilha(url, out_dir):
     antes = set(os.listdir(out_dir))
     stem = "trilha-" + hashlib.sha256(url.encode()).hexdigest()[:10]
     template = os.path.join(out_dir, stem + ".%(ext)s")
-    run(_ytdlp() + ["--no-playlist", "--restrict-filenames", "-x",
+    # `_playlist_args`, pelo mesmo motivo do vídeo: um link de rádio ou de
+    # álbum é uma coleção, e um `--no-playlist` nele baixa a coleção inteira
+    # por cima de um template sem índice -- a trilha que sobra não é a que o
+    # dono ouviu antes de mandar o link.
+    run(_ytdlp() + [*_playlist_args(url), "--restrict-filenames", "-x",
                     "--audio-format", "mp3", "--audio-quality", "0",
                     "-o", template, "--", url],
         TIMEOUT_DOWNLOAD, "yt-dlp (track)")
@@ -946,7 +1089,8 @@ def baixa_trilha(url, out_dir):
     # por nome e um hash não é um nome que alguém digita.
     titulo = None
     try:
-        saida = run(_ytdlp() + ["--no-playlist", "--no-warnings", "--print",
+        # O título tem de ser o do arquivo que DESCEU, então a mesma resolução.
+        saida = run(_ytdlp() + [*_playlist_args(url), "--no-warnings", "--print",
                                 "%(title)s", "--skip-download", "--", url],
                     TIMEOUT_FETCH, "yt-dlp (title)")
         titulo = (saida or "").strip().splitlines()[0] if saida else None
@@ -1088,7 +1232,10 @@ def archive_window(rules, out_dir, url, start, end, folga=2.0, trusted=None):
     # vídeo, e `--download-sections` sobre m3u8 entrega um mp4 SEM FAIXA DE
     # VÍDEO, sem erro nenhum -- medido. Era o defeito que este caminho traria
     # de brinde, e ele seria descoberto num clipe entregue.
-    run(_ytdlp() + ["--no-playlist", "--restrict-filenames",
+    # A MESMA resolução de playlist que o preparo usou. Ver `_playlist_args`:
+    # com `--no-playlist` fixo aqui, um link de playlist ou de canal escolhia
+    # um vídeo no preparo e outro neste download, em silêncio.
+    run(_ytdlp() + [*_playlist_args(url), "--restrict-filenames",
                     "--download-sections", f"*{_carimbo(de)}-{_carimbo(ate)}",
                     "-f", "bv*[height<=1080][protocol^=http]+ba[protocol^=http]/"
                           "b[height<=1080][protocol^=http]/b[protocol^=http]",
@@ -1197,7 +1344,8 @@ def archive_windows(rules, out_dir, url, janelas, folga=2.0, trusted=None):
     marca = hashlib.sha256(url.encode()).hexdigest()[:10]
     template = os.path.join(
         out_dir, f"janela-{marca}-%(section_start)s-%(section_end)s.%(ext)s")
-    run(_ytdlp() + ["--no-playlist", "--restrict-filenames", *secoes,
+    # A MESMA resolução de playlist que o preparo usou. Ver `_playlist_args`.
+    run(_ytdlp() + [*_playlist_args(url), "--restrict-filenames", *secoes,
                     "-f", "bv*[height<=1080][protocol^=http]+ba[protocol^=http]/"
                           "b[height<=1080][protocol^=http]/b[protocol^=http]",
                     "--merge-output-format", "mp4", "-o", template, "--", url],
@@ -1998,16 +2146,10 @@ def _download_one(url, out_dir, mode="video"):
             raise RuntimeError(
                 "yt-dlp is neither importable by this interpreter nor on PATH, "
                 "so this link cannot be pulled.")
-    # A playlist link is a playlist, and --no-playlist on one is undefined: it is
-    # what left a stray intermediate file behind and made the archive step look
-    # broken. So the two cases are told apart -- a single video keeps
-    # --no-playlist, a playlist link takes exactly its first item -- and both are
-    # bounded per file by --max-filesize, which is the size cap the direct path
-    # has and this path did not, on the one path a campaign link most often uses.
-    is_playlist = (parsed.path.rstrip("/").endswith("/playlist")
-                   or ("list=" in (parsed.query or "") and "v=" not in (parsed.query or "")))
-    playlist_args = (["--yes-playlist", "--playlist-items", "1"]
-                     if is_playlist else ["--no-playlist"])
+    # A resolução de playlist é UMA, e está em `_playlist_args`. Ver lá: a
+    # versão anterior decidia aqui e o caminho da janela decidia de outro jeito,
+    # e as duas decisões podiam cair em vídeos diferentes do mesmo link.
+    playlist_args = _playlist_args(url)
     # --restrict-filenames, and a name we chose: the remote title is attacker
     # text and it ends up inside an ffmpeg filter string.
     stem = "source-" + hashlib.sha256(url.encode()).hexdigest()[:12]
@@ -2066,9 +2208,19 @@ def pick_model(duration_s, janela=None):
 
       - `janela=False`: transcrever a FONTE INTEIRA para escolher o momento.
         Ninguém lê esse texto e nada é queimado a partir dele; ele responde
-        "onde vale a pena olhar?". `base` é ~3x mais rápido que `small` e
-        responde essa pergunta igual de bem. Medido em 15/09/2026: 79s de
-        `small` para 2min30s de áudio.
+        "onde vale a pena olhar?". `base` é **5,6x mais rápido** que `small` e
+        responde essa pergunta igual de bem.
+
+        MEDIDO em 15/09/2026, no container, os dois modelos sobre o MESMO áudio
+        de 120s, `int8`, `beam_size=1`, `cpu_threads` do host, VAD desligado
+        para o modelo processar tudo: `base` 15,4s (32 segmentos), `small` 86,9s
+        (58 segmentos). Razão 5,64x.
+
+        Até esta medição o comentário aqui dizia "~3x", citando "79s de `small`
+        para 2min30s" -- um número que cronometrava SÓ o `small`. O `base` nunca
+        tinha sido cronometrado, e a razão era chute com cara de medição, num
+        arquivo cuja regra é não afirmar o que não foi medido. Agora são os dois,
+        lado a lado, na mesma máquina.
       - `janela=True`: transcrever uma janela JÁ ESCOLHIDA. Este texto vira
         legenda queimada, e legenda queimada errada é um clipe refeito. `small`,
         sempre -- a janela é curta por construção, então o modelo bom cabe.
@@ -2088,8 +2240,9 @@ def pick_model(duration_s, janela=None):
         return "small", "a window already chosen, and its words get burned in"
     if janela is False:
         return "base", ("the whole source, only to choose a moment from it: "
-                        "~3x faster, and the burned caption comes from the "
-                        "window pass with `small`")
+                        "5.6x faster (measured 15/09/2026, both models over the "
+                        "same 120s of audio: 15.4s against 86.9s), and the "
+                        "burned caption comes from the window pass with `small`")
     if duration_s and duration_s > SMALL_CEILING_S:
         return "base", (f"source is {duration_s / 60:.0f} minutes, so the faster "
                         "model, to keep this under ten minutes")
@@ -3459,11 +3612,35 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
             # se pode é inventar: sem instrução e sem detector, não há de onde
             # tirar a faixa, e recusar aqui é a diferença entre um argumento a
             # mais e um rosto cortado no arquivo publicado.
+            #
+            # A RECUSA FICA, e a decisão é esta, escrita para quem vier depois
+            # achando que ela contradiz a promessa de uma pergunta só:
+            #
+            #   - a IMAGEM TEM o detector. O OpenCV e o YuNet são instalados no
+            #     Dockerfile e conferidos no build. No container -- que é onde
+            #     este agente atende o dono -- `face_detection_status()` diz
+            #     sim e este ramo NUNCA roda. A segunda pergunta não existe no
+            #     caminho normal.
+            #   - o caso sem detector é a máquina de quem roda a suíte ou o
+            #     script fora do container. Ali um argumento a mais é barato, e
+            #     é a pessoa que já está no terminal quem o passa.
+            #   - cair no centro calado foi o que se fez até 14/09, e o
+            #     resultado foi um clipe entregue com o rosto na borda. O aviso
+            #     de então dizia "enquadrei no centro": verdadeiro, e inútil,
+            #     porque ninguém lê um aviso num clipe que parece pronto.
+            #
+            # O `warden-clip/SKILL.md` fala em "falls back to the centre", e
+            # esse texto é sobre OUTRA coisa -- detector presente que não achou
+            # rosto, que de fato cai no centro logo abaixo. Ele não distingue
+            # os dois casos, e é de outro dono; fica registrado aqui.
             if crop in (None, "auto"):
                 raise RuntimeError(
                     f"no face detection on this machine ({why}) -- pass --crop "
                     f"left|right|center|<0-100> to say where the subject is, or "
-                    f"rebuild the image, which ships the detector.")
+                    f"rebuild the image, which ships the detector. This is not "
+                    f"the agent's container: there OpenCV and the YuNet model "
+                    f"are installed at build time, the face chooses the band, "
+                    f"and this question is never asked.")
             # Um lado nomeado é o dono dizendo onde o sujeito está, e isso é
             # honrado. Mas continua sendo um lado, não uma medição: a nota diz
             # isso em vez de deixar parecer que alguém conferiu.
@@ -4496,6 +4673,49 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         (1 if footer else 0)
         + (1 if style_facts.get("caption") else 0)
         + (1 if style_facts.get("hook") else 0))
+
+    # ------------------------------------------------------ a tarja, medida
+    #
+    # ISTO É O PORTÃO DE TARJA PRETA, e ele estava fora do caminho.
+    #
+    # A detecção existe desde 15/09 -- `barras_pretas` abre os quadros e
+    # `_barra_preta_reprova` reprova -- e só era alcançada por `cross_check`,
+    # que só é chamado por `warden style check`. Esse comando não está na ordem
+    # de trabalho da skill. O portão de entrega do `cut` é este bloco aqui, e
+    # ele conferia apenas `check_sidecar`, que lê o que o render ANOTOU de si:
+    # o sidecar sabe a largura do hook porque foi o PIL que o desenhou, e não
+    # sabe nada sobre as bordas do arquivo, porque ninguém as tinha aberto.
+    #
+    # Então o clipe de 289px de tarja no pé do quadro -- o defeito que este
+    # repositório documenta em três lugares -- passava por TODOS os portões que
+    # o prompt manda rodar, e saía como aprovado. Testes verdes, e a tarja lá.
+    #
+    # O conserto é chamar o que já existe, não reescrevê-lo: os quadros saem do
+    # `sample_frames` do próprio `warden_style`, a medida sai do
+    # `barras_pretas` dele, e o veredito sai do `cross_check` dele. `medida`
+    # carrega só as duas chaves de barra de propósito: sem
+    # `text_rows_per_frame` o `_linhas_demais` devolve lista vazia e sem
+    # `text_width_ratio` o cruzamento de largura não diz nada -- essas duas
+    # perguntas são do `style check`, que mede o arquivo inteiro. Aqui a
+    # pergunta é uma só, e é a que reprovava o clipe entregue.
+    #
+    # Custa uma passada de ffmpeg sobre o render pronto, ao lado da que o
+    # contact sheet já faz. É o preço de olhar as bordas, e ele é menor do que
+    # o de entregar a moldura de novo.
+    barras, porque_barras = None, None
+    try:
+        quadros = S.sample_frames(out, 0, measured or length, count=10)
+        barras, porque_barras = S.barras_pretas(quadros)
+    except Exception as exc:
+        # Nem um erro aqui vira silêncio: "não olhei as bordas" é a mensagem
+        # que `_barra_preta_reprova` já sabe transformar em REJECT, e é o que
+        # tem de acontecer -- uma tarja é invisível para todo o resto.
+        porque_barras = (f"{type(exc).__name__}: {exc} ao abrir os quadros do "
+                         f"render para olhar as bordas")
+    style_facts["black_bars"] = barras
+    if porque_barras:
+        style_facts["black_bars_why"] = porque_barras
+
     style_path = os.path.splitext(out)[0] + "-estilo.json"
     try:
         with open(style_path, "w", encoding="utf-8") as fh:
@@ -4518,7 +4738,13 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         notes.append("não consegui montar o contact sheet deste render. Sem ele "
                      "ninguém olhou este clipe -- não entregue.")
     # O render conta o que fez de si, e quem entrega confere antes do MEDIA:.
+    # `cross_check` entra junto pelos PIXELS das bordas -- ver o bloco da tarja
+    # acima. São as duas cegueiras: `check_sidecar` sabe o que desenhamos e não
+    # vê o arquivo; `cross_check` vê o arquivo e não sabe o que desenhamos.
     breaches = S.check_sidecar(style_facts)
+    breaches += S.cross_check(style_facts,
+                              {"black_bars": barras,
+                               "black_bars_why": porque_barras})
     for level, message in breaches:
         if level == "REJECT":
             notes.append(f"STYLE REJECT: {message}")

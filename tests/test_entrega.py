@@ -637,5 +637,445 @@ class OComandoQueAPersonaMandaUsarPrecisaExistir(unittest.TestCase):
         self.assertNotIn("WARDEN_POST_API_KEY", err.getvalue())
 
 
+class UmClipeREPROVADONaoDeixaCaminhoNenhumNoStdout(unittest.TestCase):
+    """O stdout de uma reprovação era UMA linha, e era o caminho do arquivo.
+
+    `deliver` imprimia `result["out"]` ANTES dos portões. Numa reprovação o
+    comando saía 1 e ainda assim deixava no stdout uma linha no mesmo formato
+    da primeira linha de um sucesso -- um caminho de mp4, pronto para ser
+    citado. E `runtime/persona.md` diz o contrário, com todas as letras: "if
+    `warden cut` exited non-zero there is no line to send and no clip to
+    describe". Havia: o clipe que o portão acabou de reprovar.
+
+    O custo é a entrega errada mais cara que este projeto conhece -- o agente
+    manda ao dono exatamente o arquivo que a campanha recusou.
+    """
+
+    def setUp(self):
+        self.dir = _temp(self, "warden-reprova-")
+        self.estado = os.path.join(self.dir, "estado")
+        os.makedirs(self.estado, exist_ok=True)
+        self._env = os.environ.get("WARDEN_DIR")
+        os.environ["WARDEN_DIR"] = self.estado
+        self.addCleanup(self._repoe)
+        self._probe_antigo = warden.probe
+        self.addCleanup(setattr, warden, "probe", self._probe_antigo)
+
+    def _repoe(self):
+        if self._env is None:
+            os.environ.pop("WARDEN_DIR", None)
+        else:
+            os.environ["WARDEN_DIR"] = self._env
+
+    def _regras(self, **video):
+        import warden_rules as R
+        r = R.blank()
+        r.update({"id": "t", "name": "t", "schema": 1})
+        r["video"].update(dict({"duration_min_s": 1, "duration_max_s": 5,
+                                "width": 1080, "height": 1920,
+                                "audio": "forbidden"}, **video))
+        r["caption"].update({"required_hashtags": [], "required_mentions": [],
+                             "banned_terms": []})
+        return r
+
+    def _resultado(self, com_mosaico=True):
+        clipe = os.path.join(self.dir, "corte.mp4")
+        with open(clipe, "wb") as fh:
+            fh.write(b"\x00" * 16)
+        folha = os.path.join(self.dir, "corte-contato.jpg")
+        if com_mosaico:
+            with open(folha, "wb") as fh:
+                fh.write(b"\x00")
+        return {"out": clipe, "notes": [], "sheet": folha if com_mosaico else None,
+                "style": {"caption": None}, "style_breaches": [],
+                "asked_for_captions": False}
+
+    def _entrega(self, regras, result):
+        warden.probe = lambda caminho: {
+            "width": 1080, "height": 1920, "duration_s": 3.0, "fps": "30/1",
+            "codec": "h264", "audio_codec": None, "subtitle_tracks": 0,
+            "size_mb": 1.0}
+        saida, erro = io.StringIO(), io.StringIO()
+        with redirect_stdout(saida), redirect_stderr(erro):
+            code = warden.deliver(result, regras, None, [])
+        return code, saida.getvalue(), erro.getvalue()
+
+    def test_reprovado_pela_campanha_nao_imprime_nada_no_stdout(self):
+        # 3s num clipe que tem de ter no máximo 2: REJECT.
+        code, saida, erro = self._entrega(self._regras(duration_max_s=2),
+                                          self._resultado())
+        self.assertEqual(code, 1, erro)
+        self.assertEqual(saida, "", saida)
+        self.assertIn("does not clear the campaign", erro)
+
+    def test_reprovado_sem_contact_sheet_tambem_nao_imprime_nada(self):
+        code, saida, erro = self._entrega(self._regras(),
+                                          self._resultado(com_mosaico=False))
+        self.assertEqual(code, 1, erro)
+        self.assertEqual(saida, "", saida)
+        self.assertIn("nothing has looked at it", erro)
+
+    def test_o_caminho_do_clipe_reprovado_nao_aparece_em_lugar_nenhum_do_stdout(self):
+        result = self._resultado()
+        _code, saida, _erro = self._entrega(self._regras(duration_max_s=2),
+                                            result)
+        self.assertNotIn(result["out"], saida)
+
+    def test_aprovado_continua_imprimindo_caminho_sheet_e_media(self):
+        """O conserto não pode custar a entrega: quem passa imprime tudo, e
+        na mesma ordem de sempre -- caminho, mosaico, linha que anexa."""
+        result = self._resultado()
+        code, saida, erro = self._entrega(self._regras(), result)
+        self.assertEqual(code, 0, erro)
+        linhas = saida.strip().splitlines()
+        self.assertEqual(linhas[0], result["out"])
+        self.assertIn(f"SHEET:{result['sheet']}", saida)
+        self.assertIn(f"MEDIA:{result['out']}", saida)
+        self.assertLess(saida.index("SHEET:"), saida.index("MEDIA:"))
+
+
+class _PostFalso:
+    """O `warden_post` que a rede teria devolvido. Nenhum socket é aberto."""
+
+    class PostIndisponivel(Exception):
+        pass
+
+    def __init__(self, contas, configurado=True):
+        self._contas = contas
+        self._configurado = configurado
+
+    def esta_configurado(self):
+        return self._configurado
+
+    def status(self):
+        reauth = [f"Clip-Warden/{rede}" for rede, c in sorted(self._contas.items())
+                  if c["conectada"] and c["reauth_required"]]
+        return {"provedor": "upload-post", "base": "https://x.invalid/",
+                "chave": "configurada", "email": "dono@example.com",
+                "plano": "pro", "limite_perfis": 1, "perfil": "Clip-Warden",
+                "perfis": [{"nome": "Clip-Warden", "contas": self._contas}],
+                "reauth": reauth, "avisos": []}
+
+
+def _conta(conectada=True, reauth=False, handle="@poddclipes"):
+    return {"conectada": conectada, "reauth_required": reauth,
+            "display_name": "Podd Clipes" if conectada else None,
+            "handle": handle if conectada else None}
+
+
+class OCodigoDeSaidaDoPostSeparaTresEstados(unittest.TestCase):
+    """`post status` saía 0 para uma conta que não vai publicar.
+
+    A persona lê este comando de forma binária -- saiu != 0, a estrada está
+    desligada; saiu 0, é "a estrada que publica" -- e a conta com
+    `reauth_required` saía 0 com a frase "CONNECTED BUT NEEDS REAUTH -- it will
+    not publish" enterrada na listagem. O agente prometia publicação, e o envio
+    falhava depois de subir o arquivo inteiro.
+
+    São TRÊS estados e eles precisam de três códigos: publica, não há chave, e
+    a chave vale mas nenhuma conta publica.
+    """
+
+    def _roda(self, falso):
+        antigo = warden._post
+        warden._post = lambda: falso
+        self.addCleanup(setattr, warden, "_post", antigo)
+        saida, erro = io.StringIO(), io.StringIO()
+        with redirect_stdout(saida), redirect_stderr(erro):
+            try:
+                code = warden.cmd_post(type("A", (), {"action": "status"})())
+            except SystemExit as saiu:
+                code = saiu.code
+        return code, saida.getvalue() + erro.getvalue()
+
+    def test_conta_conectada_e_saudavel_sai_zero(self):
+        code, texto = self._roda(_PostFalso({"youtube": _conta()}))
+        self.assertEqual(code, 0, texto)
+        self.assertIn("@poddclipes", texto)
+
+    def test_sem_chave_sai_um(self):
+        code, texto = self._roda(_PostFalso({}, configurado=False))
+        self.assertEqual(code, 1, texto)
+        self.assertIn("intermediary is OFF", texto)
+
+    def test_chave_valida_com_reauth_pendente_nao_sai_zero(self):
+        code, texto = self._roda(
+            _PostFalso({"youtube": _conta(reauth=True)}))
+        self.assertNotEqual(code, 0, texto)
+        self.assertEqual(code, 3, texto)
+        self.assertIn("NO account here will publish", texto)
+        self.assertIn("Clip-Warden/youtube", texto)
+        # e diz o que fazer, que é o que separa um código de saída de um erro
+        self.assertIn("reconnect", texto.lower())
+
+    def test_chave_valida_sem_conta_nenhuma_tambem_nao_sai_zero(self):
+        code, texto = self._roda(
+            _PostFalso({"youtube": _conta(conectada=False)}))
+        self.assertEqual(code, 3, texto)
+        self.assertIn("NO account here will publish", texto)
+
+    def test_uma_conta_saudavel_ao_lado_de_uma_pedindo_reauth_ainda_publica(self):
+        """Existe estrada: o TikTok pede reautenticação, o YouTube publica."""
+        code, texto = self._roda(_PostFalso({
+            "youtube": _conta(),
+            "tiktok": _conta(reauth=True, handle="@outro")}))
+        self.assertEqual(code, 0, texto)
+        self.assertIn("NEEDS REAUTH", texto)
+
+    def test_a_frase_de_desligado_nao_cronometra_o_dono(self):
+        """"upload it by hand in under a minute": ninguém mediu isso, e esta
+        frase existe justamente para ser a que não promete nada."""
+        _code, texto = self._roda(_PostFalso({}, configurado=False))
+        self.assertNotIn("under a minute", texto)
+        self.assertIn("upload it by hand", texto)
+
+
+class OInboxNaoInventaUmTruncamento(unittest.TestCase):
+    """A heurística de link cortado tinha a forma de uma mensagem INTEIRA.
+
+    Era `texto.endswith(link) and len(texto) >= 79`: qualquer mensagem
+    comprida que termine num link -- "pega esse podcast e me faz os cortes
+    https://..." -- era declarada truncada, e o comando mandava perguntar de
+    novo. A persona dá UMA pergunta por turno; essa era a segunda, e ela era
+    gasta com um link perfeito.
+
+    Agora o corte só é afirmado quando o endereço PROVA que está pela metade.
+    """
+
+    def setUp(self):
+        self.dir = _temp(self, "warden-inbox-")
+        self.log = os.path.join(self.dir, "gateway.log")
+        self._antigo = warden.GATEWAY_LOG
+        warden.GATEWAY_LOG = self.log
+        self.addCleanup(setattr, warden, "GATEWAY_LOG", self._antigo)
+        self._ms = 0
+
+    def _escreve(self, *textos):
+        with open(self.log, "a", encoding="utf-8") as fh:
+            for texto in textos:
+                self._ms = (self._ms + 1) % 1000
+                carimbo = (time.strftime("%Y-%m-%d %H:%M:%S")
+                           + f",{self._ms:03d}")
+                fh.write(f"{carimbo} INFO gateway.run: inbound message: "
+                         f"platform=plow_chat user=x chat=cht_a msg='{texto}' "
+                         f"reply_to_id=None reply_to_text=''\n")
+
+    def _roda(self, espera=2.0):
+        saida, erro = io.StringIO(), io.StringIO()
+        with redirect_stdout(saida), redirect_stderr(erro):
+            try:
+                code = warden.cmd_inbox(type("A", (), {"wait": espera})())
+            except SystemExit as saiu:
+                code = saiu.code
+        return code, saida.getvalue(), erro.getvalue()
+
+    def _chega(self, texto, depois=0.4):
+        import threading
+        t = threading.Thread(
+            target=lambda: (time.sleep(depois), self._escreve(texto)))
+        t.start()
+        self.addCleanup(t.join)
+        return t
+
+    def test_mensagem_longa_e_inteira_devolve_o_link_e_nao_pergunta(self):
+        self._escreve("gatilho")
+        inteira = ("Pega esse podcast e me faz os tres cortes mais virais dele "
+                   "https://www.youtube.com/watch?v=9rwEGPyPasY")
+        self.assertGreaterEqual(len(inteira), 79)
+        self._chega(inteira)
+        code, saida, erro = self._roda(espera=6.0)
+        self.assertEqual(code, 0, erro)
+        self.assertEqual(saida.strip(),
+                         "https://www.youtube.com/watch?v=9rwEGPyPasY")
+        self.assertNotIn("truncated", erro)
+
+    def test_id_do_youtube_pela_metade_continua_sendo_recusado(self):
+        self._escreve("gatilho")
+        self._chega("Pega esse video e me faz os cortes mais virais "
+                    "https://www.youtube.com/watch?v=9rwEGPyPa")
+        code, _saida, erro = self._roda(espera=6.0)
+        self.assertEqual(code, 1, erro)
+        self.assertIn("truncated", erro)
+        self.assertIn("11 characters", erro)
+
+    def test_link_que_nao_e_do_youtube_nao_e_chutado_como_cortado(self):
+        """Fora das formas conhecidas não dá para distinguir uma URL curta de
+        uma URL cortada -- e aí o honesto é devolver o link."""
+        self._escreve("gatilho")
+        longo = ("Faz um corte legal desse episodio aqui pra mim por favor "
+                 "https://exemplo.invalid/podcast/ep")
+        self.assertGreaterEqual(len(longo), 79)
+        self._chega(longo)
+        code, saida, erro = self._roda(espera=6.0)
+        self.assertEqual(code, 0, erro)
+        self.assertEqual(saida.strip(), "https://exemplo.invalid/podcast/ep")
+
+    def test_log_ilegivel_nao_e_a_mesma_coisa_que_link_nenhum(self):
+        """Dois casos, dois códigos: 1 é "esperei e não veio", que é uma
+        medida; 2 é "não olhei", que não é."""
+        warden.GATEWAY_LOG = os.path.join(self.dir, "nao-existe.log")
+        code, _saida, erro = self._roda(espera=1.0)
+        self.assertEqual(code, 2, erro)
+        self.assertIn("nothing was measured", erro)
+        self.assertNotIn("nothing with a link arrived", erro)
+
+    def test_link_nenhum_depois_da_espera_continua_saindo_um(self):
+        self._escreve("me faz uns cortes desse video")
+        code, _saida, erro = self._roda(espera=1.0)
+        self.assertEqual(code, 1, erro)
+        self.assertIn("ask for the URL", erro)
+
+
+class AVozContaMensagensSemDespejarConversaDeOutros(unittest.TestCase):
+    """`warden voz` imprimia texto de conversas de OUTRAS sessões.
+
+    O banco do runtime guarda todas as conversas daquela instalação, uma por
+    `session_id`, e o volume sobrevive a `up`/`down`. Nenhuma consulta filtrava
+    por sessão: `warden voz --since 0` despejava 56 caracteres de cada pedido e
+    88 de cada mensagem do agente, de quem quer que tivesse usado a mesma
+    instalação antes.
+
+    Para CONTAR não é preciso mostrar o texto de ninguém -- e quando dá para
+    dizer qual é a sessão corrente, o que se conta é só ela.
+    """
+
+    def setUp(self):
+        self.dir = _temp(self, "warden-voz-")
+        self.db = os.path.join(self.dir, "state.db")
+        self._antigo = warden.CONVERSAS_DB
+        warden.CONVERSAS_DB = self.db
+        self.addCleanup(setattr, warden, "CONVERSAS_DB", self._antigo)
+        self._sessao = os.environ.pop("WARDEN_SESSION_ID", None)
+        self.addCleanup(self._repoe)
+
+    def _repoe(self):
+        if self._sessao is None:
+            os.environ.pop("WARDEN_SESSION_ID", None)
+        else:
+            os.environ["WARDEN_SESSION_ID"] = self._sessao
+
+    def _banco(self, linhas, com_sessao=True):
+        con = sqlite3.connect(self.db)
+        if com_sessao:
+            con.execute("create table messages (session_id text, "
+                        "timestamp real, role text, content text)")
+            con.executemany("insert into messages values (?,?,?,?)", linhas)
+        else:
+            con.execute("create table messages (timestamp real, role text, "
+                        "content text)")
+            con.executemany("insert into messages values (?,?,?)", linhas)
+        con.commit()
+        con.close()
+
+    def _roda(self, since=None):
+        saida, erro = io.StringIO(), io.StringIO()
+        with redirect_stdout(saida), redirect_stderr(erro):
+            try:
+                code = warden.cmd_voz(type("A", (), {"since": since})())
+            except SystemExit as saiu:
+                code = saiu.code
+        return code, saida.getvalue(), erro.getvalue()
+
+    # A conversa de outra pessoa, na mesma instalação, e a desta sessão.
+    _OUTRA = [
+        ("sess-antiga", 100.0, "user", "meu nome completo e meu CPF sao"),
+        ("sess-antiga", 101.0, "assistant", "anotei o seu CPF, obrigado"),
+        ("sess-antiga", 102.0, "assistant", "e o endereco da sua casa tambem"),
+        ("sess-antiga", 103.0, "assistant", "mais uma mensagem"),
+        ("sess-antiga", 104.0, "assistant", "e mais outra"),
+        ("sess-antiga", 105.0, "assistant", "e mais outra ainda"),
+    ]
+    _MINHA = [
+        ("sess-agora", 200.0, "user", "me faz 2 cortes desse video"),
+        ("sess-agora", 201.0, "assistant", "Peguei."),
+        ("sess-agora", 260.0, "assistant", "Primeiro corte.\nMEDIA:/x/a.mp4"),
+        ("sess-agora", 300.0, "assistant", "Segundo corte.\nMEDIA:/x/b.mp4"),
+    ]
+
+    def test_a_conversa_de_outra_sessao_nao_e_contada_nem_impressa(self):
+        self._banco(self._OUTRA + self._MINHA)
+        code, saida, erro = self._roda(since=0)
+        tudo = saida + erro
+        self.assertNotIn("CPF", tudo)
+        self.assertNotIn("endereco da sua casa", tudo)
+        self.assertIn("1 request(s)", saida)
+        self.assertEqual(code, 0, tudo)
+
+    def test_a_saida_diz_qual_sessao_esta_contando(self):
+        self._banco(self._OUTRA + self._MINHA)
+        _code, _saida, erro = self._roda(since=0)
+        self.assertIn("sess-agora", erro)
+
+    def test_a_sessao_do_ambiente_vence_a_inferencia(self):
+        os.environ["WARDEN_SESSION_ID"] = "sess-antiga"
+        self._banco(self._OUTRA + self._MINHA)
+        code, saida, _erro = self._roda(since=0)
+        self.assertEqual(code, 1, saida)          # cinco mensagens, teto é 4
+        self.assertIn("DEMAIS", saida)
+        self.assertNotIn("me faz 2 cortes", saida)
+
+    def test_sem_sessao_para_isolar_ele_conta_e_nao_mostra_texto(self):
+        """Contar é a razão de o comando existir; mostrar o texto não é."""
+        linhas = [(None, t, p, c) for _s, t, p, c in self._OUTRA + self._MINHA]
+        self._banco(linhas)
+        code, saida, erro = self._roda(since=0)
+        self.assertIn("printing NO message text", erro)
+        self.assertIn("(text not shown)", saida)
+        self.assertNotIn("CPF", saida + erro)
+        # e a contagem continua saindo, com veredito
+        self.assertIn("request(s)", saida)
+        self.assertEqual(code, 1, saida)
+
+    def test_banco_sem_coluna_de_sessao_guarda_uma_conversa_so(self):
+        """Uma tabela que não separa sessões não tem o que separar: aí o texto
+        continua saindo, que é o que torna a contagem acionável."""
+        self._banco([(200.0, "user", "me faz 2 cortes"),
+                     (201.0, "assistant", "Peguei."),
+                     (202.0, "assistant", "Video baixado."),
+                     (203.0, "assistant", "Vou transcrever agora."),
+                     (204.0, "assistant", "Achei um momento forte."),
+                     (205.0, "assistant", "Primeiro corte.\nMEDIA:/x/a.mp4")],
+                    com_sessao=False)
+        code, saida, _erro = self._roda(since=0)
+        self.assertEqual(code, 1, saida)
+        self.assertIn("Video baixado.", saida)
+
+
+class OQueNaoFoiMedidoNaoEAfirmado(_ComAsDuasPontas):
+    """Duas frases que afirmavam mais do que o projeto sabe.
+
+    `_FALHOU = "Failed to send media"` entrou num bloco que começa com "Medido
+    em 15/09" e NUNCA foi observada em log nenhum -- a auditoria do próprio
+    projeto registra isso duas vezes. Se a frase real do gateway for outra,
+    esta rede de segurança nunca dispara, e o silêncio dela não prova nada. A
+    saída dizia "the gateway logged N media send failure(s)", como fato.
+    """
+
+    def test_a_constante_esta_marcada_como_nao_confirmada_no_comentario(self):
+        fonte = warden.__file__.replace(".pyc", ".py")
+        with open(fonte, encoding="utf-8") as fh:
+            texto = fh.read()
+        antes = texto.split('_FALHOU = "Failed to send media"')[0]
+        bloco = antes[-1400:]
+        self.assertIn("NÃO foi confirmada", bloco)
+
+    def test_a_recusa_nao_chama_o_padrao_de_falha_medida(self):
+        escreve_state_db(self.db, [
+            ("assistant", f"MEDIA:{os.path.abspath(self.clipe)}", "stop")])
+        self._log_com([
+            "[Plow_Chat] Delivering 1 non-image MEDIA attachment(s)",
+            "[Plow_Chat] Failed to send media (.mp4): upstream refused"])
+        warden.entregas_registra(self.clipe)
+        code, err = self._confirma()
+        self.assertEqual(code, 1, err)
+        # continua NÃO confirmando e continua mandando reenviar
+        self.assertIn("NOT confirming", err)
+        self.assertIn("Send it again", err)
+        # mas não afirma o que ninguém mediu
+        self.assertNotIn("media send failure(s)", err)
+        self.assertNotIn("The person does not have it", err)
+        self.assertIn("never seen in a real gateway log", err)
+
+
 if __name__ == "__main__":
     unittest.main()

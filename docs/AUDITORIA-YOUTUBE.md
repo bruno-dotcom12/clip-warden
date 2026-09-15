@@ -62,18 +62,52 @@ Falta:
 2. Apagar no ghcr as versões publicadas que carregam o par antigo — **e a ORDEM
    importa, senão a instalação de quem chegar no meio quebra.**
 
-   Estado medido em 15/09/2026 às 18:50, por pull **anônimo** do registro (sem
-   nenhuma credencial, que é o ponto):
+   **Como isso é conferido, e qual é o critério.** Por pull **anônimo** do
+   registro — sem `docker login`, sem conta, sem nenhuma credencial, que é
+   exatamente o ponto: é assim que um estranho lê. O pull anônimo devolve a
+   configuração da imagem, e o critério é um só:
 
-   | versão | ainda carrega o par |
+   > se `WARDEN_YT_CLIENT_SECRET` aparecer **com valor** no `Env` da
+   > configuração da imagem, aquela versão está contaminada. Se não aparecer
+   > com valor, está limpa.
+
+   Não precisa baixar as camadas nem rodar a imagem. O `Env` está no manifesto
+   de configuração, que o registro entrega sozinho.
+
+   **A lista completa levantada pela revisão.** Toda versão publicada ANTES do
+   commit que tirou o par do build (`74cb313`) carrega o par, porque naquele
+   momento ele entrava por `build-arg` e virava `ENV`:
+
+   | versão | de onde vem |
    | --- | --- |
-   | `latest` | sim |
-   | `sha-acb379e064c73bb0d781a2993f9bb8521fa7973e` | sim |
-   | `sha-7873305d7f502a829293fc3f36fe337404a16437` | não |
+   | `latest` | a tag móvel, hoje apontando para uma imagem contaminada |
+   | `sha-7873305d7f502a829293fc3f36fe337404a16437` | 15/09 14:08 |
+   | `sha-acb379e064c73bb0d781a2993f9bb8521fa7973e` | 15/09 14:21 |
+   | `sha-256582d…` | 15/09 16:03 |
+   | `sha-08c4f9a…` | 15/09 16:03 |
+   | `sha-f34f31d…` | 15/09 16:03 |
+   | `sha-beafa41…` | 15/09 16:03 |
+   | `buildcache` — **as versões antigas** | o cache do build do CI, que guarda as mesmas camadas |
+
+   **O `buildcache` é o que se esquece.** Ele não é uma imagem que alguém roda,
+   é o cache de camadas que o CI publica no mesmo pacote, e as camadas velhas
+   dele carregam o mesmo `ENV`. Apagar as tags `sha-…` e deixar o `buildcache`
+   antigo em pé não termina a limpeza — e a página de versões do pacote mostra
+   as duas coisas misturadas, então é preciso olhar a lista inteira e não só o
+   que parece uma release.
+
+   **Uma leitura anterior discordava, e está registrada aqui de propósito:** a
+   medição das 18:50 de 15/09 anotou `sha-7873305…` como **limpa**, e a
+   varredura seguinte anotou como contaminada. As duas não podem estar certas.
+   A ação é a mesma nos dois casos — aquela versão sai junto com as outras —
+   mas quem for apagar pode refazer a leitura pelo critério acima antes, se
+   quiser fechar a contradição em vez de só passar por cima dela.
 
    O valor lá dentro está **morto**: o cliente foi apagado no Google e a
    renovação devolve `deleted_client`. Ele não abre nada. O que sobra é o sinal
-   ruim de ter credencial publicada num projeto que está pedindo auditoria.
+   ruim de ter credencial publicada num projeto que está pedindo auditoria — e
+   "está morto" não é resposta para um revisor que acabou de achar um segredo
+   num pull anônimo.
 
    A ordem:
 
@@ -81,14 +115,15 @@ Falta:
       já não embutem mais nada;
    2. deixar o CI publicar uma imagem nova, que sai limpa e assume a tag
       `latest`;
-   3. **só então** apagar as versões antigas, em
-      `https://github.com/users/bruno-dotcom12/packages/container/clip-warden/versions`.
+   3. **só então** apagar as versões antigas — **todas as da tabela acima,
+      inclusive as versões antigas de `buildcache`** — em
+      `https://github.com/users/bruno-dotcom12/packages/container/clip-warden/versions`;
+   4. conferir a imagem nova pelo critério do `Env`, antes de dizer que acabou.
 
    Apagar o `latest` antes do passo 2 deixa o `install.sh` sem imagem para puxar.
 
-   Para conferir sozinho, depois, sem instalar nada: o mesmo pull anônimo lê o
-   `Env` da configuração da imagem. Se `WARDEN_YT_CLIENT_SECRET` não aparecer
-   com valor, está limpa.
+   O passo 4 usa o mesmo critério do `Env` descrito acima, e vale tanto para a
+   imagem nova quanto para qualquer versão que sobre na página.
 3. Guardar o par NOVO num `.env` ao lado do `compose.yml`, com `chmod 600`.
    `docs/INSTALL.md` tem o passo a passo.
 4. Rodar `warden youtube connect` de novo. A autorização guardada em

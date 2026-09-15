@@ -17,19 +17,44 @@ The clips come back **in the chat**, as files. That is the delivery, and for
 most people it is the whole flow: you post them yourself, from the app you
 already post from.
 
-Three delivery commands exist beyond that. **Every one of them is off until you
-supply a credential yourself**, and they are not interchangeable — one of them
-publishes, two of them do not:
+## Does it post to YouTube for me?
 
-- **`warden post youtube`** — **this is the one that actually publishes.** It
-  goes through a publishing intermediary whose app has already been audited by
-  YouTube, so the video comes out **public** on your channel. Measured on
-  15/09/2026 with a real send: the YouTube API reported `privacyStatus: public`
-  and the page opens signed out. It needs `WARDEN_POST_API_KEY`, which is an
-  account **you** hold with that intermediary — your quota, your bill. Their
-  free plan is 10 uploads a month and asks for no card. Without the key the
-  command is off. Setting it up is five steps and no programming, typed out in
-  `docs/INSTALL.md` under "Handing a clip to YouTube or TikTok".
+**Not on a fresh install, and that is the honest answer to the first question
+everybody asks.** Out of the box this agent publishes nowhere. It hands you the
+finished MP4 in the chat, with the title, description and caption ready to
+paste, and you post it from the app you already post from. That path needs no
+account, no API key and no OAuth, and it is what "it works" means here.
+
+Publishing straight from the chat is a **real feature and it is opt-in**: about
+**three minutes**, no programming, setting up an account that is yours rather
+than this project's. It is typed out step by step in `docs/INSTALL.md`, under
+**"Setting it up — five steps, about three minutes"**. Until you do that, every
+delivery command below is off, and nothing else about the agent changes — the
+cut, the caption and the chat delivery are identical either way.
+
+**Why it cannot ship switched on:** a credential that publishes to *your*
+channel would have to live inside a public image — the paragraph below is what
+happened the one time something like that did. And the direct YouTube API path
+cannot be switched on for you at all: this project's own API project has **not**
+been audited by Google, so an upload through it comes out **locked private, with
+no appeal**. That is the difference between the first command below and the
+second, and it is the whole reason there are two.
+
+Three delivery commands exist beyond the chat. **Every one of them is off until
+you supply a credential yourself**, and they are not interchangeable — one of
+them publishes, two of them do not:
+
+- **`warden post youtube`** — **this is the one that actually publishes, once
+  you have switched it on.** It goes through a publishing intermediary whose
+  app has already been audited by YouTube, so the video comes out **public** on
+  your channel. Measured on 15/09/2026 with a real send: the YouTube API
+  reported `privacyStatus: public` and the page opens signed out. It needs
+  `WARDEN_POST_API_KEY`, which is an account **you** hold with that
+  intermediary — your quota, your bill. Their free plan is 10 uploads a month
+  and asks for no card. Without the key the command is off, which is the state
+  of every fresh install. Switching it on is five steps, no programming, about
+  three minutes: `docs/INSTALL.md`, "Handing a clip to YouTube or TikTok" →
+  "Setting it up — five steps, about three minutes".
 - **`warden youtube connect` / `warden youtube publish`** — the direct YouTube
   Data API path, using this project's own API project, which Google has **not**
   audited. An upload from an unaudited project is **locked as private**, and
@@ -147,13 +172,14 @@ from happening, which is not the same as fixing it — see "I can't download
 anything from YouTube" below.
 
 Then text the agent a campaign link. Nothing else to configure **to get clips**:
-no API keys, no OAuth, no accounts. The two delivery commands are the one
-exception and they are opt-in — `docs/INSTALL.md` has what you supply, and what
-you still do by hand afterwards. It does not open with a questionnaire: clips
-keep the **original sound** by default and the agent announces that with the
-clip instead of asking for it. `--sound platform` ships them silent for you to
-add a track in the app, and a campaign that forbids the source's audio overrides
-both — the announced line names the rule that decided.
+no API keys, no OAuth, no accounts. The three delivery commands are the only
+exception and all three are opt-in — the one that publishes takes about three
+minutes to switch on, and `docs/INSTALL.md` has the five steps, plus what you
+still do by hand afterwards for the other two. It does not open with a
+questionnaire: clips keep the **original sound** by default and the agent
+announces that with the clip instead of asking for it. `--sound platform` ships
+them silent for you to add a track in the app, and a campaign that forbids the
+source's audio overrides both — the announced line names the rule that decided.
 
 The transcription models are not in the image. A supervised service pulls them
 in the background on first boot, while you are reading the agent's first reply,
@@ -230,7 +256,7 @@ it rather than from the model's reading.
 | `warden check <clip> --campaign <id> --caption -` | the first gate: exit 1 means do not post |
 | `warden package --campaign <id> --hook "..."` | the caption the campaign requires |
 | `warden log --campaign <id> ...` | this install's own count, which the cap reads |
-| `warden post youtube <clip>` | **the one that publishes.** Through an intermediary whose app YouTube already audited, so the video comes out public — measured 15/09/2026, `privacyStatus: public`. Needs `WARDEN_POST_API_KEY`, which is your account with that intermediary |
+| `warden post youtube <clip>` | **the one that publishes — after you switch it on.** Through an intermediary whose app YouTube already audited, so the video comes out public — measured 15/09/2026, `privacyStatus: public`. Off on a fresh install: it needs `WARDEN_POST_API_KEY`, which is your own account with that intermediary, about three minutes to create |
 | `warden youtube connect\|status\|publish <clip>` | the direct API path, on this project's unaudited API project. **The upload lands locked as private**, and that lock takes no appeal: to publish, upload the file again from the YouTube app or site. Needs a client you supply |
 | `warden tiktok <clip>` | the file into your TikTok **inbox**, as a draft you finish in the app. Needs that account's token; the image has none |
 
@@ -241,6 +267,14 @@ python3 -m unittest discover -s tests
 ```
 
 Every case in there is a way a real submission has been thrown out.
+
+**On a Mac that run is green and incomplete, and the output does not say so.**
+Measured 15/09/2026: `Ran 877 tests` … `OK (skipped=27)` — **24** of those skips
+are the burned-caption path (`this ffmpeg has no subtitles filter (no libass)`;
+libass is an ffmpeg compile option the image has and a Homebrew ffmpeg usually
+does not) and **3** need faster-whisper. A skip is not a pass, and those 27 are
+the part you can see in the clip. The command that runs them where they are not
+skipped is in `docs/INSTALL.md`, under **"Running the tests"**.
 
 ## License
 

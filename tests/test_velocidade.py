@@ -835,12 +835,27 @@ class OBLOQUEIOMudaComOENDERECO(unittest.TestCase):
     vez cometido POR dentro dele: uma causa afirmada com confiança sem medir a
     variável que mudou. Ficou registrado aqui em vez de ser apagado em silêncio.
 
-    O que os testes de 15/09 realmente provaram, e é mais forte: por DOIS
+    O que os testes de 15/09 realmente provaram, e é só isto: por DOIS
     endereços diferentes o mesmo container baixou normalmente -- Telefônica
     (AS26599, 189.98.253.32) às 15:33, e Mundivox (AS17222, 67.159.227.250, o
     provedor de casa) às 19:00 --, enquanto de manhã o endereço residencial
-    recusava. Ou seja: a saída de escape número 1 ("outro endereço de saída")
-    está MEDIDA, não é mais só o que a documentação do yt-dlp promete.
+    recusava.
+
+    E AQUI ESTAVA A TERCEIRA QUASE-INVENÇÃO, escrita nesta mesma docstring e
+    corrigida em 15/09: a frase que estava aqui dizia que "a saída de escape
+    número 1 (outro endereço de saída) está MEDIDA". Ela contava o download das
+    19:00 -- pelo endereço de CASA, o mesmo que recusava de manhã -- como prova
+    a favor de "outro endereço". Não é. Se o IP de casa não mudou entre a manhã
+    e a noite, essa linha é evidência CONTRA a hipótese do endereço, não a
+    favor; e como ninguém anotou o IP da manhã, ninguém sabe qual dos dois é o
+    caso. O texto que invocava a regra do projeto estava violando a regra do
+    projeto.
+
+    O que está medido: baixou por dois endereços diferentes, em dois horários
+    diferentes, depois de uma recusa de manhã. O que NÃO está medido: a causa,
+    em nenhuma das direções. A instrução acionável não muda nem um pouco --
+    oferecer o arquivo ou o Drive é o que entrega um clipe hoje, e trocar o
+    endereço é a única alavanca que alguém tem aqui.
 
     E aqui mora a segunda armadilha, que é a inversa da primeira: com o
     endereço de casa servindo download às 19:00, a tentação vira dizer "então
@@ -878,7 +893,7 @@ class OBLOQUEIOMudaComOENDERECO(unittest.TestCase):
         """
         return " ".join(M._porque_bloqueou("yt-dlp").split())
 
-    def test_a_mensagem_diz_que_outro_endereco_FUNCIONOU_e_quais(self):
+    def test_a_mensagem_diz_por_quais_enderecos_baixou_e_quando(self):
         """Os AS entram na frase de propósito: "outra rede" é vago, "AS26599, e
         baixou 830 KiB em 6s" é uma medição que o dono pode conferir. São dois
         porque foram dois, e o segundo é o provedor de casa."""
@@ -888,6 +903,45 @@ class OBLOQUEIOMudaComOENDERECO(unittest.TestCase):
         self.assertIn("AS17222", msg)
         self.assertIn("830 KiB in 6s", msg)
         self.assertIn("830 KiB in 7s", msg)
+
+    def test_o_download_das_19h_NAO_e_contado_como_prova_do_ENDERECO(self):
+        """A terceira quase-invenção, e a mais escorregadia das três.
+
+        O download das 19:00 veio pelo endereço de CASA -- o mesmo provedor que
+        recusava de manhã. Contá-lo como prova a favor de "troque de endereço"
+        é usar, como evidência PARA a hipótese, exatamente o caso que a
+        contradiz se o IP não mudou. E ninguém sabe se mudou: o IP da manhã não
+        foi anotado. Era a regra do projeto sendo violada pelo texto que a
+        invoca.
+
+        Então a mensagem pode dizer que baixou, e não pode dizer que a troca de
+        endereço é a causa medida. A instrução acionável sobrevive inteira.
+        """
+        msg = self._corrido()
+        for invencao in ("was tried here, twice, and it worked",
+                         "is not a promise from yt-dlp's documentation: it",
+                         "This is the one that was MEASURED to work",
+                         "changing the address was measured working",
+                         "option 1 below is proven"):
+            self.assertNotIn(invencao, msg)
+        # A saída de escape 1 continua na lista, e continua sem causa provada:
+        # a própria linha dela diz o que não se sabe.
+        self.assertIn("whether the address is what changed the answer is NOT "
+                      "measured", " ".join(msg.split()))
+        # E a armadilha tem de estar NOMEADA, porque quem lê a lista de três
+        # linhas medidas vai fazer essa conta sozinho se ninguém o avisar.
+        self.assertIn("evidence FOR option 1", msg)
+        self.assertIn("AGAINST it", msg)
+        self.assertIn("not a second", msg)
+        self.assertIn("NOT measured", msg)
+
+    def test_a_instrucao_acionavel_sobrevive_a_correcao(self):
+        """Tirar a causa não pode tirar a saída: o dono continua tendo o que
+        fazer, e continua sendo a mesma coisa."""
+        msg = self._corrido()
+        self.assertIn("ask for the file itself", msg)
+        self.assertIn("Drive", msg)
+        self.assertIn("a different outgoing address", msg)
 
     def test_a_mensagem_NAO_diz_que_a_recusa_passa_sozinha(self):
         """A frase que saiu, e o teste que impede sua volta. Ela afirmava uma
@@ -1413,6 +1467,443 @@ class ADrivePastaBaixaSoOQueVaiSerUsado(unittest.TestCase):
         caminho = M._download_one(self.URL, self.dir)
         self.assertTrue(os.path.isfile(caminho), caminho)
         caminho.encode("ascii")     # digitável
+
+
+# ------------------------------------------------------------ a tarja preta
+
+def _ffmpeg_ou_pula():
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        raise unittest.SkipTest("ffmpeg/ffprobe não estão no PATH")
+
+
+def _pillow_ou_pula():
+    try:
+        import PIL  # noqa: F401
+    except ImportError:
+        raise unittest.SkipTest("Pillow não está instalado")
+
+
+def _fonte_vertical(caminho, segundos=4, tarja=0):
+    """Um vertical 1080x1920 de verdade, com `tarja` pixels de PRETO no pé.
+
+    `tarja=0` é uma fonte limpa. `tarja=288` é 15% da altura, que é a medida
+    exata do clipe entregue em 15/09 -- o defeito que esta seção existe para
+    não repetir.
+    """
+    import subprocess
+    alto = 1920 - int(tarja)
+    filtro = (f"testsrc2=size=1080x{alto}:rate=30"
+              + (f",pad=1080:1920:0:0:black" if tarja else ""))
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", filtro,
+         "-t", str(segundos), "-c:v", "libx264", "-preset", "ultrafast",
+         "-pix_fmt", "yuv420p", caminho],
+        check=True, capture_output=True)
+    return caminho
+
+
+def _regras_de_teste():
+    import warden_rules as R
+    base = R.blank()
+    base.update({"id": "tarja", "name": "Tarja", "schema": 1})
+    base["video"].update({"duration_min_s": 1, "duration_max_s": 10,
+                          "width": 1080, "height": 1920, "aspect": "9:16",
+                          "audio": "forbidden"})
+    return base
+
+
+class ATarjaPRETAReprovaNOCUT(unittest.TestCase):
+    """O portão de tarja preta no caminho que o fluxo normal REALMENTE anda.
+
+    A detecção existe desde 15/09 e estava fora de alcance. `barras_pretas` e
+    `_barra_preta_reprova` moram em `warden_style` e só eram chamados por
+    `cross_check`, que só é chamado por `warden style check` -- um comando que
+    NÃO está na ordem de trabalho da skill. O portão de entrega do `cut` usava
+    apenas `check_sidecar`, que lê o que o render anotou de si e não abre um
+    quadro sequer.
+
+    Resultado: um clipe com 289px de tarja no pé -- 15% do quadro, em todos os
+    quadros, o defeito que este repositório documenta em três arquivos --
+    passava por TODOS os portões que o prompt manda rodar e saía como aprovado.
+    Suíte verde, e a moldura lá.
+
+    O que estes testes fixam é o alcance, não a detecção: a detecção é do outro
+    dono e continua sendo dele. Aqui se prova que o `cut` a chama.
+    """
+
+    def setUp(self):
+        _ffmpeg_ou_pula()
+        _pillow_ou_pula()
+        self.dir = _temp(self, prefix="warden-tarja-")
+        self.regras = _regras_de_teste()
+
+    def _corta(self, fonte):
+        return M.cut(fonte, os.path.join(self.dir, "corte.mp4"), self.regras,
+                     start=0, end=3, sound="platform")
+
+    @staticmethod
+    def _tarjas(resultado):
+        return [b for b in resultado["style_breaches"] if "black bar" in b]
+
+    def test_um_render_com_tarja_no_pe_e_REPROVADO_pelo_cut(self):
+        """O caso medido: 288px de preto no pé de um vertical. Sem este teste,
+        o único portão que o pegava era uma pessoa olhando o contact sheet."""
+        fonte = _fonte_vertical(os.path.join(self.dir, "com-tarja.mp4"),
+                                tarja=288)
+        r = self._corta(fonte)
+        tarjas = self._tarjas(r)
+        self.assertTrue(tarjas, f"nenhum REJECT de tarja: {r['style_breaches']}")
+        self.assertIn("bottom", tarjas[0])
+        # E quem entrega lê as notas, não só a lista: a reprovação tem de estar
+        # nas duas, porque são dois leitores diferentes.
+        self.assertTrue(any("STYLE REJECT" in n and "black bar" in n
+                            for n in r["notes"]), r["notes"])
+
+    def test_um_render_limpo_NAO_e_reprovado(self):
+        """Um portão que reprova clipe bom é desligado na semana seguinte."""
+        fonte = _fonte_vertical(os.path.join(self.dir, "limpo.mp4"))
+        r = self._corta(fonte)
+        self.assertEqual(self._tarjas(r), [], r["style_breaches"])
+
+    def test_o_sidecar_guarda_as_BORDAS_medidas_e_nao_so_o_veredito(self):
+        """O `-estilo.json` passa a carregar o que foi medido nas quatro bordas.
+        Sem isso, um `style check` posterior não tem como saber se alguém olhou
+        -- e "ninguém olhou" tem de ser distinguível de "está limpo"."""
+        fonte = _fonte_vertical(os.path.join(self.dir, "limpo2.mp4"))
+        r = self._corta(fonte)
+        barras = r["style"]["black_bars"]
+        self.assertEqual(set(barras), {"top", "bottom", "left", "right"})
+        with open(r["style_path"], encoding="utf-8") as fh:
+            import json as _json
+            self.assertIn("black_bars", _json.load(fh))
+
+    def test_quando_ninguem_conseguiu_OLHAR_as_bordas_isso_tambem_reprova(self):
+        """A pior saída seria a silenciosa: falhar ao abrir os quadros e
+        entregar como se estivesse limpo. Uma tarja é invisível para todo o
+        resto da verificação, então "não olhei" é reprovação."""
+        import warden_style as S
+        fonte = _fonte_vertical(os.path.join(self.dir, "limpo3.mp4"))
+        # A troca é em `barras_pretas` e não em `sample_frames`: o `cut` abre
+        # quadros da FONTE muito antes, por outra razão, e derrubar aquela
+        # leitura mediria outro portão.
+        real = S.barras_pretas
+        S.barras_pretas = lambda quadros: (None, "o dublê não abriu quadro nenhum")
+        self.addCleanup(setattr, S, "barras_pretas", real)
+        r = self._corta(fonte)
+        self.assertTrue(any("were not looked at" in b
+                            for b in r["style_breaches"]), r["style_breaches"])
+
+
+# ------------------------------------------------------- playlist, uma só vez
+
+class OPREPEORENDERESCOLHEMOMESMOVIDEO(unittest.TestCase):
+    """A resolução de playlist é UMA, e os dois caminhos usam a mesma.
+
+    O `archive` (preparo) separava playlist de vídeo e pedia o item 1 de uma
+    playlist. O `archive_window`/`archive_windows` (render) fixava
+    `--no-playlist`, sempre. `--no-playlist` num link que é playlist e não
+    vídeo é indefinido: o yt-dlp expande a lista inteira por cima do mesmo
+    template, que não tem índice, e sobra o último arquivo que terminou de
+    escrever. Preparo e render podiam cair em vídeos DIFERENTES do mesmo link.
+
+    E o clipe sai parecendo certo -- duração certa, hook certo, legenda casada
+    pela ficha de origem -- com a imagem de outro vídeo. Não há sintoma.
+    """
+
+    def setUp(self):
+        self.dir = _temp(self, prefix="warden-playlist-")
+        _troca(self, "have", lambda b: True)
+        _troca(self, "fiscal", lambda url, rules=None, trusted=None:
+               (True, "", None))
+        _troca(self, "_confere_janela", lambda *a, **k: None)
+        _troca(self, "_pull_subs", lambda *a, **k: (None, "dublê"))
+
+    def _flags(self, args):
+        """Só o que este teste mede: como o link de playlist foi resolvido."""
+        saida = [a for a in args if a in ("--no-playlist", "--yes-playlist")]
+        if "--playlist-items" in args:
+            saida.append("items=" + args[args.index("--playlist-items") + 1])
+        return saida
+
+    def _do_prep(self, url):
+        vistos = {}
+
+        def falso_run(args, timeout, label):
+            vistos.setdefault("args", args)
+            stem = next(a.split(os.sep)[-1].split(".")[0]
+                        for a in args if "source-" in a)
+            with open(os.path.join(self.dir, stem + ".mp4"), "wb") as fh:
+                fh.write(b"x")
+            return ""
+        _troca(self, "run", falso_run)
+        M._download_one(url, self.dir)
+        return self._flags(vistos["args"])
+
+    def _do_render(self, url):
+        vistos = {}
+
+        def falso_run(args, timeout, label):
+            vistos["args"] = args
+            alvo = args[args.index("-o") + 1]
+            with open(alvo.replace(".%(ext)s", ".mp4"), "wb") as fh:
+                fh.write(b"x")
+            return ""
+        _troca(self, "run", falso_run)
+        M.archive_window(None, self.dir, url, 10, 20)
+        return self._flags(vistos["args"])
+
+    def test_um_link_de_PLAYLIST_resolve_igual_nos_dois(self):
+        url = "https://www.youtube.com/playlist?list=PLabcdefghij"
+        prep = self._do_prep(url)
+        render = self._do_render(url)
+        self.assertEqual(prep, render)
+        # E a resolução é a que escolhe UM item, não a indefinida.
+        self.assertIn("--yes-playlist", prep)
+        self.assertIn("items=1", prep)
+
+    def test_um_link_com_list_JUNTO_do_video_continua_sendo_o_video(self):
+        """O caso do enunciado: `&list=` pendurado num `watch?v=`. Ele NOMEIA um
+        vídeo, então `--no-playlist` é literalmente a opção certa -- e tem de
+        ser a mesma nos dois lados."""
+        url = ("https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+               "&list=PLabcdefghij&index=7")
+        prep = self._do_prep(url)
+        render = self._do_render(url)
+        self.assertEqual(prep, render)
+        self.assertIn("--no-playlist", prep)
+        self.assertNotIn("--yes-playlist", prep)
+
+    def test_um_link_de_CANAL_nao_varre_o_canal_inteiro(self):
+        """Nenhum dos dois caminhos reconhecia um canal, e os dois o varriam
+        por cima do mesmo nome de arquivo."""
+        for url in ("https://www.youtube.com/@umcanal",
+                    "https://www.youtube.com/@umcanal/videos",
+                    "https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv"):
+            prep = self._do_prep(url)
+            render = self._do_render(url)
+            self.assertEqual(prep, render, url)
+            self.assertIn("items=1", prep, url)
+
+    def test_um_video_solto_continua_exatamente_como_estava(self):
+        """A resposta de sempre não pode mudar debaixo de quem já dependia
+        dela: um link de vídeo comum segue com `--no-playlist` e nada mais."""
+        url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        self.assertEqual(M._playlist_args(url), ["--no-playlist"])
+        self.assertEqual(M._playlist_args("https://vimeo.com/123456"),
+                         ["--no-playlist"])
+
+
+# ------------------------------------------------- o enquadramento sem rosto
+
+class SemDETECTORoCorteCONTINUAparando(unittest.TestCase):
+    """A decisão, escrita onde ela é testada: a recusa fica.
+
+    A alternativa seria cair no centro avisando em voz alta, e ela foi
+    recusada por três razões. A imagem TEM o detector -- OpenCV e YuNet são
+    instalados no Dockerfile e conferidos no build --, então no container, que
+    é onde o agente atende o dono, este ramo nunca roda e a promessa de uma
+    pergunta só não é tocada. O caso sem detector é a máquina de quem roda
+    fora do container, onde um argumento a mais é barato e quem o passa já
+    está no terminal. E cair no centro calado foi o que se fez até 14/09: o
+    resultado foi um clipe entregue com o rosto na borda, sob um aviso que
+    dizia "enquadrei no centro" -- verdadeiro e inútil.
+
+    Fica registrado que `warden-clip/SKILL.md` fala em "falls back to the
+    centre" sem separar os dois casos (detector ausente x detector que não
+    achou rosto). O segundo cai no centro mesmo; o primeiro não. O texto é de
+    outro dono.
+    """
+
+    def setUp(self):
+        _ffmpeg_ou_pula()
+        _pillow_ou_pula()
+        self.dir = _temp(self, prefix="warden-semrosto-")
+        self.regras = _regras_de_teste()
+        _troca(self, "face_detection_status",
+               lambda: (False, "OpenCV is not installed"))
+
+    def _paisagem(self):
+        import subprocess
+        caminho = os.path.join(self.dir, "larga.mp4")
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+             "-i", "testsrc2=size=1920x1080:rate=30", "-t", "4",
+             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+             caminho], check=True, capture_output=True)
+        return caminho
+
+    def test_o_corte_para_e_a_mensagem_diz_que_o_container_TEM_detector(self):
+        """A recusa já existia; o que faltava era ela dizer que este não é o
+        caminho normal. Sem essa frase, quem a lê conclui que o agente pede um
+        argumento extra sempre -- e aí a segunda pergunta parece regra."""
+        with self.assertRaises(RuntimeError) as erro:
+            M.cut(self._paisagem(), os.path.join(self.dir, "a.mp4"),
+                  self.regras, start=0, end=3, sound="platform")
+        msg = " ".join(str(erro.exception).split())
+        self.assertIn("no face detection", msg)
+        self.assertIn("--crop", msg)
+        self.assertIn("This is not the agent's container", msg)
+
+
+# ------------------------------------------------------------- o segredo na rede
+
+class UMREDIRECTNaoLEVAoAuthorization(unittest.TestCase):
+    """Os três módulos que carregam segredo falavam por `urlopen` cru.
+
+    `warden_post` leva a chave da conta do intermediário; `warden_tiktok` e
+    `warden_youtube` levam token OAuth de uma PESSOA. O urllib monta o pedido
+    seguinte de um 302 copiando os cabeçalhos do anterior -- tira
+    `Content-Length` e `Content-Type` e mais nada --, então um redirecionamento
+    para outro host entregava o segredo a quem respondesse o segundo endereço.
+
+    O opener guardado do `warden_media` já existia e já refazia a checagem de
+    endereço a cada salto; o que ele não fazia era largar o cabeçalho, porque
+    a fonte de vídeo que ele servia não carrega segredo nenhum. Agora faz, e os
+    três passam por ele.
+    """
+
+    def _pedido(self, url, cabecalhos=None):
+        import urllib.request
+        return urllib.request.Request(
+            url, headers=cabecalhos or {"Authorization": "Bearer segredo-do-dono",
+                                        "Accept": "application/json"})
+
+    def _redireciona(self, de, para, cabecalhos=None):
+        guarda = M._GuardedRedirect()
+        return guarda.redirect_request(
+            self._pedido(de, cabecalhos), None, 302, "Found", {}, para)
+
+    def test_outro_host_NAO_recebe_o_cabecalho(self):
+        novo = self._redireciona("https://api.upload-post.com/api/me",
+                                 "https://coletor.example.org/pega")
+        junto = {k.lower() for k in novo.headers}
+        junto |= {k.lower() for k in novo.unredirected_hdrs}
+        self.assertNotIn("authorization", junto)
+        # E o que NÃO é segredo continua viajando: o objetivo é não vazar, não
+        # quebrar o redirecionamento.
+        self.assertIn("accept", junto)
+
+    def test_o_MESMO_host_mantem_o_cabecalho(self):
+        """Um 302 de `/upload` para `/upload/2` no mesmo servidor é o caminho
+        normal de uma sessão de upload. Largar o token ali quebraria a
+        publicação para proteger contra o próprio servidor a que ele já foi
+        mostrado."""
+        novo = self._redireciona("https://api.upload-post.com/api/upload",
+                                 "https://api.upload-post.com/api/upload/2")
+        junto = {k.lower() for k in novo.headers}
+        junto |= {k.lower() for k in novo.unredirected_hdrs}
+        self.assertIn("authorization", junto)
+
+    def test_o_MESMO_host_em_http_tambem_perde_o_cabecalho(self):
+        """`https` que vira `http` no mesmo host é o segredo descendo em texto
+        claro por cada roteador do caminho. É troca de origem tanto quanto
+        trocar de host."""
+        novo = self._redireciona("https://api.upload-post.com/api/upload",
+                                 "http://api.upload-post.com/api/upload")
+        junto = {k.lower() for k in novo.headers}
+        junto |= {k.lower() for k in novo.unredirected_hdrs}
+        self.assertNotIn("authorization", junto)
+
+    def test_um_redirect_para_dentro_da_maquina_continua_RECUSADO(self):
+        """A proteção que já existia não pode ter sido afrouxada pela nova."""
+        with self.assertRaises(RuntimeError):
+            self._redireciona("https://api.upload-post.com/api/me",
+                              "http://169.254.169.254/latest/meta-data/")
+
+    def test_os_TRES_modulos_saem_pelo_opener_guardado(self):
+        """A prova de alcance: não basta o opener existir, os três têm de usá-lo.
+
+        O opener é trocado por um dublê que não abre socket nenhum; se algum
+        dos módulos ainda chamasse `urlopen` direto, o dublê não seria chamado
+        e o teste falharia ao tentar falar com a rede.
+        """
+        import warden_post, warden_tiktok, warden_youtube
+
+        class _Resposta:
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def getcode(self):
+                return 200
+
+            def read(self):
+                return b"{}"
+
+        usados = []
+
+        class _Duble:
+            def open(self, pedido, timeout=None):
+                usados.append(pedido.full_url)
+                return _Resposta()
+
+        real = M._OPENER
+        M._OPENER = _Duble()
+        self.addCleanup(setattr, M, "_OPENER", real)
+
+        warden_post._http("GET", "https://api.upload-post.com/api/me")
+        warden_tiktok._http("GET", "https://open.tiktokapis.com/v2/user/info/")
+        warden_youtube._http("GET", "https://www.googleapis.com/youtube/v3/x")
+        self.assertEqual(len(usados), 3, usados)
+
+
+class OENDERECODOINTERMEDIARIOEconferido(unittest.TestCase):
+    """`WARDEN_POST_BASE_URL` não tinha portão nenhum, e ele carrega a chave.
+
+    Qualquer valor no ambiente virava o endereço para onde
+    `Authorization: Apikey <chave>` ia. `http://` mandava a chave do dono em
+    texto claro; `https://coletor.ruim` mandava a chave para quem escreveu a
+    variável; `http://169.254.169.254` apontava a mesma chave para o serviço de
+    metadados da nuvem. Nenhum dos três precisava de um defeito no código.
+    """
+
+    def setUp(self):
+        import warden_post
+        self.P = warden_post
+        self.P._BASES_CONFERIDAS.clear()
+        self.addCleanup(self.P._BASES_CONFERIDAS.clear)
+        self.provedor = warden_post.UploadPost()
+
+    def test_http_para_um_host_publico_e_RECUSADO(self):
+        _env(self, "WARDEN_POST_BASE_URL", "http://api.upload-post.com/api")
+        with self.assertRaises(self.P.PostIndisponivel) as erro:
+            self.provedor.url("/uploadposts/me")
+        self.assertIn("não é `https`", str(erro.exception))
+
+    def test_um_endereco_interno_e_RECUSADO(self):
+        for ruim in ("https://169.254.169.254/latest",
+                     "https://10.0.0.5/api",
+                     "https://192.168.1.10/api"):
+            _env(self, "WARDEN_POST_BASE_URL", ruim)
+            self.P._BASES_CONFERIDAS.clear()
+            with self.assertRaises(self.P.PostIndisponivel, msg=ruim) as erro:
+                self.provedor.url("/uploadposts/me")
+            self.assertIn("WARDEN_POST_BASE_URL", str(erro.exception))
+
+    def test_o_padrao_e_um_https_publico_e_continua_passando(self):
+        _env(self, "WARDEN_POST_BASE_URL", None)
+        self.assertEqual(self.provedor.url("/uploadposts/me"),
+                         self.P.BASE_PADRAO + "/uploadposts/me")
+
+    def test_o_loopback_continua_valendo_e_o_motivo_esta_escrito(self):
+        """A única exceção, e ela não é uma frouxidão: quem consegue escrever
+        `WARDEN_POST_BASE_URL` no ambiente deste processo também consegue ler
+        `WARDEN_POST_API_KEY` dele. Mandar a chave para 127.0.0.1 não entrega
+        nada a ninguém que já não a tivesse -- e é o que deixa a suíte de
+        publicação subir um servidor de verdade e montar o multipart de
+        verdade, que é a parte que um dublê não prova."""
+        _env(self, "WARDEN_POST_BASE_URL", "http://127.0.0.1:8099/api")
+        self.assertEqual(self.provedor.url("/uploadposts/me"),
+                         "http://127.0.0.1:8099/api/uploadposts/me")
+        self.assertTrue(self.P._e_loopback("127.0.0.1"))
+        self.assertTrue(self.P._e_loopback("localhost"))
+        # E o vizinho na rede local NÃO é loopback, que é a diferença toda.
+        self.assertFalse(self.P._e_loopback("10.0.0.5"))
+        self.assertFalse(self.P._e_loopback("api.upload-post.com"))
 
 
 if __name__ == "__main__":

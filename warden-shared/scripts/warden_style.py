@@ -197,7 +197,27 @@ so very too quite muito mais bem tão tao
 favorite favourite favorito favorita elementary primary secondary
 vou vai vamos vão vao tenho tem temos está esta estão estao foi ser ter
 nunca sempre já ja ainda também tambem só
+can will would should could may might must shall
+gonna wanna gotta going get gets got getting
+each both either neither every
+what how why where who whom
+more most such then
 """.split())
+
+# AS SEIS LINHAS ACIMA SÃO INGLÊS, e entraram em 15/09/2026 porque a regra da
+# língua mudou no mesmo dia: a legenda passou a sair na língua do VÍDEO, e a
+# lista inteira tinha sido calibrada em português.
+#
+# Medido olhando o contact sheet de um clipe real, em inglês, que o portão de
+# entrega APROVOU: as cues fechavam em "…We've known each" (falta "other"),
+# "…what's been going" (falta "on") e "…as you can" (falta "see"). `and`, `the`
+# e `been` já estavam na lista; `each`, `going`, `can` e os interrogativos não.
+#
+# Cada classe aqui vem de um caso visto na tela ou da classe gramatical que ele
+# representa: modais e semi-auxiliares (`can`, `gonna`, `going`), quantificadores
+# e correlatos (`each`, `both`, `either`), interrogativos (`what`, `how`) e
+# comparativos (`more`, `such`, `then`). O que NÃO veio de um caso medido não
+# entrou.
 
 # As duas últimas linhas são de 15/09, e vêm de uma legenda que NÃO tinha
 # pontuação nenhuma: a letra publicada de uma música. O contact sheet mostrou
@@ -247,15 +267,48 @@ nunca sempre já ja ainda também tambem só
 # Isto não afrouxa o portão. O portão continua reprovando "CARA, EU", "HATE
 # THE" e "…Nunca vou"; o que deixou de reprovar é uma cue que sempre esteve
 # certa.
-PREPOSICOES = frozenset("""
+# UMA LISTA POR LÍNGUA, e isso é um conserto, não organização.
+#
+# Até 15/09/2026 as duas línguas viviam numa lista só, e o comentário tratava
+# isso como virtude ("a legenda pode estar em qualquer das duas"). É o defeito:
+# `as` é preposição em português e conjunção em inglês; `you` é pronome em
+# inglês e nada em português. Com as listas fundidas, a exceção casava o `as`
+# português com o `you` inglês e fechava a cue em "…that as you", que é
+# exatamente o "HATE THE" que ela existe para impedir. Reproduzido rodando o
+# `reflow_cues` de verdade.
+#
+# A legenda tem UMA língua, e desde 15/09 ela é conhecida (é a do vídeo). A
+# exceção agora exige que a preposição e o pronome venham do MESMO idioma, o
+# que fecha o cruzamento sem precisar que ninguém passe a língua adiante.
+PREPOSICOES_PT = frozenset("""
 de do da dos das em no na nos nas a ao aos as à às para pra pro por
 pelo pela pelos pelas com sem sobre sob entre até ate desde contra
 """.split())
 
-PRONOMES_COMPLEMENTO = frozenset("""
+PRONOMES_COMPLEMENTO_PT = frozenset("""
 mim ti si ele ela eles elas você voce vocês voces nós nos isso isto aquilo
+""".split())
+
+PREPOSICOES_EN = frozenset("""
+of to in on at for with from by about into over under between
+""".split())
+
+PRONOMES_COMPLEMENTO_EN = frozenset("""
 me him her it us them you
 """.split())
+
+# Mantidas como a união, porque outras partes do arquivo perguntam "é
+# preposição?" sem se importar com a língua. Só a exceção precisa do par.
+PREPOSICOES = PREPOSICOES_PT | PREPOSICOES_EN
+PRONOMES_COMPLEMENTO = PRONOMES_COMPLEMENTO_PT | PRONOMES_COMPLEMENTO_EN
+
+_PARES_DE_LINGUA = ((PREPOSICOES_PT, PRONOMES_COMPLEMENTO_PT),
+                    (PREPOSICOES_EN, PRONOMES_COMPLEMENTO_EN))
+
+# Conjunção coordenativa logo DEPOIS do pronome quer dizer que ele é metade de
+# um par: "entre ele | e ela" parte "entre ele e ela" no meio. Medido em
+# 15/09/2026.
+_COORDENATIVAS = frozenset("e ou nem and or nor but mas".split())
 
 # Palavras que TIPICAMENTE abrem um sintagma, e por isso são um bom lugar para
 # a cue ANTERIOR fechar.
@@ -753,18 +806,67 @@ def _grupos_delimitados(words):
     return [(a, b) for a, b in grupos if b > a]
 
 
+def _e_infinitivo(palavra):
+    """Um infinitivo português, grosseiramente. Só para a guarda abaixo.
+
+    Não precisa ser um analisador: precisa separar "…para você ENTENDER" de
+    "…desistir de você". Termina em -ar/-er/-ir e é longo o bastante para não
+    casar com "par", "ver", "ir".
+    """
+    p = _palavra(palavra)
+    return len(p) > 4 and p[-2:] in ("ar", "er", "ir")
+
+
 def _fecha_apesar_da_lista(words, k):
     """Se a palavra `k` está na lista proibida mas mesmo assim fecha bem.
 
-    Um caso só, e ele é o de 15/09: pronome logo depois de preposição. O que a
-    lista acusa é a palavra pedir o que vem DEPOIS; aqui o que ela pedia está
-    na palavra anterior, dentro da mesma cue. "…desistir de você" fecha.
+    O caso é um só: pronome logo depois de preposição. O que a lista acusa é a
+    palavra pedir o que vem DEPOIS; aqui o que ela pedia está na palavra
+    anterior. "…desistir de você" fecha, e sem esta exceção uma letra de música
+    não tem uma única fronteira utilizável.
+
+    TRÊS GUARDAS, e as três saem de casos reproduzidos em 15/09/2026 rodando o
+    `reflow_cues` de verdade, não de leitura de código:
+
+    1. **Mesma língua.** `as`(pt) + `you`(en) fechava "…that as you". Ver o
+       comentário das listas.
+    2. **O próximo não é infinitivo.** Em "…para você entender", o pronome é o
+       SUJEITO do infinitivo seguinte, não o objeto da preposição: fechar ali
+       deixa "entender" órfão. É o mesmo defeito que `ABRE_SINTAGMA` conserta,
+       reintroduzido duas listas adiante.
+    3. **O próximo não é conjunção coordenativa.** "entre ele | e ela" parte
+       "entre ele e ela" no meio.
+
+    Em todos os três casos a cue fecha melhor SEM a exceção -- medido, não
+    suposto.
     """
     if k <= 0 or k >= len(words):
         return False
-    if _palavra(words[k]) not in PRONOMES_COMPLEMENTO:
+    palavra = _palavra(words[k])
+    anterior = _palavra(words[k - 1])
+    if palavra not in PRONOMES_COMPLEMENTO:
         return False
-    return _palavra(words[k - 1]) in PREPOSICOES
+    # DUAS FORMAS de o pronome ter o que pedia ATRÁS dele, e as duas foram
+    # medidas em 15/09/2026:
+    #
+    #   a) depois de preposição da MESMA língua -- "…desistir de você";
+    #   b) depois de uma palavra de conteúdo, tipicamente um verbo --
+    #      "…tell a lie and hurt you", que é uma frase inteira e que o portão
+    #      reprovou por engano até esta linha existir, derrubando o lote todo.
+    #
+    # O (b) é "a palavra anterior não está, ela própria, na lista de quem pede o
+    # que vem depois". É isso que separa "hurt you" (fecha) de "as you" (não
+    # fecha): `as` está na lista, `hurt` não.
+    depois_de_preposicao = any(anterior in preps and palavra in prons
+                               for preps, prons in _PARES_DE_LINGUA)
+    depois_de_conteudo = anterior not in NAO_FECHA_CUE
+    if not (depois_de_preposicao or depois_de_conteudo):
+        return False
+    if k + 1 < len(words):
+        seguinte = _palavra(words[k + 1])
+        if seguinte in _COORDENATIVAS or _e_infinitivo(words[k + 1]):
+            return False
+    return True
 
 
 def _fronteiras(words):
@@ -919,6 +1021,76 @@ def _ajusta_fronteira(i, j, words, marco, proibido, pontuada, budget,
     return j if k in proibido else k
 
 
+# Marcação decorativa da legenda automática: some antes de virar cue.
+#
+# Medido em 15/09/2026, olhando o contact sheet de um clipe real em inglês: o
+# YouTube marca trecho musical com U+266A e afins, e eles estavam sendo
+# QUEIMADOS na tela -- "…let you down [nota] [nota]", "(Give you up) [nota]".
+# Não são palavras: comem o orçamento de 26 caracteres da linha e empurram
+# palavra de verdade para fora. O pior caso visto foi uma cue cujo conteúdo real
+# eram duas palavras separadas por ruído.
+#
+# O que sai: os símbolos musicais (U+2669..U+266C) e os rótulos de som entre
+# colchetes que a legenda automática do YouTube usa em inglês e em português.
+# O que FICA: parêntese comum. "(Give you up)" é letra de verdade, e o trabalho
+# de 15/09 tornou parêntese uma unidade indivisível -- limpar o parêntese aqui
+# desfaria aquilo.
+_SIMBOLOS_MUSICAIS = "\u2669\u266a\u266b\u266c\u266d\u266e\u266f\u2192\u25ba"
+_RE_MARCACAO = re.compile(
+    r"\[\s*(?:m[uú]sic[ao]|music|applause|aplausos?|palmas|laughter|risos?|"
+    r"sound|som|silence|sil[êe]ncio|inaudible|ininteligível|ininteligivel|"
+    r"[" + _SIMBOLOS_MUSICAIS + r"\s]+)\s*\]",
+    re.IGNORECASE)
+
+
+def _limpa_marcacao(texto):
+    """Tira marcação decorativa de um texto. Devolve "" se não sobrar palavra."""
+    limpo = _RE_MARCACAO.sub(" ", texto or "")
+    limpo = "".join(" " if ch in _SIMBOLOS_MUSICAIS else ch for ch in limpo)
+    # Parêntese que ficou vazio porque só tinha símbolo dentro.
+    limpo = re.sub(r"\(\s*\)|\[\s*\]", " ", limpo)
+    return " ".join(limpo.split())
+
+
+def _sem_marcacao(segments):
+    """Os mesmos segmentos, sem marcação decorativa. Sem palavra, sem segmento.
+
+    Limpa o texto do segmento E a lista de palavras, porque é dela que sai o
+    `\k` de cada palavra: deixar o símbolo nas palavras poria de volta na tela
+    o que o texto tirou.
+    """
+    saida = []
+    for seg in segments:
+        if not isinstance(seg, dict):
+            saida.append(seg)
+            continue
+        novo = dict(seg)
+        novo["text"] = _limpa_marcacao(seg.get("text"))
+        palavras = seg.get("words")
+        if isinstance(palavras, list):
+            limpas = []
+            for w in palavras:
+                if not isinstance(w, dict):
+                    limpas.append(w)
+                    continue
+                texto = _limpa_marcacao(w.get("word") or w.get("text") or "")
+                if not texto:
+                    continue
+                nova = dict(w)
+                if "word" in nova:
+                    nova["word"] = texto
+                else:
+                    nova["text"] = texto
+                limpas.append(nova)
+            novo["words"] = limpas
+            if not limpas:
+                continue
+        if not novo["text"]:
+            continue
+        saida.append(novo)
+    return saida
+
+
 def reflow_cues(segments, max_chars=MAX_CHARS_PER_LINE, max_lines=MAX_LINES,
                 max_cue_s=MAX_CUE_S, descartes=None):
     """Cues que cabem na tela, passam rápido e fecham onde a frase fecha.
@@ -948,6 +1120,7 @@ def reflow_cues(segments, max_chars=MAX_CHARS_PER_LINE, max_lines=MAX_LINES,
     por não ter tempo legível é anexado nela, porque uma fala que some da
     legenda sem ninguém dizer é a mesma falha que este arquivo inteiro combate.
     """
+    segments = _sem_marcacao(segments)
     spans = _merge_spans(segments, descartes=descartes)
     out = []
     budget = max_chars * max_lines

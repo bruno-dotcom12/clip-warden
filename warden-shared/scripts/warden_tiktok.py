@@ -217,6 +217,22 @@ def _dorme(segundos):
     time.sleep(segundos)
 
 
+def _abre(pedido, timeout):
+    """Abre o pedido pelo opener GUARDADO, nunca pelo `urlopen` cru.
+
+    A diferença é um cabeçalho. Toda chamada daqui leva `Authorization: Bearer
+    <token>` -- o token OAuth de uma PESSOA, não da imagem -- e o `urlopen` cru
+    segue um 302 para outro host copiando os cabeçalhos do pedido anterior.
+    O opener do `warden_media` refaz a checagem de endereço a cada salto e
+    larga o `Authorization` quando o host muda.
+
+    Importado aqui dentro e não no topo: este módulo é carregado sozinho em
+    boa parte da suíte, e o `warden_media` traz o PIL e o ffmpeg atrás.
+    """
+    import warden_media
+    return warden_media.opener_guardado().open(pedido, timeout=timeout)
+
+
 def _http(metodo, url, *, corpo=None, cabecalhos=None, timeout=TIMEOUT_API):
     """A ÚNICA porta para a rede. -> (código HTTP, corpo em bytes).
 
@@ -230,7 +246,7 @@ def _http(metodo, url, *, corpo=None, cabecalhos=None, timeout=TIMEOUT_API):
     pedido = urllib.request.Request(url, data=corpo, method=metodo,
                                     headers=cabecalhos or {})
     try:
-        with urllib.request.urlopen(pedido, timeout=timeout) as resposta:
+        with _abre(pedido, timeout) as resposta:
             return resposta.getcode(), resposta.read()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read()

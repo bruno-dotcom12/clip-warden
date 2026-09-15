@@ -1151,7 +1151,10 @@ def cmd_post(args):
             "tried. Until the owner exports that key, do NOT claim anything "
             "was published -- hand the finished file over in your final "
             "message instead, with the title and the description written out, "
-            "so the owner can upload it by hand in under a minute.", code=1)
+            # "em menos de um minuto" saiu daqui: ninguém cronometrou um upload
+            # manual do dono, e esta frase existe justamente para ser a única
+            # da saída que não promete nada.
+            "so the owner can upload it by hand.", code=1)
 
     if args.action == "status":
         try:
@@ -1163,6 +1166,7 @@ def cmd_post(args):
         print(f"provider: {saida['provedor']} ({saida['base']})")
         print(f"account:  {saida['email']} -- plan {saida['plano']}")
         print(f"profile:  {saida['perfil'] or 'NOT CHOSEN'}")
+        publicam = []
         for perfil in saida["perfis"]:
             for rede, conta in sorted(perfil["contas"].items()):
                 if not conta["conectada"]:
@@ -1171,10 +1175,44 @@ def cmd_post(args):
                     estado = "CONNECTED BUT NEEDS REAUTH -- it will not publish"
                 else:
                     estado = f"{conta['display_name']} {conta['handle']}"
+                    publicam.append(f"{perfil['nome']}/{rede}")
                 print(f"  {perfil['nome']}/{rede}: {estado}")
         for aviso in saida["avisos"]:
             print(f"  note: {aviso}", file=sys.stderr)
-        return 0
+        # O CÓDIGO DE SAÍDA distingue TRÊS estados, e não dois. Este é o
+        # conserto: a persona lê este comando de forma binária -- saiu != 0, o
+        # caminho está desligado; saiu 0, é "a estrada que publica" -- e a
+        # chave válida com a conta pedindo reautenticação saía 0. O agente
+        # prometia publicação, o envio falhava depois de subir o arquivo
+        # inteiro, e a frase "CONNECTED BUT NEEDS REAUTH" ficava no meio da
+        # listagem que ninguém precisava ler para decidir.
+        #
+        #   0  há pelo menos uma conta que publica AGORA
+        #   1  não há chave (o `die` lá em cima)
+        #   2  a chave existe e o provedor não respondeu (o `die` acima)
+        #   3  a chave vale e NENHUMA conta vai publicar
+        #
+        # 3 e não 1 de propósito: 1 é "ninguém configurou nada", e aqui está
+        # configurado -- o que falta é uma reconexão no painel, que é outra
+        # coisa a fazer e outra frase a dizer.
+        if publicam:
+            return 0
+        pedem_reauth = saida.get("reauth") or []
+        if pedem_reauth:
+            print(f"NO account here will publish: {', '.join(pedem_reauth)} "
+                  f"{'is' if len(pedem_reauth) == 1 else 'are'} connected but "
+                  f"need(s) REAUTH, and nothing else is connected. Do NOT "
+                  f"promise a publication: reconnect that account in the "
+                  f"provider's panel first, or hand the file over in your "
+                  f"final message with the title and description written out.",
+                  file=sys.stderr)
+        else:
+            print("NO account here will publish: the key is valid and not one "
+                  "network is connected on any profile. Do NOT promise a "
+                  "publication: connect an account in the provider's panel "
+                  "first, or hand the file over in your final message with the "
+                  "title and description written out.", file=sys.stderr)
+        return 3
 
     # ── warden post youtube <clip> --title "..."
     if not args.file:
@@ -1257,11 +1295,21 @@ VOZ_TETO = 4
 
 
 def _conversas(desde=None):
-    """(mensagens do agente, mensagens da pessoa) do banco de conversas.
+    """(linhas, escopo) do banco de conversas. Só DESTA sessão, quando dá.
 
     Leitura pura, em modo somente-leitura, e num banco que pertence ao runtime
     e não a este comando. Um banco ausente não é erro: é "não dá para medir
     daqui", e dizer isso é melhor que devolver zero como se fosse uma medida.
+
+    O FILTRO POR SESSÃO é o conserto de um vazamento, e ele não é teórico: o
+    `state.db` do Hermes guarda TODAS as conversas daquela instalação, uma
+    sessão por `session_id`, e o volume sobrevive a `up`/`down`. Sem filtro,
+    `warden voz --since 0` imprimia trechos de mensagens de quem tivesse usado
+    a mesma instalação antes -- conversa de outra pessoa, na tela de quem
+    rodou o comando. Contar não exige ler o texto dos outros.
+
+    `escopo` é {"sessao", "porque", "isolada"}. `isolada` é o que autoriza
+    imprimir texto: verdadeiro quando as linhas são de UMA conversa só.
     """
     import sqlite3
     if not os.path.isfile(CONVERSAS_DB):
@@ -1272,13 +1320,61 @@ def _conversas(desde=None):
     con = sqlite3.connect(f"file:{CONVERSAS_DB}?mode=ro", uri=True)
     try:
         corte = float(desde or 0)
-        linhas = con.execute(
-            "select timestamp, role, coalesce(content, '') from messages "
-            "where role in ('user', 'assistant') and timestamp >= ? "
-            "order by timestamp", (corte,)).fetchall()
+        colunas = {linha[1] for linha in
+                   con.execute("PRAGMA table_info(messages)").fetchall()}
+        sessao, porque, isolada = _sessao_corrente(con, colunas)
+        campos = ("select timestamp, role, coalesce(content, '') from messages "
+                  "where role in ('user', 'assistant') and timestamp >= ?")
+        if sessao is not None:
+            linhas = con.execute(campos + " and session_id = ? order by "
+                                 "timestamp", (corte, sessao)).fetchall()
+        else:
+            linhas = con.execute(campos + " order by timestamp",
+                                 (corte,)).fetchall()
     finally:
         con.close()
-    return linhas
+    return linhas, {"sessao": sessao, "porque": porque, "isolada": isolada}
+
+
+def _sessao_corrente(con, colunas):
+    """(session_id, por que esse, dá para isolar?) da conversa que roda AGORA.
+
+    Não existe variável do runtime dizendo em que sessão este processo está --
+    procurada em 15/09/2026 e não achada -- então sobram duas respostas, nesta
+    ordem:
+
+      1. `WARDEN_SESSION_ID`, se alguém exportar. É a única forma EXATA, e
+         existe para o dia em que o runtime passe a exportá-la;
+      2. a sessão da mensagem mais NOVA do banco. Este comando roda dentro de
+         um turno, e o turno começou com a mensagem que acabou de entrar: a
+         linha mais recente é desta conversa. É uma inferência, e é por isso
+         que a saída diz em voz alta qual sessão está contando.
+
+    Quando a tabela TEM `session_id` e nenhuma das duas responde, `isolada` é
+    falso: as linhas misturam conversas, e aí o comando conta e não mostra
+    texto nenhum.
+
+    Sem a coluna `session_id` não há o que separar -- uma tabela que não
+    guarda sessão guarda uma conversa só -- e aí `isolada` é verdadeiro.
+    """
+    explicita = (os.environ.get("WARDEN_SESSION_ID") or "").strip()
+    if "session_id" not in colunas:
+        return None, "this messages table has no session_id column, so there "\
+                     "is only one conversation in it to count", True
+    if explicita:
+        return explicita, "WARDEN_SESSION_ID in the environment", True
+    try:
+        linha = con.execute(
+            "select session_id from messages where session_id is not null "
+            "order by timestamp desc, rowid desc limit 1").fetchone()
+    except Exception:
+        linha = None
+    if linha and linha[0]:
+        return linha[0], ("the newest message in the database is in it, and "
+                          "this command runs inside the turn that message "
+                          "started"), True
+    return None, ("no session could be told apart in this database, so the "
+                  "rows below are every conversation it holds"), False
 
 
 _ENTROU = "inbound message:"
@@ -1312,6 +1408,46 @@ def _chegadas(depois):
     return saiu
 
 
+_ID_YT = re.compile(r"(?:[?&]v=|youtu\.be/|/shorts/|/live/|/embed/)"
+                    r"([A-Za-z0-9_-]+)")
+
+
+def _link_incompleto(texto, link):
+    """O que PROVA que este endereço foi cortado, ou None. Nunca um palpite.
+
+    O critério anterior era `texto.endswith(link) and len(texto) >= 79`, e ele
+    é a forma de uma mensagem ÍNTEIRA: quem manda "pega esse podcast e me faz
+    os cortes https://..." escreve exatamente isso -- mais de 79 caracteres,
+    terminando no link. O comando recusava um link perfeito e mandava perguntar
+    de novo, o que é a SEGUNDA pergunta num turno que só pode gastar uma.
+
+    Então nada de comprimento. O corte só é afirmado quando o endereço em si
+    está comprovadamente pela metade:
+
+      * o id de um vídeo do YouTube tem ONZE caracteres, sempre (é o formato do
+        `v=`, do `youtu.be/`, do `/shorts/`). Um id no fim da URL com menos que
+        isso não é um vídeo, é um id cortado;
+      * uma URL que acaba dentro de um escape de porcentagem (`%2`, `%`) acaba
+        no meio de um caractere.
+
+    Fora desses dois, não dá para distinguir uma URL cortada de uma URL curta
+    -- e aí o honesto é NÃO afirmar truncamento e devolver o link. Se ele
+    estiver mesmo quebrado, quem diz isso é o download falhando, com o endereço
+    na mão; um palpite aqui custa uma ida e volta em toda mensagem comprida.
+    """
+    # Um corte acontece no FIM da linha: se ainda há texto depois do link,
+    # o que quer que tenha sido cortado não foi o link.
+    if not texto.rstrip().endswith(link):
+        return None
+    if re.search(r"%[0-9A-Fa-f]?$", link):
+        return "it ends inside a percent-escape"
+    achado = _ID_YT.search(link)
+    if achado and link.endswith(achado.group(1)) and len(achado.group(1)) < 11:
+        return (f"a YouTube id is 11 characters and {achado.group(1)!r} has "
+                f"{len(achado.group(1))}")
+    return None
+
+
 def cmd_inbox(args):
     """Espera o link que a mensagem prometeu, em vez de responder "faltou".
 
@@ -1330,6 +1466,17 @@ def cmd_inbox(args):
     "esse link", "abaixo", "essa música" -- isto é o que se roda em vez de
     perguntar. Sai 0 com o link na primeira linha, ou sai 1 depois do prazo,
     e aí sim a pergunta é legítima.
+
+    OS CÓDIGOS DE SAÍDA, e por que são três e não dois:
+
+      0  chegou um link, e ele está na primeira linha do stdout
+      1  o prazo passou e nada com link entrou. A pergunta é legítima
+      2  não deu para OLHAR: o log não é legível daqui, e nada foi esperado
+
+    2 é diferente de 1 e a diferença é o projeto inteiro: 1 é uma medição
+    ("esperei e não veio"), 2 não é medição nenhuma. Tratar os dois como a
+    mesma coisa era este comando dizendo "ninguém mandou link" sobre uma
+    espera que nunca aconteceu.
     """
     espera = max(1.0, float(getattr(args, "wait", None) or 20))
     inicio = time.time()
@@ -1337,8 +1484,17 @@ def cmd_inbox(args):
     # mensagem que disparou este turno já está lá, e ela não conta como nova.
     ja = _chegadas(0)
     if ja is None:
-        die(f"{GATEWAY_LOG} is not readable from here, so there is no way to "
-            f"see a message arriving. Ask for the link.", code=2)
+        # NÃO é "não chegou link": é "não olhei". Nenhum segundo foi esperado
+        # e nenhuma mensagem foi lida, então esta saída não afirma nada sobre
+        # o que a pessoa mandou ou deixou de mandar. Fora do runtime -- na
+        # máquina de quem desenvolve -- este é o caso NORMAL, e a frase antiga
+        # ("Ask for the link") fazia dele um veredito.
+        die(f"{GATEWAY_LOG} is not readable from here, so NOTHING was waited "
+            f"for and nothing was measured. This is not 'no link arrived' -- "
+            f"it is 'this machine cannot see messages arriving at all'. If the "
+            f"message points at a link you cannot see, asking once is the only "
+            f"move left, and that one question is the whole budget for this "
+            f"turn.", code=2)
     marca = max([t for t, _ in ja], default=0.0)
     while True:
         for quando, texto in (_chegadas(marca) or []):
@@ -1346,12 +1502,16 @@ def cmd_inbox(args):
             if not achados:
                 continue
             link = achados[-1]
-            # O log corta a mensagem por volta de 80 caracteres. Um link
-            # cortado é pior que link nenhum: ele baixa outra coisa, ou nada,
-            # e o erro aparece três passos adiante.
-            if texto.endswith(link) and len(texto) >= 79:
-                print(f"a link arrived but the log truncated it ({link!r}). "
-                      f"Ask the person to send just the URL.", file=sys.stderr)
+            # O log corta a mensagem por volta de 80 caracteres, e um link
+            # cortado é pior que link nenhum: ele baixa outra coisa, ou nada, e
+            # o erro aparece três passos adiante. Mas o corte só é AFIRMADO
+            # quando o próprio endereço prova que está incompleto -- ver
+            # `_link_incompleto`.
+            cortado = _link_incompleto(texto, link)
+            if cortado:
+                print(f"a link arrived but the log truncated it ({link!r}): "
+                      f"{cortado}. Ask the person to send just the URL.",
+                      file=sys.stderr)
                 return 1
             print(link)
             print(f"arrived {quando - inicio:.0f}s into the wait", file=sys.stderr)
@@ -1377,11 +1537,24 @@ def cmd_voz(args):
     texto escrito entre duas chamadas de ferramenta é entregue como mensagem.
     O que NÃO viaja do meio do turno é o anexo. Então aqui se conta prosa, toda
     ela, que é o que aparece no celular.
+
+    E conta a DESTA conversa. O banco tem todas as que já passaram por esta
+    instalação; ver `_conversas`. Quando não dá para isolar uma sessão, o
+    comando continua contando e para de imprimir texto: para contar não é
+    preciso mostrar a mensagem de ninguém.
     """
     try:
-        linhas = _conversas(getattr(args, "since", None))
+        linhas, escopo = _conversas(getattr(args, "since", None))
     except RuntimeError as exc:
         die(str(exc), code=2)
+    if escopo["sessao"]:
+        print(f"# counting session {escopo['sessao']} only: "
+              f"{escopo['porque']}.", file=sys.stderr)
+    elif not escopo["isolada"]:
+        print(f"# {escopo['porque']}. Counting them, and printing NO message "
+              f"text: a message from another conversation is not this "
+              f"command's to show. Export WARDEN_SESSION_ID to get the text "
+              f"back.", file=sys.stderr)
     if not linhas:
         print("no conversation in that window")
         return 0
@@ -1405,9 +1578,14 @@ def cmd_voz(args):
         quando = datetime.fromtimestamp(
             t["em"], timezone.utc).strftime("%d/%m %H:%M")
         veredito = "ok" if n <= VOZ_TETO else "DEMAIS"
+        # O texto do pedido e o das mensagens só saem quando as linhas são de
+        # UMA conversa -- a de quem está lendo. Ver `_conversas`: sem isso,
+        # estes 56 e estes 88 caracteres eram conversa de outra pessoa impressa
+        # na tela de quem rodou o comando.
+        rotulo = t["pediu"][:56] if escopo["isolada"] else "(text not shown)"
         print(f"{quando}  {n:2d} message(s), {com_arquivo} with a file  "
-              f"[{veredito}]  {t['pediu'][:56]}")
-        if n > VOZ_TETO:
+              f"[{veredito}]  {rotulo}")
+        if n > VOZ_TETO and escopo["isolada"]:
             for _, m in t["msgs"]:
                 if "MEDIA:" not in m:
                     print(f"       - {m.splitlines()[0][:88]}")
@@ -2058,6 +2236,45 @@ def clip_out(path):
     return safe_out(path, "clip")
 
 
+def _nome_livre(nome):
+    """`nome`, ou o primeiro vizinho dele que ainda não existe em disco.
+
+    O segundo pedido apagava o primeiro. Os clipes do lote se chamavam
+    `corte-01.mp4`, `corte-02.mp4` -- nomes FIXOS -- e todos resolvem para o
+    mesmo `clips_dir()`, que é global e não por pedido. Então:
+
+      1. a pessoa pede cortes do link A: saem `corte-01/02/03.mp4`;
+      2. ela pede cortes do link B antes de os de A terem sido enviados;
+      3. os três arquivos de A são sobrescritos pelos de B, e a dívida de
+         entrega de A -- que guarda o CAMINHO -- passa a apontar para o clipe
+         errado. Ninguém percebe: o caminho existe e o vídeo é outro.
+
+    O nome agora carrega a marca da fonte (`_marca_da_fonte`, a MESMA conta que
+    nomeia os arquivos de janela), o que separa link de link. Esta função fecha
+    o resto: dois pedidos do MESMO link em janelas diferentes ainda batem no
+    mesmo nome, e aqui o arquivo que já está lá não é tocado -- o novo vira
+    `-2`, `-3`, e quem for entregar recebe os dois caminhos certos.
+
+    Recusar seria a outra saída possível, e é pior: um segundo pedido do mesmo
+    link é legítimo, e morrer nele é não entregar clipe nenhum para não
+    arriscar sobrescrever um.
+    """
+    alvo = clip_out(nome)
+    if not os.path.exists(alvo):
+        return nome
+    raiz, ext = os.path.splitext(nome)
+    for n in range(2, 1000):
+        tentativa = f"{raiz}-{n}{ext}"
+        if not os.path.exists(clip_out(tentativa)):
+            print(f"# {nome} already exists from an earlier batch of this same "
+                  f"link, and it was NOT overwritten: this clip is "
+                  f"{tentativa}.", file=sys.stderr)
+            return tentativa
+    die(f"a thousand clips already share the name {nome} in {clips_dir()}. "
+        f"Nothing was overwritten; clear that directory before asking again.",
+        code=1)
+
+
 def deliver(result, rules, campaign, ledger):
     """Um render pronto vira entrega, ou não vira e diz por quê.
 
@@ -2067,14 +2284,26 @@ def deliver(result, rules, campaign, ledger):
     impresso sem o mosaico: enquanto ele não existir, ninguém olhou este clipe, e
     foi assim que um arquivo com dez defeitos visíveis foi relatado como aprovado.
 
-    Devolve 0 quando a entrega saiu, 1 quando não saiu.
+    Devolve 0 quando a entrega saiu, 1 quando não saiu. Quando não saiu, o
+    stdout fica VAZIO: quem reprova não tem caminho para dar a ninguém.
     """
     for note in result["notes"]:
         print(f"  note: {note}", file=sys.stderr)
     media = probe(result["out"])
     findings = check(rules, media, None, ledger)
     blocking = [m for level, m in findings if level == REPROVA]
-    print(result["out"])
+    # O caminho do arquivo NÃO é impresso aqui, e a ordem é o conserto.
+    #
+    # Ele era a primeira linha do stdout, antes dos portões. Numa reprovação o
+    # stdout inteiro do comando virava UMA linha -- o caminho do clipe
+    # reprovado -- no mesmo formato da primeira linha de um sucesso. E a
+    # persona manda o contrário: "if `warden cut` exited non-zero there is no
+    # line to send and no clip to describe". Havia: quem lesse o stdout achava
+    # um caminho de arquivo pronto e entregava ao dono um clipe que o portão
+    # tinha acabado de reprovar.
+    #
+    # Agora o stdout de uma reprovação é VAZIO, e o caminho só é escrito no
+    # bloco de entrega, junto do SHEET: e do MEDIA: (ver abaixo).
     if blocking:
         print("this render does not clear the campaign yet:", file=sys.stderr)
         for message in blocking:
@@ -2154,6 +2383,10 @@ def deliver(result, rules, campaign, ledger):
     # assim que a lista cresceu, e "confira os cinco" sobre oito itens é um
     # convite a parar no quinto.
     import warden_style as S
+    # A primeira linha do stdout de uma ENTREGA, e só de uma entrega: passou
+    # pelos três portões. Ver o comentário lá em cima sobre por que ela não
+    # sai antes deles.
+    print(result["out"])
     print(f"SHEET:{sheet}")
     print(f"open that image and check all {len(S.CHECKLIST)} before you send "
           f"the clip:", file=sys.stderr)
@@ -2927,7 +3160,9 @@ def executa_o_plano(plan, args):
               f"renders all of them before printing anything to send, so the "
               f"first clip waits for the last. `warden lote render` splits the "
               f"batch instead -- the first {LOTE_INLINE} come out now and the "
-              f"rest finish in the background.", file=sys.stderr)
+              f"rest are left in a plan file it names, for a second command. "
+              f"Neither way wakes anybody: nothing in this tool can.",
+              file=sys.stderr)
     liberados, failed, mosaicos = [], [], []
     ledger = ledger_for(cid) if cid else []
 
@@ -3053,11 +3288,14 @@ def executa_o_plano(plan, args):
 
 
 def conta_do_lote(liberados, failed, asked, sheet=None, depois=None,
-                  sem_legenda=None):
+                  sem_legenda=None, plano_do_resto=None):
     """A conta do lote e o bloco da mensagem final. 0 se todos saíram, 1 se não.
 
     `sheet` é o contact sheet combinado do lote, quando quem chama montou um;
-    `depois` é o que ficou renderizando em background, quando ficou;
+    `depois` são os clipes que FICARAM DE FORA deste turno, quando ficaram, e
+    `plano_do_resto` é o arquivo de plano que os traz -- os dois andam juntos,
+    porque nomear o que faltou sem dizer o comando que o busca é a promessa que
+    esta conta deixou de fazer (ver `_lote_render`);
     `sem_legenda` são os clipes que saíram sem uma palavra na tela num lote que
     PEDIU legenda, com o porquê de cada um.
     """
@@ -3090,10 +3328,29 @@ def conta_do_lote(liberados, failed, asked, sheet=None, depois=None,
         print(f"# one image for the whole batch: open it once and check every "
               f"clip on it, instead of one look per clip.", file=sys.stderr)
     if depois:
-        print(f"# still rendering in the background: {', '.join(depois)}. "
-              f"Deliver the ones below now -- do not wait. When that render "
-              f"finishes it wakes you, and then those go out in the final "
-              f"message of THAT turn.", file=sys.stderr)
+        # Em voz alta, e com o comando na mão. A frase anterior aqui dizia
+        # "still rendering in the background (...) when that render finishes it
+        # wakes you": nada renderizava sob vigilância de ninguém e nada
+        # acordava o agente, então esses clipes ficavam parados até a pessoa
+        # escrever de novo. Ver o bloco em `_lote_render`.
+        print(f"# {len(depois)} clip(s) asked for did NOT render in this turn: "
+              f"{', '.join(depois)}. Nothing is rendering them and NOTHING "
+              f"WILL WAKE YOU for them.", file=sys.stderr)
+        if plano_do_resto:
+            print(f"# this is the exact command that renders them, and it is "
+                  f"the only thing that brings them:", file=sys.stderr)
+            print(f"#     warden cut --plan {plano_do_resto}", file=sys.stderr)
+            print(f"# Start it with your own terminal tool as a BACKGROUND "
+                  f"process with completion notice on (measured 15/09: that is "
+                  f"the only thing in this runtime that wakes an agent -- the "
+                  f"`[IMPORTANT: Background process ... completed]` message; "
+                  f"nohup and disown are refused). If you cannot, run the line "
+                  f"above at the START of your next turn. Either way, say in "
+                  f"your final message that {len(depois)} of the clips asked "
+                  f"for are still owing -- do not report this batch as done.",
+                  file=sys.stderr)
+        print(f"# Deliver the ones below now -- do not wait for those.",
+              file=sys.stderr)
     if liberados:
         # Este bloco sai SEMPRE que algo passou, inclusive num lote curto. Sem
         # ele, um lote em que o clipe 1 explode e os clipes 2 e 3 ficam
@@ -3148,9 +3405,13 @@ LOTE_INLINE = 3
 
 Três porque a conta é de tempo e não de gosto: um render mede ~64s neste
 container, e o quarto clipe empurra a primeira entrega para mais de quatro
-minutos de silêncio. Os três primeiros chegam, e o resto acorda o agente
-quando fica pronto -- o que é melhor que os cinco chegarem juntos vinte
-minutos depois de ninguém ver nada.
+minutos de silêncio. Os três primeiros chegam, e o resto fica escrito num
+plano com o comando que o busca -- o que é melhor que os cinco chegarem
+juntos vinte minutos depois de ninguém ver nada.
+
+O que este número NÃO significa: que alguém vai ser acordado quando o resto
+ficar pronto. Nada neste arquivo consegue acordar o agente; ver o bloco de
+`_lote_render` que escreve o `lote-resto.json`.
 """
 
 
@@ -3794,8 +4055,9 @@ def _lote_render(args):
     # segunda implementação de "renderiza N janelas e cobra a conta" é uma
     # segunda contagem, e a contagem é o que se está consertando.
     clips, mudos = [], []
+    marca = _marca_da_fonte(url)
     for i, ((caminho, dentro), (de, ate)) in enumerate(zip(resultados, janelas), 1):
-        nome = f"corte-{i:02d}.mp4"
+        nome = _nome_livre(f"corte-{marca}-{i:02d}.mp4")
         legenda = queimar.get((de, ate))
         # Um clipe que sai mudo num lote que pediu legenda é entrega errada, e
         # o porquê dele não pode morrer numa linha de stderr no meio do render.
@@ -3826,44 +4088,55 @@ def _lote_render(args):
     # mede ~64s, e o quarto clipe empurra a primeira entrega para além de
     # quatro minutos com nada na tela. Quem espera clipe prefere três agora e
     # dois depois a cinco daqui a vinte minutos.
+    #
+    # E NADA ACORDA NINGUÉM, por isso nada é prometido aqui.
+    #
+    # O que existia até aqui era um `subprocess.Popen(start_new_session=True)`
+    # e a frase "their finishing is what wakes you for them". O processo subia
+    # e renderizava de verdade; o despertar não existia. Medido em 15/09/2026:
+    # o que acorda o agente neste runtime é a ferramenta de terminal DELE, com
+    # `background=true, notify_on_complete=true` -- é daí que saem as mensagens
+    # `[IMPORTANT: Background process proc_... completed]` que abriram os 4
+    # turnos com anexo de 13-15/09. O mesmo registro diz que o shell recusa
+    # `nohup`/`disown`. Um processo que este arquivo solta por conta própria é
+    # invisível para esse notificador: ele não tem `proc_id`, não é vigiado, e
+    # ninguém lê o `lote-resto.log` em que ele despeja a saída.
+    #
+    # Ou seja: os clipes 4 e 5 ficavam prontos em disco e paravam ali até a
+    # pessoa escrever de novo -- exatamente o buraco de 14/09, com um processo
+    # solto por cima.
+    #
+    # Então este comando parou de soltar o processo e passou a dizer o comando
+    # EXATO. Quem pode fazer o despertar acontecer é o agente, com a sua
+    # própria ferramenta de fundo; e se ele não puder, o pior caso é rodar o
+    # plano no turno seguinte -- que é o que já acontecia, sem ninguém saber.
+    #
+    # Soltar o Popen E mandar rodar o plano seria pior que os dois: dois ffmpeg
+    # escrevendo o mesmo mp4, que é a corrupção que `executa_o_plano` mata com
+    # `die` quando ela vem de dentro do plano.
     depois = []
     if len(clips) > LOTE_INLINE:
         resto = clips[LOTE_INLINE:]
-        plano["clips"] = clips[:LOTE_INLINE]
         caminho_resto = os.path.join(out, "lote-resto.json")
         sobra = dict(plano)
         sobra["clips"] = resto
         try:
             with open(caminho_resto, "w", encoding="utf-8") as fh:
                 json.dump(sobra, fh, ensure_ascii=False, indent=1)
-            # Desacoplado de propósito: este processo termina quando o turno
-            # termina, e o render que sobrou não pode morrer junto. Quando ele
-            # acaba, o fim dele é o que acorda o agente.
-            registro = open(os.path.join(out, "lote-resto.log"), "wb")
-            try:
-                subprocess.Popen(
-                    [sys.executable, os.path.abspath(__file__), "cut",
-                     "--plan", caminho_resto],
-                    stdout=registro, stderr=subprocess.STDOUT,
-                    start_new_session=True)
-            finally:
-                # O filho já herdou o descritor; segurar o nosso só deixaria
-                # um arquivo aberto neste processo até ele morrer.
-                registro.close()
+            plano["clips"] = clips[:LOTE_INLINE]
             depois = [c["out"] for c in resto]
             print(f"# {len(clips)} clips asked for, and {LOTE_INLINE} come out "
-                  f"in this turn. The other {len(resto)} started rendering in "
-                  f"the background from {caminho_resto}; their finishing is "
-                  f"what wakes you for them. Deliver these first {LOTE_INLINE} "
-                  f"now instead of waiting for all {len(clips)}.",
-                  file=sys.stderr)
+                  f"in this turn. The other {len(resto)} are NOT rendering: "
+                  f"their plan is written at {caminho_resto} and nothing has "
+                  f"started it. Deliver these first {LOTE_INLINE} now instead "
+                  f"of waiting for all {len(clips)}.", file=sys.stderr)
         except Exception as exc:
-            # Falhou o background: renderiza tudo aqui mesmo. Entregar menos
-            # clipes do que foram pedidos porque um Popen não subiu seria a
-            # falta de 14/09 com outra desculpa.
+            # Não deu para escrever o plano: renderiza tudo aqui mesmo.
+            # Entregar menos clipes do que foram pedidos porque um arquivo não
+            # foi escrito seria a falta de 14/09 com outra desculpa.
             plano["clips"] = clips
             depois = []
-            print(f"# could not start the background render "
+            print(f"# could not write the plan for the rest "
                   f"({type(exc).__name__}: {exc}), so all {len(clips)} clips "
                   f"render in this turn instead. It will take longer and "
                   f"nothing is lost.", file=sys.stderr)
@@ -3874,7 +4147,8 @@ def _lote_render(args):
     liberados, failed, asked, mosaicos = executa_o_plano(plano, argumentos)
     folha = _mosaico_do_lote(mosaicos, os.path.join(out, "lote-contato.jpg"))
     return conta_do_lote(liberados, failed, asked, sheet=folha, depois=depois,
-                         sem_legenda=mudos)
+                         sem_legenda=mudos,
+                         plano_do_resto=(caminho_resto if depois else None))
 
 
 def cmd_lote(args):
@@ -3912,6 +4186,21 @@ def cmd_lote(args):
 GATEWAY_LOG = os.environ.get("WARDEN_GATEWAY_LOG",
                              "/var/lib/hermes/logs/gateway.log")
 _SAIU = "Sending video attachment"
+
+# ATENÇÃO: esta string NÃO foi confirmada em log nenhum.
+#
+# `_SAIU` foi lido de um gateway.log de verdade. `_FALHOU` não: a auditoria
+# deste projeto registra, duas vezes, que "Failed to send media" nunca foi
+# observada -- nem em 15/09 nem depois. Ela entrou junto do bloco "Medido em
+# 15/09" acima e herdou uma autoridade que não tem.
+#
+# O que isso significa, exatamente: se a frase real do gateway for outra, esta
+# rede de segurança NUNCA dispara. Ela não gera alarme falso -- uma linha que
+# a contenha é uma linha que está mesmo lá -- mas o silêncio dela não é prova
+# de que nada falhou, e a saída de `warden delivered` não pode dizer que é.
+# Por isso a mensagem que a usa fala em "linha que casa com este padrão", e
+# não em "falha de envio". Quando alguém puser as mãos num log com uma falha
+# de verdade, é esta constante que muda -- e aí o comentário sai.
 _FALHOU = "Failed to send media"
 _ANUNCIOU = re.compile(r"Delivering (\d+) non-image MEDIA")
 
@@ -4185,11 +4474,19 @@ def cmd_delivered(args):
                       f"not readable from here, so nothing independent says the "
                       f"attachment actually left the machine.", file=sys.stderr)
             elif log["falhou"]:
-                print(f"NOT confirming {nome}: the gateway logged "
-                      f"{log['falhou']} media send failure(s) after the message "
-                      f"that carried it. The person does not have it. Send it "
-                      f"again, in the LAST message of your turn, and say in one "
-                      f"line that you are resending.", file=sys.stderr)
+                # Não afirma "o envio falhou" nem "a pessoa não tem o arquivo":
+                # o padrão que casou (`_FALHOU`) nunca foi visto num log real,
+                # então ele é uma pista e não um veredito. O que a saída pode
+                # dizer com segurança é que nada aqui confirma a chegada -- e
+                # reenviar custa uma linha.
+                print(f"NOT confirming {nome}: {log['falhou']} line(s) after "
+                      f"the message that carried it match the send-failure "
+                      f"pattern this check looks for ({_FALHOU!r}) -- a wording "
+                      f"this project has never seen in a real gateway log, so "
+                      f"treat it as a lead, not a verdict. Nothing here says "
+                      f"the file arrived either. Send it again, in the LAST "
+                      f"message of your turn, and say in one line that you are "
+                      f"resending.", file=sys.stderr)
             elif log["saiu"] < 1:
                 print(f"NOT confirming {nome}: the message carrying its MEDIA: "
                       f"line was a final one, but the gateway logged no video "

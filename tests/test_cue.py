@@ -289,3 +289,122 @@ class PortaoDeEstilo(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AExcecaoDaPreposicaoNaoDeixaPassarCueRuim(unittest.TestCase):
+    """Os três casos de 15/09 em que a exceção assinava legenda ruim.
+
+    Uma revisão adversarial rodou o `reflow_cues` de verdade com e sem
+    `_fecha_apesar_da_lista` e mostrou que a exceção PIORAVA a quebra em três
+    formas. As três guardas que entraram saem daqui, e este teste é o que
+    impede que alguém as tire por acharem-nas exageradas.
+    """
+
+    def cues(self, texto):
+        palavras = texto.split()
+        segs = [{"start": i * 0.4, "end": (i + 1) * 0.4, "word": w}
+                for i, w in enumerate(palavras)]
+        saida = S.reflow_cues([{"start": 0.0, "end": len(palavras) * 0.4,
+                                "text": texto, "words": segs}])
+        return [c["text"] if isinstance(c, dict) else c for c in saida]
+
+    def test_pronome_sujeito_de_infinitivo_nao_fecha_a_cue(self):
+        # "para você ENTENDER": o pronome é sujeito do infinitivo seguinte, e
+        # fechar ali deixava "entender" órfão.
+        primeira = self.cues("tudo de novo para voce entender de uma vez")[0]
+        self.assertIn("entender", primeira,
+                      "a cue fechou em 'voce' e deixou o infinitivo órfão")
+
+    def test_par_coordenado_nao_e_partido_no_meio(self):
+        # "entre ele | e ela" partia "entre ele e ela".
+        for cue in self.cues("a briga toda comecou entre ele e ela naquela noite"):
+            self.assertFalse(cue.strip().endswith("ele"),
+                             "fechou em 'ele' e partiu o par coordenado")
+
+    def test_preposicao_de_uma_lingua_nao_casa_com_pronome_de_outra(self):
+        # `as`(pt) + `you`(en) fechava "…that as you", que é o 'HATE THE'.
+        for cue in self.cues("I really think that as you can see the numbers"):
+            self.assertFalse(cue.strip().endswith("you"),
+                             "casou preposição portuguesa com pronome inglês")
+
+    def test_o_caso_que_a_excecao_existe_para_permitir_continua_valendo(self):
+        # Sem a exceção, letra de música não tem fronteira utilizável nenhuma.
+        self.assertTrue(
+            S._fecha_apesar_da_lista(["desistir", "de", "voce"], 2),
+            "a exceção deixou de valer no caso que a justifica")
+
+
+class MarcacaoDecorativaNaoVaiParaATela(unittest.TestCase):
+    """Medido em 15/09: o símbolo musical da legenda automática era QUEIMADO.
+
+    Visto no contact sheet de um clipe real, não deduzido do código.
+    """
+
+    NOTA = "♪"
+
+    def test_o_simbolo_musical_sai(self):
+        self.assertEqual(
+            S._limpa_marcacao("Never gonna let you down %s %s" % (self.NOTA, self.NOTA)),
+            "Never gonna let you down")
+
+    def test_o_parentese_de_letra_de_verdade_FICA(self):
+        # Sai o símbolo, não o parêntese: "(Give you up)" é letra, e parêntese
+        # virou unidade indivisível em 15/09.
+        self.assertEqual(
+            S._limpa_marcacao("(Give you up) %s" % self.NOTA), "(Give you up)")
+
+    def test_rotulo_de_som_entre_colchetes_sai(self):
+        self.assertEqual(S._limpa_marcacao("fala normal [Music] continua"),
+                         "fala normal continua")
+        self.assertEqual(S._limpa_marcacao("fala [Aplausos] segue"), "fala segue")
+
+    def test_cue_que_era_so_ruido_deixa_de_existir(self):
+        self.assertEqual(S._limpa_marcacao("%s %s" % (self.NOTA, self.NOTA)), "")
+
+    def test_a_limpeza_acontece_antes_de_montar_as_cues(self):
+        segs = [{"start": 0.0, "end": 1.0, "text": "ola %s mundo" % self.NOTA,
+                 "words": [{"start": 0.0, "end": 0.4, "word": "ola"},
+                           {"start": 0.4, "end": 0.6, "word": self.NOTA},
+                           {"start": 0.6, "end": 1.0, "word": "mundo"}]}]
+        for cue in S.reflow_cues(segs):
+            texto = cue["text"] if isinstance(cue, dict) else cue
+            self.assertNotIn(self.NOTA, texto)
+
+
+class AListaCobreOInglesDoQueFoiVistoNaTela(unittest.TestCase):
+    """As palavras que fecharam cue penduradas num clipe inglês APROVADO."""
+
+    def test_as_palavras_do_mosaico_estao_na_lista(self):
+        for palavra in ("each", "going", "can", "gonna", "what", "how"):
+            self.assertIn(palavra, S.NAO_FECHA_CUE,
+                          "%r fechou cue pendurada num clipe entregue" % palavra)
+
+    def test_o_portugues_nao_regrediu(self):
+        for palavra in ("de", "para", "vou", "nunca", "que"):
+            self.assertIn(palavra, S.NAO_FECHA_CUE)
+
+
+class PronomeObjetoDepoisDeVerboFechaBem(unittest.TestCase):
+    """O falso positivo que derrubou um lote inteiro em 15/09.
+
+    Depois de apertar a exceção, o portão passou a reprovar "…tell a lie and
+    hurt you" -- que é uma frase COMPLETA. O pronome objeto tinha o que pedia
+    atrás dele (o verbo), exatamente como em "…de você" tem a preposição. Os
+    dois clipes do lote foram recusados por isso, e um portão que reprova clipe
+    certo custa o mesmo que um que aprova clipe errado.
+    """
+
+    def test_pronome_depois_de_verbo_fecha(self):
+        self.assertTrue(
+            S._fecha_apesar_da_lista("tell a lie and hurt you".split(), 5))
+
+    def test_mas_depois_de_palavra_que_pede_o_proximo_NAO_fecha(self):
+        # `as` está na lista de quem pede o que vem depois; `hurt` não. É essa
+        # a diferença, e é a única.
+        self.assertFalse(
+            S._fecha_apesar_da_lista("think that as you can".split(), 3))
+
+    def test_e_as_tres_guardas_continuam_de_pe(self):
+        self.assertTrue(S._fecha_apesar_da_lista("desistir de voce".split(), 2))
+        self.assertFalse(S._fecha_apesar_da_lista("para voce entender".split(), 1))
+        self.assertFalse(S._fecha_apesar_da_lista("entre ele e ela".split(), 1))

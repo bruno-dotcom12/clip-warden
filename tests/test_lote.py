@@ -241,6 +241,18 @@ class _ComLoteFalso(unittest.TestCase):
         return code, saida.getvalue(), erro.getvalue()
 
 
+def _nome(url, i):
+    """O nome que o lote dá ao clipe `i` deste link.
+
+    Escrito como uma função e não como a string `corte-01.mp4` porque a string
+    fixa É o defeito: dois links diferentes escreviam nos mesmos caminhos, e o
+    segundo pedido apagava os clipes do primeiro. O nome carrega a marca da
+    fonte -- a mesma conta que nomeia os arquivos de janela -- e um teste que
+    soletrasse o nome à mão deixaria de valer no dia em que a marca entrasse.
+    """
+    return f"corte-{warden._marca_da_fonte(url)}-{i:02d}.mp4"
+
+
 URL = "https://www.youtube.com/watch?v=abcdefghijk"
 # O segundo link da MESMA instalação. Ele existe porque o defeito só aparece
 # com dois: o lote de um link queimava a legenda que sobrou do outro.
@@ -675,7 +687,7 @@ class FonteSemLegendaPublicadaNaoEntregaClipeMudo(_ComLoteFalso):
         self.assertIsNone(self.media.cortes[0]["caption_srt"])
         self.assertIn('--keep "foram 90 mil reais naquele dia"', erro)
         conta = erro.split("cleared for delivery", 1)[1]
-        self.assertIn("NO CAPTIONS: corte-01.mp4", conta)
+        self.assertIn(f"NO CAPTIONS: {_nome(URL, 1)}", conta)
         self.assertIn("--keep", conta)
         self.assertIn("words on screen", conta)
 
@@ -697,7 +709,7 @@ class FonteSemLegendaPublicadaNaoEntregaClipeMudo(_ComLoteFalso):
             ["lote", "render", URL, "--windows", "10-30", "--hooks", "x"])
         self.assertEqual(code, 0, erro)
         conta = erro.split("cleared for delivery", 1)[1]
-        self.assertIn("NO CAPTIONS: corte-01.mp4", conta)
+        self.assertIn(f"NO CAPTIONS: {_nome(URL, 1)}", conta)
         self.assertIn("heard no speech", conta)
 
     def test_ficha_ausente_nao_e_erro(self):
@@ -726,67 +738,153 @@ class FonteSemLegendaPublicadaNaoEntregaClipeMudo(_ComLoteFalso):
         self.assertNotIn("NO CAPTIONS", erro)
 
 
-class MaisDeTresClipesVaoParaOFundo(_ComLoteFalso):
-    """Acima de três, os três primeiros saem agora e o resto acorda o agente.
+class MaisDeTresClipesNaoSomemNoFundo(_ComLoteFalso):
+    """Acima de três, os três primeiros saem agora e o resto é DITO em voz alta.
 
     Não é limite de capacidade, é limite de silêncio: um render mede ~64s, e o
     quarto clipe empurra a primeira entrega para além de quatro minutos com
     nada na tela.
+
+    O que mudou, e é o conserto: até aqui o resto ia para um
+    `subprocess.Popen(start_new_session=True)` e a saída dizia "their finishing
+    is what wakes you for them". Nada acordava ninguém -- o despertar deste
+    runtime é a ferramenta de fundo DO AGENTE, com aviso de conclusão, e um
+    processo solto por este arquivo não passa por ela. Pedir 10 clipes
+    entregava 3, e os outros 7 ficavam num log que ninguém lê.
+
+    Então esta classe cobra o contrário do que cobrava: nenhum processo solto,
+    e uma conta final que nomeia o que faltou E o comando exato que o traz.
     """
 
-    def test_cinco_pedidos_entregam_tres_e_continuam_dois(self):
+    _CINCO = "10-30,60-80,120-140,180-200,240-260"
+
+    def test_cinco_pedidos_entregam_tres_e_dizem_quais_dois_faltam(self):
         self._roda(["lote", "prep", URL, "--n", "5"])
-        code, saida, erro = self._roda(
-            ["lote", "render", URL,
-             "--windows", "10-30,60-80,120-140,180-200,240-260",
+        code, _saida, erro = self._roda(
+            ["lote", "render", URL, "--windows", self._CINCO,
              "--hooks", "a|b|c|d|e"])
         self.assertEqual(code, 0, erro)
         self.assertEqual(len(self.media.cortes), warden.LOTE_INLINE)
         bloco = erro.split("END YOUR TURN NOW", 1)[1]
         self.assertEqual(bloco.count("MEDIA:"), warden.LOTE_INLINE)
         # e a saída DIZ o que ficou para depois, com nome
-        self.assertIn("still rendering in the background", erro)
-        self.assertIn("corte-04.mp4", erro)
-        self.assertIn("corte-05.mp4", erro)
+        self.assertIn(_nome(URL, 4), erro)
+        self.assertIn(_nome(URL, 5), erro)
 
-    def test_o_resto_vira_um_plano_em_disco_e_um_processo_solto(self):
+    def test_a_conta_final_nao_promete_despertar_nenhum(self):
+        """A promessa que o runtime não cumpre saiu, e saiu do texto todo."""
         self._roda(["lote", "prep", URL, "--n", "5"])
-        self._roda(["lote", "render", URL,
-                    "--windows", "10-30,60-80,120-140,180-200,240-260",
+        _code, saida, erro = self._roda(
+            ["lote", "render", URL, "--windows", self._CINCO,
+             "--hooks", "a|b|c|d|e"])
+        tudo = saida + erro
+        self.assertNotIn("still rendering in the background", tudo)
+        self.assertNotIn("what wakes you for them", tudo)
+        self.assertIn("NOTHING WILL WAKE YOU", tudo)
+
+    def test_a_conta_final_traz_o_comando_exato_que_busca_o_resto(self):
+        """Nomear o que faltou sem dizer como buscá-lo é a mesma perda com
+        outro texto: o modelo lê "faltam dois" e não tem o que rodar."""
+        self._roda(["lote", "prep", URL, "--n", "5"])
+        _code, _saida, erro = self._roda(
+            ["lote", "render", URL, "--windows", self._CINCO,
+             "--hooks", "a|b|c|d|e"])
+        resto = os.path.join(warden._dir_do_lote(URL), "lote-resto.json")
+        conta = erro.split("cleared for delivery", 1)[1]
+        self.assertIn(f"warden cut --plan {resto}", conta)
+        self.assertIn("next turn", conta)
+
+    def test_nenhum_processo_solto_sobe(self):
+        self._roda(["lote", "prep", URL, "--n", "5"])
+        self._roda(["lote", "render", URL, "--windows", self._CINCO,
+                    "--hooks", "a|b|c|d|e"])
+        self.assertEqual(self.spawnados, [])
+
+    def test_o_resto_vira_um_plano_em_disco_pronto_para_rodar(self):
+        self._roda(["lote", "prep", URL, "--n", "5"])
+        self._roda(["lote", "render", URL, "--windows", self._CINCO,
                     "--hooks", "a|b|c|d|e"])
         resto = os.path.join(warden._dir_do_lote(URL), "lote-resto.json")
         self.assertTrue(os.path.isfile(resto))
         with open(resto, encoding="utf-8") as fh:
             plano = json.load(fh)
         self.assertEqual([c["out"] for c in plano["clips"]],
-                         ["corte-04.mp4", "corte-05.mp4"])
-        self.assertEqual(len(self.spawnados), 1)
-        self.assertIn("--plan", self.spawnados[0])
-        self.assertIn(resto, self.spawnados[0])
+                         [_nome(URL, 4), _nome(URL, 5)])
 
-    def test_tres_ou_menos_nao_vao_para_o_fundo(self):
+    def test_tres_ou_menos_nao_deixam_nada_para_tras(self):
         self._roda(["lote", "prep", URL, "--n", "3"])
         _code, _saida, erro = self._roda(
             ["lote", "render", URL, "--windows", "10-30,60-80,120-140",
              "--hooks", "a|b|c"])
         self.assertEqual(len(self.media.cortes), 3)
         self.assertEqual(self.spawnados, [])
-        self.assertNotIn("still rendering in the background", erro)
+        self.assertNotIn("NOTHING WILL WAKE YOU", erro)
+        self.assertNotIn("did NOT render in this turn", erro)
 
-    def test_se_o_processo_de_fundo_nao_sobe_tudo_renderiza_aqui(self):
-        """Entregar menos do que foi pedido porque um Popen falhou seria a
-        falta de 14/09 com outra desculpa."""
-        def explode(cmd, **kw):
-            raise OSError("no fork for you")
-        subprocess.Popen = explode
+    def test_se_o_plano_do_resto_nao_for_escrito_tudo_renderiza_aqui(self):
+        """Entregar menos do que foi pedido porque um arquivo não foi escrito
+        seria a falta de 14/09 com outra desculpa."""
+        import builtins
+        verdadeiro = builtins.open
+
+        def recusa(caminho, *a, **kw):
+            if str(caminho).endswith("lote-resto.json"):
+                raise OSError("no room for you")
+            return verdadeiro(caminho, *a, **kw)
+
         self._roda(["lote", "prep", URL, "--n", "5"])
-        code, _saida, erro = self._roda(
-            ["lote", "render", URL,
-             "--windows", "10-30,60-80,120-140,180-200,240-260",
-             "--hooks", "a|b|c|d|e"])
+        builtins.open = recusa
+        try:
+            code, _saida, erro = self._roda(
+                ["lote", "render", URL, "--windows", self._CINCO,
+                 "--hooks", "a|b|c|d|e"])
+        finally:
+            builtins.open = verdadeiro
         self.assertEqual(code, 0, erro)
         self.assertEqual(len(self.media.cortes), 5)
-        self.assertIn("could not start the background render", erro)
+        self.assertIn("could not write the plan for the rest", erro)
+
+
+class UmSegundoPedidoNaoApagaOsClipesDoPrimeiro(_ComLoteFalso):
+    """O nome do arquivo de saída era global, e o lote seguinte o sobrescrevia.
+
+    `corte-01.mp4` resolve sempre para o mesmo `clips_dir()`, que não é por
+    pedido. Então o lote do link B escrevia por cima dos arquivos do link A --
+    e a dívida de entrega de A, que guarda o CAMINHO, passava a apontar para o
+    vídeo de B. Ninguém percebia: o caminho existia e o clipe era outro.
+    """
+
+    def test_dois_links_nao_dividem_um_caminho_de_saida(self):
+        self._roda(["lote", "prep", URL])
+        self._roda(["lote", "render", URL, "--windows", "10-30", "--hooks", "a"])
+        de_a = [c["out"] for c in self.media.cortes]
+        self._roda(["lote", "prep", URL_B])
+        self._roda(["lote", "render", URL_B, "--windows", "10-30", "--hooks", "b"])
+        de_b = [c["out"] for c in self.media.cortes[len(de_a):]]
+        self.assertTrue(de_a and de_b)
+        self.assertEqual(set(de_a) & set(de_b), set())
+
+    def test_o_nome_carrega_a_marca_da_fonte_e_nao_outra_conta(self):
+        """A mesma marca dos arquivos de janela, de propósito: duas contas para
+        responder "que link é este" são duas respostas no dia em que uma mudar."""
+        self._roda(["lote", "prep", URL])
+        self._roda(["lote", "render", URL, "--windows", "10-30", "--hooks", "a"])
+        self.assertEqual(os.path.basename(self.media.cortes[0]["out"]),
+                         _nome(URL, 1))
+
+    def test_o_mesmo_link_duas_vezes_nao_sobrescreve_o_arquivo_de_antes(self):
+        self._roda(["lote", "prep", URL])
+        self._roda(["lote", "render", URL, "--windows", "10-30", "--hooks", "a"])
+        primeiro = self.media.cortes[0]["out"]
+        with open(primeiro, "wb") as fh:          # o clipe que já está entregue
+            fh.write(b"o primeiro")
+        _code, _saida, erro = self._roda(
+            ["lote", "render", URL, "--windows", "300-320", "--hooks", "b"])
+        segundo = self.media.cortes[-1]["out"]
+        self.assertNotEqual(primeiro, segundo)
+        self.assertIn("was NOT overwritten", erro)
+        with open(primeiro, "rb") as fh:
+            self.assertEqual(fh.read(), b"o primeiro")
 
 
 class UmLinkSoltoNaoPrecisaDeCampanha(_ComLoteFalso):
