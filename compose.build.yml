@@ -8,6 +8,13 @@
 # acabou de instalar. O host puxa; quem desenvolve pede o build.
 services:
   agent:
-    build: .
+    build:
+      context: .
+      # Passados do ambiente de quem constrói, para o build local ter a mesma
+      # capacidade que a imagem publicada. Sem eles, o build funciona e o
+      # YouTube fica indisponível, dito em voz alta pelo `warden status`.
+      args:
+        WARDEN_YT_CLIENT_ID: ${WARDEN_YT_CLIENT_ID:-}
+        WARDEN_YT_CLIENT_SECRET: ${WARDEN_YT_CLIENT_SECRET:-}
     image: clip-warden-agent:local
     pull_policy: never

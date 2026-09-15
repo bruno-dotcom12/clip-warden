@@ -71,6 +71,13 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
+          # O cliente OAuth do Google entra AQUI, do segredo do repositório,
+          # e não do código-fonte -- ver o comentário no Dockerfile. Se os
+          # segredos não estiverem definidos, o build passa e a imagem sai sem
+          # publicação no YouTube, que é degradação declarada e não quebra.
+          build-args: |
+            WARDEN_YT_CLIENT_ID=${{ secrets.WARDEN_YT_CLIENT_ID }}
+            WARDEN_YT_CLIENT_SECRET=${{ secrets.WARDEN_YT_CLIENT_SECRET }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # Cache no próprio registro, não no serviço de cache do Actions: a cota

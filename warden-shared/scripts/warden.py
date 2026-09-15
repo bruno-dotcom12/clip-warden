@@ -953,6 +953,74 @@ def cmd_tiktok(args):
     return 0
 
 
+def cmd_youtube(args):
+    """Conecta o canal da pessoa, e publica nele. Sem senha nenhuma no caminho.
+
+    O `connect` usa o Device Flow do OAuth 2.0 -- o fluxo que uma TV usa --
+    porque a pessoa está no celular, não num teclado: o agente manda um código
+    curto, ela aprova em google.com/device, e todo envio depois disso é calado.
+
+    Por que YouTube e não TikTok, decidido em 15/09/2026: o TikTok exige App
+    Review para qualquer conta que não seja a do desenvolvedor, e antes disso a
+    única porta é cadastrar a conta à mão COM A SENHA dela
+    (developers.tiktok.com/doc/add-a-sandbox). Isso não escala e não se pede a
+    um estranho. O YouTube, com o app publicado em produção, deixa qualquer
+    pessoa autorizar sozinha. O preço é que o vídeo sobe privado enquanto o app
+    não for verificado -- e esse último toque é, na prática, o consentimento
+    final dela.
+    """
+    Y = _youtube()
+    fala = lambda m: print(f"  {m}", file=sys.stderr)
+    if args.action == "status":
+        ok, porque = Y.status_conta()
+        print(("connected -- " if ok else "not connected -- ") + porque)
+        return 0 if ok else 1
+    if args.action == "connect":
+        try:
+            saida = Y.conecta(progresso=fala, espera=args.wait)
+        except Y.YouTubeIndisponivel as exc:
+            die(str(exc), code=2)
+        canal = saida.get("canal")
+        print(f"connected{f' to {canal}' if canal else ''}. "
+              f"Nothing else to do -- uploads from here are silent.")
+        for aviso in saida.get("avisos") or []:
+            fala(aviso)
+        return 0
+    # publish
+    caminho = args.file
+    if not caminho or not os.path.isfile(caminho):
+        die(f"{caminho} is not a file", code=2)
+    titulo = args.title
+    descricao = ""
+    if args.campaign:
+        rules = load_campaign(args.campaign)
+        legenda, limite = _monta_legenda(rules, args.hook or "")
+        if limite and len(legenda) > limite:
+            die(f"the caption this campaign requires is {len(legenda)} "
+                f"characters and it allows {limite}. Shorten the hook.", code=2)
+        descricao = legenda
+        # O título do YouTube não é a legenda: ele tem 100 caracteres e aparece
+        # sozinho na busca. A primeira linha da legenda é o gancho que a pessoa
+        # escreveu, e é o melhor título que existe sem inventar um.
+        if not titulo:
+            titulo = (legenda.splitlines() or [""])[0][:100].strip()
+    if not titulo:
+        die("a title is required: pass --title, or --campaign with --hook so "
+            "the campaign's own first line becomes it.", code=2)
+    try:
+        saida = Y.publica(caminho, titulo=titulo, descricao=descricao,
+                          privacidade=args.privacy, progresso=fala)
+    except Y.YouTubeIndisponivel as exc:
+        die(str(exc), code=2)
+    except Exception as exc:
+        die(f"{type(exc).__name__}: {exc}", code=1)
+    url = saida.get("url") or saida.get("video_id")
+    print(f"uploaded: {url}")
+    for aviso in saida.get("avisos") or []:
+        fala(aviso)
+    return 0
+
+
 def cmd_log(args):
     load_campaign(args.campaign)
     ledger_add({"campaign": args.campaign, "clip": args.clip,
@@ -1240,6 +1308,11 @@ def cmd_status(args):
         print("tiktok draft upload: " + ("ready -- " if ok else "NOT set up -- ") + porque)
     except Exception as exc:
         print(f"tiktok draft upload: could not be read ({type(exc).__name__})")
+    try:
+        ok, porque = _youtube().status_conta()
+        print("youtube publishing: " + ("ready -- " if ok else "NOT connected -- ") + porque)
+    except Exception as exc:
+        print(f"youtube publishing: could not be read ({type(exc).__name__})")
     # The models arrive after boot rather than inside the image, so whether they
     # are here yet is a real question with a real answer, not a constant.
     # "ainda baixando" e "nunca baixou" eram a mesma linha, e são coisas
@@ -1276,6 +1349,11 @@ def _media():
 def _tiktok():
     import warden_tiktok
     return warden_tiktok
+
+
+def _youtube():
+    import warden_youtube
+    return warden_youtube
 
 
 def cmd_fetch(args):
@@ -2673,6 +2751,22 @@ def main(argv=None):
     p.add_argument("--campaign", required=True)
     p.add_argument("--hook", default="")
     p.set_defaults(func=cmd_package)
+
+    p = sub.add_parser("youtube",
+                       help="connect the owner's channel, and publish to it")
+    p.add_argument("action", choices=["connect", "status", "publish"])
+    p.add_argument("file", nargs="?", help="the clip to publish")
+    p.add_argument("--campaign", help="take the description from this campaign")
+    p.add_argument("--hook", default="", help="the owner's line, first in the caption")
+    p.add_argument("--title", help="the video title; at most 100 characters")
+    p.add_argument("--privacy", default="private",
+                   choices=["private", "unlisted", "public"],
+                   help="private by default, and an unverified app cannot do "
+                        "better: YouTube forces private on uploads from "
+                        "unverified projects. The owner flips it in one tap.")
+    p.add_argument("--wait", type=float, default=300,
+                   help="seconds to wait for the phone approval (default 300)")
+    p.set_defaults(func=cmd_youtube)
 
     p = sub.add_parser("tiktok",
                        help="upload a finished clip to the TikTok inbox as a draft")

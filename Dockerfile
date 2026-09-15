@@ -204,6 +204,25 @@ RUN set -eu; \
 COPY --chmod=0755 image/bin/warden /usr/local/bin/warden
 RUN ln -sf /usr/local/bin/warden /usr/bin/warden
 
+# O cliente OAuth do Google, da imagem e não do código-fonte.
+#
+# Medido em 15/09/2026: com o par no repositório, a proteção de segredos do
+# GitHub recusa o push -- e ela está certa. "O Google diz que o secret deste
+# tipo de cliente não é confidencial" é um argumento sobre risco, não sobre
+# higiene, e um par commitado é um push bloqueado toda vez, para sempre.
+#
+# Aqui ele é um argumento de build alimentado pelo segredo do CI, então a
+# imagem publicada traz e o repositório não. Quem constrói do código-fonte sem
+# passar os seus recebe um build que FUNCIONA -- só não publica no YouTube, e
+# `warden status` diz exatamente isso em vez de falhar no meio de um envio.
+#
+# Tão tarde quanto possível no arquivo: mudar a credencial não deve invalidar a
+# camada dos pacotes nem a do modelo.
+ARG WARDEN_YT_CLIENT_ID=""
+ARG WARDEN_YT_CLIENT_SECRET=""
+ENV WARDEN_YT_CLIENT_ID=${WARDEN_YT_CLIENT_ID}
+ENV WARDEN_YT_CLIENT_SECRET=${WARDEN_YT_CLIENT_SECRET}
+
 COPY image/s6-overlay/ /etc/s6-overlay/
 
 # State and working room: agent-owned, 0700, empty until a campaign is stored.
