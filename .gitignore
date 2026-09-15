@@ -20,3 +20,18 @@ check.log
 
 # exportes de conversa do container, nunca publicar
 logs-*/
+
+# Estado do agente, quando alguém aponta WARDEN_DIR para dentro do checkout.
+# Fora do container `state_dir()` é ~/.clip-warden e nada disto aparece aqui --
+# mas `WARDEN_DIR=. ` num teste rápido põe o livro de entregas, as preferências
+# e a lista de links da PESSOA dentro do repositório, e este repositório é
+# público. Ignorar é mais barato que lembrar.
+renders.json
+entregas.json
+preferences.json
+trusted.json
+links.json
+campaigns/
+footage/
+clips/
+cookies.txt

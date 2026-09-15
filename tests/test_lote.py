@@ -1277,5 +1277,361 @@ class PrefsNaoTemMaisOQuePerguntarAntesDeUmClipe(_ComLoteFalso):
         self.assertNotIn("still to ask", saida)
 
 
+SRT_BOM = ("1\n00:00:01,000 --> 00:00:04,000\nisso aqui é uma fala de verdade\n\n"
+           "2\n00:00:04,500 --> 00:00:08,000\ne esta é a segunda\n\n")
+
+# O conteúdo REAL de um `.aprovado`: é o que `warden captions review --approve`
+# escreve, e é por ele parecer um arquivo legítimo -- existe, tem JSON dentro,
+# tem o nome do SRT no caminho -- que o `cut` o aceitou sem piscar.
+ASSINATURA = {"sha256": "0" * 64, "approved_at": "2026-09-15T00:00:00+00:00",
+              "windows": [[181.0, 201.0]]}
+
+
+class UmArquivoQueNaoELegendaNaoRenderizaUmClipeMUDO(_ComLoteFalso):
+    """O defeito mais grave do primeiro teste real, 15/09/2026.
+
+    A sequência do agente, reconstruída dos comandos no `state.db`:
+
+      1. `cut ... --hook "..." --subtitles lote.srt ... --seconds`  REPROVADO
+      2. igual                                                      REPROVADO
+      3. trocou `--subtitles lote.srt` por `lote.srt.aprovado`      falhou
+      4. TIROU o `--hook`                                           passou
+      5. entregou dois clipes, dizendo que estavam prontos
+
+    Os dois clipes saíram sem legenda e sem hook. O passo 3 é o que esta classe
+    vigia: `lote.srt.aprovado` é o arquivo de ASSINATURA -- sha256 e janelas
+    lidas -- e não tem uma cue dentro. O `cut` aceitou o caminho porque ele
+    EXISTE, não achou legenda nenhuma e renderizou mudo, calado.
+
+    O ponto não é o `.aprovado`. É que qualquer caminho existente servia.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.fonte = os.path.join(self.dir, "fonte.mp4")
+        with open(self.fonte, "wb") as fh:
+            fh.write(b"\x00" * 64)
+        self.srt = os.path.join(self.dir, "lote.srt")
+        with open(self.srt, "w", encoding="utf-8") as fh:
+            fh.write(SRT_BOM)
+        self.aprovado = warden.SUFIXO_ASSINATURA.join([self.srt, ""])
+        with open(self.aprovado, "w", encoding="utf-8") as fh:
+            json.dump(ASSINATURA, fh)
+
+    def _corta(self, legenda):
+        return self._roda(["cut", self.fonte, "--start", "0", "--end", "4",
+                           "--any-length", "--crop", "center", "--out", "c.mp4",
+                           "--subtitles", legenda])
+
+    def test_o_arquivo_de_assinatura_e_recusado_e_a_recusa_nomeia_o_srt(self):
+        code, saida, erro = self._corta(self.aprovado)
+        self.assertEqual(code, 2, erro)
+        # Nada foi renderizado: o portão é ANTES do render, que é o caro.
+        self.assertEqual(self.media.cortes, [])
+        self.assertEqual(saida, "")
+        self.assertIn("APPROVAL SIGNATURE", erro)
+        # E o nome do arquivo CERTO na tela, não só o do errado. Sem ele, quem
+        # lê procura -- e quem procura tende a tirar o flag, que é o passo 4.
+        self.assertIn(f"--subtitles {self.srt}", erro)
+
+    def test_um_srt_vazio_tambem_e_recusado(self):
+        vazio = os.path.join(self.dir, "vazio.srt")
+        open(vazio, "w").close()
+        code, saida, erro = self._corta(vazio)
+        self.assertEqual(code, 2, erro)
+        self.assertEqual(self.media.cortes, [])
+        self.assertEqual(saida, "")
+        self.assertIn("no readable cue", erro)
+
+    def test_um_arquivo_que_nao_e_legenda_e_recusado(self):
+        """Um JSON, um mp4, um texto solto: nenhum tem cue e todos passavam."""
+        qualquer = os.path.join(self.dir, "transcript.json")
+        with open(qualquer, "w", encoding="utf-8") as fh:
+            json.dump({"segments": [{"start": 1, "text": "oi"}]}, fh)
+        code, _saida, erro = self._corta(qualquer)
+        self.assertEqual(code, 2, erro)
+        self.assertEqual(self.media.cortes, [])
+        self.assertIn("no readable cue", erro)
+
+    def test_um_caminho_que_nao_existe_e_recusado(self):
+        code, _saida, erro = self._corta(os.path.join(self.dir, "fantasma.srt"))
+        self.assertEqual(code, 2, erro)
+        self.assertEqual(self.media.cortes, [])
+        self.assertIn("is not a file", erro)
+
+    def test_o_srt_de_verdade_continua_passando(self):
+        """O conserto não pode custar a legenda: o que TEM cue renderiza."""
+        code, _saida, erro = self._corta(self.srt)
+        self.assertEqual(code, 0, erro)
+        self.assertEqual(len(self.media.cortes), 1)
+        self.assertEqual(self.media.cortes[0]["caption_srt"], self.srt)
+
+    def test_a_recusa_nao_ensina_a_tirar_o_flag(self):
+        """A saída do passo 3 não pode empurrar para o passo 4."""
+        _code, _saida, erro = self._corta(self.aprovado)
+        self.assertIn("what this refusal exists to stop", erro)
+
+    def test_o_plano_de_lote_recusa_antes_de_renderizar_N_clipes_mudos(self):
+        """No lote o mesmo erro sai multiplicado pelo tamanho do lote."""
+        plano = os.path.join(self.dir, "plano.json")
+        with open(plano, "w", encoding="utf-8") as fh:
+            json.dump({"source": self.fonte, "subtitles": self.aprovado,
+                       "seconds": 4,
+                       "clips": [{"out": "a.mp4", "start": 0, "end": 4},
+                                 {"out": "b.mp4", "start": 5, "end": 9}]}, fh)
+        code, saida, erro = self._roda(["cut", "--plan", plano])
+        self.assertEqual(code, 2, erro)
+        self.assertEqual(self.media.cortes, [])
+        self.assertEqual(saida, "")
+        self.assertIn("APPROVAL SIGNATURE", erro)
+
+    def test_lote_render_com_o_aprovado_na_mao_tambem_morre(self):
+        """`lote.srt` e `lote.srt.aprovado` ficam LADO A LADO no diretório do
+        lote, com nomes que só diferem no sufixo. Foi ali que a troca nasceu."""
+        code, saida, erro = self._roda(
+            ["lote", "render", URL, "--windows", "10-30",
+             "--hooks", "um gancho", "--subtitles", self.aprovado])
+        self.assertEqual(code, 2, erro)
+        self.assertEqual(saida, "")
+        self.assertIn("APPROVAL SIGNATURE", erro)
+
+
+class UmClipeQUEPASSOUNaoERenderizadoDeNovo(_ComLoteFalso):
+    """Rerenderizar a mesma janela com os mesmos parâmetros não muda um quadro.
+
+    Decisão do dono, 15/09/2026: o ciclo de re-render custou cerca de 2 minutos
+    do primeiro teste real, e nenhum dos renders repetidos mudou um pixel.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.fonte = os.path.join(self.dir, "fonte.mp4")
+        with open(self.fonte, "wb") as fh:
+            fh.write(b"\x00" * 64)
+
+    def _corta(self, out="c.mp4", **extra):
+        argv = ["cut", self.fonte, "--start", "0", "--end", "4",
+                "--any-length", "--crop", "center", "--out", out]
+        for chave, valor in extra.items():
+            argv += ["--" + chave.replace("_", "-"), str(valor)]
+        return self._roda(argv)
+
+    def test_o_segundo_corte_igual_nao_renderiza_e_entrega_o_mesmo_arquivo(self):
+        code, primeira, erro = self._corta()
+        self.assertEqual(code, 0, erro)
+        self.assertEqual(len(self.media.cortes), 1)
+
+        code, segunda, erro = self._corta(out="outro-nome.mp4")
+        self.assertEqual(code, 0, erro)
+        # NENHUM render novo: a lista de cortes do dublê não cresceu.
+        self.assertEqual(len(self.media.cortes), 1)
+        self.assertIn("already been rendered", erro)
+        self.assertIn("CLEARED every gate", erro)
+        # E o que sai é o clipe de antes, com a linha que o entrega.
+        clipe = primeira.strip().splitlines()[0]
+        self.assertIn(f"MEDIA:{clipe}", segunda)
+
+    def test_o_nome_do_arquivo_nao_faz_dele_outro_clipe(self):
+        """Foi com outro `--out` que o corte voltou a ser renderizado."""
+        self._corta(out="a.mp4")
+        _code, _saida, erro = self._corta(out="b.mp4")
+        self.assertIn("already been rendered", erro)
+        self.assertEqual(len(self.media.cortes), 1)
+
+    def test_mudar_a_janela_renderiza_de_novo(self):
+        """O portão não pode virar um bloqueio: outro corte é outro corte."""
+        self._corta(out="a.mp4")
+        code, _saida, erro = self._roda(
+            ["cut", self.fonte, "--start", "10", "--end", "14",
+             "--any-length", "--crop", "center", "--out", "b.mp4"])
+        self.assertEqual(code, 0, erro)
+        self.assertEqual(len(self.media.cortes), 2)
+        self.assertNotIn("already been rendered", erro)
+
+    def test_mudar_o_hook_renderiza_de_novo(self):
+        self._corta(out="a.mp4")
+        code, _saida, erro = self._corta(out="b.mp4", hook="outro gancho")
+        self.assertEqual(code, 0, erro)
+        self.assertEqual(len(self.media.cortes), 2)
+
+    def test_um_corte_REPROVADO_pode_ser_tentado_de_novo(self):
+        """Só o que PASSOU entra no livro. Consertar a campanha muda o veredito
+        sem mudar um parâmetro do corte -- e aí ele tem de poder rodar."""
+        warden.probe = lambda caminho: {
+            "width": 1080, "height": 1920, "duration_s": 99.0, "fps": "30/1",
+            "codec": "h264", "audio_codec": "aac", "subtitle_tracks": 0,
+            "size_mb": 2.0}
+        cid = self._campanha("curta", duration_max_s=5, width=1080, height=1920)
+        code, _saida, _erro = self._roda(
+            ["cut", self.fonte, "--start", "0", "--end", "4", "--any-length",
+             "--crop", "center", "--out", "a.mp4", "--campaign", cid])
+        self.assertEqual(code, 1)
+        self.assertEqual(len(self.media.cortes), 1)
+        code, _saida, erro = self._roda(
+            ["cut", self.fonte, "--start", "0", "--end", "4", "--any-length",
+             "--crop", "center", "--out", "a.mp4", "--campaign", cid])
+        self.assertEqual(len(self.media.cortes), 2, erro)
+        self.assertNotIn("already been rendered", erro)
+
+    def test_o_clipe_apagado_do_disco_renderiza_de_novo(self):
+        code, saida, _erro = self._corta(out="a.mp4")
+        self.assertEqual(code, 0)
+        os.remove(saida.strip().splitlines()[0])
+        code, _saida, erro = self._corta(out="a.mp4")
+        self.assertEqual(code, 0, erro)
+        self.assertEqual(len(self.media.cortes), 2)
+
+
+class _MediaComTranscricaoReal(_MediaFalso):
+    """A rede continua falsa; o DIGEST e os SINAIS são os de verdade.
+
+    O que se mede aqui é o tamanho da saída do `prep`, e um dublê que devolve
+    duas linhas de digest mede o dublê. As funções de `warden_media` que não
+    tocam a rede -- `digest`, `analyze_signals` sem fonte, `text_signals` --
+    entram inteiras.
+    """
+
+    def __init__(self, base, segmentos):
+        super().__init__(base)
+        self.segmentos_longos = segmentos
+
+    def transcribe(self, path, **kw):
+        self.chamadas.append(("transcribe", path, kw))
+        return {"source": "published subtitles (pt)", "language": "pt",
+                "language_measured": True, "source_language": "pt",
+                "segments": [dict(s) for s in self.segmentos_longos]}
+
+    def digest(self, segments, window=None):
+        import warden_media
+        self.chamadas.append(("digest", len(segments)))
+        return warden_media.digest(segments, window=window)
+
+    def analyze_signals(self, segments, source=None):
+        import warden_media
+        self.chamadas.append(("analyze_signals", source))
+        # `source=None` de propósito: a envoltória de volume roda ffmpeg sobre o
+        # arquivo, e aqui o arquivo é um SRT de mentira. Sem ela sobram os
+        # sinais de TEXTO, que são determinísticos e são o que esta medição
+        # precisa.
+        return warden_media.analyze_signals(segments, source=None)
+
+
+def _podcast(minutos=45, semente=7):
+    """Um episódio realista: 45 minutos, fala de 2,5 a 5s, sinais espalhados."""
+    import random
+    random.seed(semente)
+    falas = [
+        "e aí você começa a entender como esse mercado funciona por dentro",
+        "a gente passou seis meses tentando e não deu certo de jeito nenhum",
+        "isso aí é o tipo de coisa que ninguém te conta quando você começa",
+        "eu lembro que na época a gente nem tinha estrutura pra isso",
+        "e o que aconteceu depois foi mais ou menos previsível",
+        "a parte difícil não é montar, é manter aquilo de pé por dois anos",
+        "eu falei pra ele que aquilo era o pior investimento possível",
+        "cara, nossa, eu não acredito que ele fez isso na frente de todo mundo",
+        "kkkkk isso é surreal demais, sério",
+        "você acha mesmo que dá pra escalar isso sem quebrar tudo?",
+        "é mentira, ele está completamente errado sobre esse ponto",
+        "meu deus, foi o maior absurdo que eu já vi na minha vida",
+        "a gente fechou o mês no positivo pela primeira vez desde o começo",
+        "o time inteiro trabalhou de domingo a domingo naquele período",
+        "e no fim do dia o que importa é quanto sobra no caixa",
+    ]
+    segmentos, t = [], 0.0
+    while t < minutos * 60:
+        dur = 2.5 + random.random() * 2.5
+        segmentos.append({"start": round(t, 2), "end": round(t + dur, 2),
+                          "text": random.choice(falas)})
+        t += dur
+    return segmentos
+
+
+class OPrepCabeNUMALEITURA(_ComLoteFalso):
+    """43 mil caracteres, e ~40s do modelo só lendo. Medido em 15/09/2026.
+
+    Quase tudo era o digest linha a linha da fonte INTEIRA -- a transcrição de
+    novo, com carimbo a cada 12 segundos. Para escolher uma janela o modelo não
+    precisa da transcrição: precisa dos MOMENTOS e de contexto em volta de cada
+    um. A transcrição inteira continua em disco e o caminho dela sai como
+    `TRANSCRIPT:` na mesma saída, então nada se perde -- o que sumiu foi a
+    repetição obrigatória.
+
+    Meta do dono: abaixo de 15 mil caracteres.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.segmentos = _podcast()
+        self.media = _MediaComTranscricaoReal(self.dir, self.segmentos)
+        warden._media = lambda: self.media
+
+    def test_a_saida_cabe_abaixo_de_quinze_mil_caracteres(self):
+        code, saida, _erro = self._roda(["lote", "prep", URL])
+        self.assertEqual(code, 0)
+        self.assertLess(len(saida), warden.PREP_TETO_CHARS,
+                        f"o prep voltou a {len(saida)} caracteres")
+
+    def test_e_o_corte_e_grande_contra_o_que_saia_antes(self):
+        """O "antes" é exatamente o que o código antigo imprimia: o digest da
+        fonte inteira, linha a linha.
+
+        Este episódio sintético dá 44.953 caracteres só de digest -- ou seja, é
+        do tamanho do caso REAL que o dono mediu (43 mil). A asserção de baixo
+        guarda isso: no dia em que a fonte deste teste encolher, ele deixa de
+        provar qualquer coisa sobre o corte, e tem de falhar dizendo isso em vez
+        de passar de graça.
+        """
+        import warden_media
+        antes = len(warden_media.digest(self.segmentos))
+        self.assertGreater(antes, 40000,
+                           "a fonte deste teste deixou de ser realista: o caso "
+                           "medido em 15/09 tinha 43 mil caracteres")
+        _code, saida, _erro = self._roda(["lote", "prep", URL])
+        self.assertLess(len(saida), antes / 3)
+
+    def test_os_sinais_continuam_na_saida(self):
+        """Cortar não pode custar o que decide a janela."""
+        _code, saida, _erro = self._roda(["lote", "prep", URL])
+        self.assertIn("===== SIGNALS =====", saida)
+        for tag in ("reaction", "conflict", "superlative"):
+            self.assertIn(tag, saida)
+
+    def test_os_trechos_com_sinal_trazem_contexto_em_volta(self):
+        """Um sinal sem contexto é uma linha solta: o modelo não consegue dizer
+        se aquilo fecha fora do episódio, que é a pergunta do clipe."""
+        _code, saida, _erro = self._roda(["lote", "prep", URL])
+        digest = saida.split("===== DIGEST =====")[1].split("=====")[0]
+        cabecas = [l for l in digest.splitlines() if l.startswith("--- ")]
+        self.assertTrue(cabecas, digest[:400])
+        # Cada bloco é uma FAIXA de tempo, não um instante.
+        for linha in cabecas:
+            faixa = linha.split()[1]
+            de, ate = faixa.split("-")
+            self.assertNotEqual(de, ate, linha)
+        # E o corpo de cada bloco tem mais de uma linha de fala.
+        corpo = [l for l in digest.splitlines()
+                 if l.strip() and not l.startswith(("---", "#"))]
+        self.assertGreater(len(corpo), len(cabecas))
+
+    def test_a_saida_diz_que_nao_e_a_transcricao_inteira_e_onde_ela_esta(self):
+        """Um recorte que se apresenta como o todo é pior que o todo: o modelo
+        conclui que o resto do episódio não tem nada."""
+        _code, saida, _erro = self._roda(["lote", "prep", URL])
+        self.assertIn("NOT the whole transcript", saida)
+        self.assertIn("TRANSCRIPT:", saida)
+
+    def test_uma_fonte_curta_continua_saindo_inteira(self):
+        """O teto não pode cortar o que já cabia: um vídeo de dois minutos
+        perde fala de graça se for recortado."""
+        curto = [s for s in self.segmentos if s["end"] < 120]
+        self.media.segmentos_longos = curto
+        _code, saida, _erro = self._roda(["lote", "prep", URL])
+        import warden_media
+        inteiro = warden_media.digest(curto)
+        self.assertIn(inteiro.splitlines()[0], saida)
+        self.assertIn(inteiro.splitlines()[-1], saida)
+        self.assertNotIn("NOT the whole transcript", saida)
+
+
 if __name__ == "__main__":
     unittest.main()

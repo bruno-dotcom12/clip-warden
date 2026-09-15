@@ -828,6 +828,136 @@ def entregas_confirma(clip):
     return achou, entregas_pendentes()
 
 
+# ------------------------------------------------- o livro dos renders que passaram
+
+# Um clipe que PASSOU pelos três portões não muda se for renderizado de novo com
+# os mesmos parâmetros: a mesma janela do mesmo arquivo, o mesmo hook, a mesma
+# legenda e a mesma duração produzem o mesmo quadro. Renderizar de novo é gastar
+# o tempo do render para chegar exatamente onde já se estava.
+#
+# Medido em 15/09/2026, no primeiro teste real: o ciclo de re-render custou cerca
+# de 2 minutos do pedido, e nenhum dos renders repetidos mudou um pixel.
+#
+# A impressão digital NÃO inclui o `--out`. É de propósito: o mesmo corte com
+# outro nome de arquivo continua sendo o mesmo corte, e foi com outro nome que
+# ele voltou a ser renderizado. O que ela inclui é tudo o que um quadro depende:
+# a fonte (com tamanho e mtime, porque um arquivo reescrito é outro arquivo), a
+# janela, a duração pedida, o hook, a legenda, a trilha, o som, o crop, o motion
+# e a campanha cujas regras julgam o resultado.
+PRAZO_RENDER_H = 24
+
+
+def renders_path():
+    return os.path.join(state_dir(), "renders.json")
+
+
+def _marca_do_arquivo(caminho):
+    """(caminho, tamanho, mtime) -- ou só o caminho quando ele não existe.
+
+    O tamanho e o mtime entram porque um SRT reescrito no mesmo caminho é outra
+    legenda, e reaproveitar o clipe anterior nesse caso seria entregar a legenda
+    velha com a cara de nova.
+    """
+    bruto = os.path.abspath(os.path.expanduser(str(caminho)))
+    try:
+        st = os.stat(bruto)
+        return [bruto, st.st_size, int(st.st_mtime)]
+    except OSError:
+        return [bruto, None, None]
+
+
+def impressao_do_corte(args, rules, planos, sound, segundos):
+    """O que faz deste corte ESTE corte, como uma string curta."""
+    import hashlib
+    campos = {
+        "source": _marca_do_arquivo(args.source) if args.source else None,
+        "start": None if args.start is None else round(float(args.start), 3),
+        "end": None if args.end is None else round(float(args.end), 3),
+        "seconds": None if segundos is None else round(float(segundos), 3),
+        "any_length": bool(getattr(args, "any_length", False)),
+        "hook": getattr(args, "hook", None),
+        "subtitles": (_marca_do_arquivo(args.subtitles)
+                      if getattr(args, "subtitles", None) else None),
+        "track": (_marca_do_arquivo(args.track)
+                  if getattr(args, "track", None) else None),
+        "track_start": getattr(args, "track_start", None),
+        "sound": sound,
+        "crop": getattr(args, "crop", None),
+        "motion": bool(getattr(args, "motion", True)),
+        "cover_footer": getattr(args, "cover_footer", None),
+        "shots": [[round(a, 3), round(b, 3)] for a, b in (planos or [])],
+        # A campanha entra porque ela é quem JULGA: o mesmo arquivo passa numa
+        # campanha e é reprovado na outra, e reaproveitar o veredito de uma
+        # delas na outra seria o portão respondendo pela campanha errada.
+        "campaign": R.get(rules, "id"),
+    }
+    bruto = json.dumps(campos, sort_keys=True, ensure_ascii=False,
+                       default=str)
+    return hashlib.sha256(bruto.encode("utf-8")).hexdigest()[:32]
+
+
+def renders_all():
+    try:
+        with open(renders_path()) as fh:
+            linhas = json.load(fh)
+    except (OSError, ValueError):
+        # O mesmo princípio do livro de entregas: perder a conta é ruim,
+        # recusar-se a renderizar por causa dela é pior.
+        return []
+    return linhas if isinstance(linhas, list) else []
+
+
+def renders_liberado(impressao):
+    """A linha deste corte, se ele já passou E os arquivos ainda estão lá.
+
+    Os dois arquivos, não só o mp4. Sem o contact sheet `deliver` recusa a
+    entrega -- e com razão, é ele que prova que alguém olhou -- então uma linha
+    sem mosaico em disco não serve para nada e o corte tem de ser refeito.
+    """
+    for row in renders_all():
+        if row.get("fingerprint") != impressao or not _recente_render(row):
+            continue
+        clip, sheet = row.get("clip"), row.get("sheet")
+        if clip and sheet and os.path.isfile(clip) and os.path.isfile(sheet):
+            return row
+    return None
+
+
+def _recente_render(row):
+    # `TypeError` junto com `ValueError` porque `renders.json` é um arquivo em
+    # disco que outra versão (ou uma mão) pode ter escrito com `at: null`, e
+    # `fromisoformat(None)` levanta TypeError. Um livro estragado não pode
+    # derrubar um corte.
+    if not isinstance(row, dict):
+        return False
+    try:
+        quando = datetime.fromisoformat(row.get("at", ""))
+    except (ValueError, TypeError):
+        return False
+    idade = datetime.now(timezone.utc) - quando
+    return idade.total_seconds() < PRAZO_RENDER_H * 3600
+
+
+def renders_registra(impressao, result):
+    """Anota que este corte passou, com o que `deliver` precisa para repeti-lo."""
+    rows = [r for r in renders_all()
+            if _recente_render(r) and r.get("fingerprint") != impressao]
+    rows.append({"fingerprint": impressao,
+                 "clip": os.path.abspath(result.get("out") or ""),
+                 "sheet": os.path.abspath(result.get("sheet") or ""),
+                 "at": datetime.now(timezone.utc).isoformat(),
+                 "asked_for_captions": bool(result.get("asked_for_captions")),
+                 "style": result.get("style") or {},
+                 "notes": list(result.get("notes") or [])})
+    try:
+        tmp = renders_path() + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(rows, fh, indent=1, ensure_ascii=False, default=str)
+        os.replace(tmp, renders_path())
+    except (OSError, TypeError, ValueError):
+        pass                      # sem estado gravável, o corte segue igual
+
+
 # ---------------------------------------------------------------- commands
 
 def cmd_schema(args):
@@ -1448,6 +1578,48 @@ def _link_incompleto(texto, link):
     return None
 
 
+# Quanto o `inbox` espera quando ninguém disse quanto, e por que é GRANDE.
+#
+# O dono explicou o mecanismo em 15/09/2026, e ele não é "às vezes demora":
+# "quando mando o link nas mensagens, mesmo que seja na mesma mensagem, ela vai
+# em outra". O link SEMPRE chega numa mensagem separada, um instante depois.
+#
+# Com 20s isso já custou uma ida e volta inteira: o `inbox` esperou 20s, nada
+# veio, o agente perguntou "qual é o link?", e o link entrou 1 SEGUNDO depois da
+# pergunta. A pergunta não acelerou nada e queimou um turno.
+#
+# A conta é assimétrica e é por isso que o número é grande. Esperar custa ZERO
+# quando o link chega em 2s, porque o comando devolve no instante em que ele
+# chega -- não espera a janela inteira, nunca esperou. O que a janela larga
+# compra é o caso raro em que a mensagem demora; o que ela arrisca é um minuto
+# de relógio numa conversa em que ninguém ia mandar link nenhum. Um turno
+# perdido custa mais que um minuto.
+#
+# 60 e não 45 porque é o número que a persona e o SKILL já mandam passar
+# (`warden inbox --wait 60`). Um padrão menor que a instrução escrita ao lado
+# dele é uma armadilha: vale só para quem esquecer o flag, que é justamente
+# quem não leu a instrução.
+INBOX_ESPERA_S = 60.0
+
+
+def _espera_do_inbox(pedida=None):
+    """Os segundos que o `inbox` vai esperar. Ver `INBOX_ESPERA_S`.
+
+    Configurável em dois lugares porque são duas perguntas diferentes:
+    `--wait` é "nesta chamada", e `WARDEN_INBOX_WAIT` é "nesta instalação" --
+    quem roda a suíte ou um teste de fumaça não quer 45s de relógio por
+    chamada, e não deveria ter de editar o código para não tê-los.
+    """
+    for valor in (pedida, os.environ.get("WARDEN_INBOX_WAIT")):
+        if valor in (None, ""):
+            continue
+        try:
+            return max(1.0, float(valor))
+        except (TypeError, ValueError):
+            continue
+    return INBOX_ESPERA_S
+
+
 def cmd_inbox(args):
     """Espera o link que a mensagem prometeu, em vez de responder "faltou".
 
@@ -1478,7 +1650,7 @@ def cmd_inbox(args):
     mesma coisa era este comando dizendo "ninguém mandou link" sobre uma
     espera que nunca aconteceu.
     """
-    espera = max(1.0, float(getattr(args, "wait", None) or 20))
+    espera = _espera_do_inbox(getattr(args, "wait", None))
     inicio = time.time()
     # A régua é o ÚLTIMO carimbo que já estava no log, não a hora atual: a
     # mensagem que disparou este turno já está lá, e ela não conta como nova.
@@ -2275,6 +2447,33 @@ def _nome_livre(nome):
         code=1)
 
 
+def _cues_queimadas(result):
+    """Quantas cues este render REALMENTE pôs na tela. -1 = não dá para saber.
+
+    O portão de entrega perguntava `not result["style"]["caption"]`, que é uma
+    pergunta sobre um caminho ter sido passado -- e um caminho pode existir sem
+    haver legenda nenhuma dentro dele. Foi assim em 15/09/2026: `--subtitles
+    lote.srt.aprovado` apontava para um arquivo que existe, `asked_for_captions`
+    saiu `True`, o render não queimou nada e o clipe foi entregue mudo.
+
+    A pergunta certa é um NÚMERO: quantas cues o render escreveu. O
+    `warden_media` já o registra em `style.caption.cues` -- é a contagem de
+    `Dialogue:` no ASS, ou seja, linhas que o libass de fato desenhou -- e zero
+    é zero, tenha o caminho existido ou não.
+
+    -1 é o terceiro estado e ele não é zero: um render antigo (ou um dublê de
+    teste) que só diz "sim, queimei" sem dizer quantas. Tratá-lo como zero
+    reprovaria entregas boas; tratá-lo como "queimou" é o que ele afirma.
+    """
+    cap = (result.get("style") or {}).get("caption")
+    if isinstance(cap, dict):
+        try:
+            return int(cap.get("cues") or 0)
+        except (TypeError, ValueError):
+            return -1
+    return -1 if cap else 0
+
+
 def deliver(result, rules, campaign, ledger):
     """Um render pronto vira entrega, ou não vira e diz por quê.
 
@@ -2323,12 +2522,16 @@ def deliver(result, rules, campaign, ledger):
     # queimar a nossa é a decisão CERTA, não uma falha. Reprovar aqui obrigaria
     # a entregar legenda dupla ou a não entregar nada.
     ja_vem_legendado = (result.get("style") or {}).get("source_caption_clash")
+    # ZERO CUES, e não "o campo veio falso". Ver `_cues_queimadas`: o campo
+    # falso é o que deixou passar o clipe mudo de 15/09/2026, porque a pergunta
+    # que ele respondia era sobre o caminho e não sobre a tela.
+    queimadas = _cues_queimadas(result)
     if (result.get("asked_for_captions") and not ja_vem_legendado
-            and not (result.get("style") or {}).get("caption")):
+            and queimadas == 0):
         porques = [n for n in result.get("notes") or []
                    if "not burning captions" in n or "nothing was burned" in n]
         breaches.append(
-            "captions were asked for and none were burned"
+            "captions were asked for and 0 cues were burned"
             + (": " + porques[0] if porques else "")
             + ". A podcast cut with no speech on screen is not the clip that "
               "was asked for -- fix what the note says, or cut without "
@@ -2340,6 +2543,18 @@ def deliver(result, rules, campaign, ledger):
             print(f"  REJECT {message}", file=sys.stderr)
         print("  re-cut it: a shorter hook, a different window, or no "
               "--subtitles.", file=sys.stderr)
+        # A linha que faltava, e a falta dela custou os dois clipes de
+        # 15/09/2026. O agente levou dois REPROVADO, tirou o `--hook`, o portão
+        # calou, e ele entregou dois clipes sem legenda E sem hook dizendo que
+        # estavam prontos. Cada remoção era, isolada, uma reação razoável a uma
+        # recusa; juntas, eram o pedido do dono sendo apagado até a ferramenta
+        # parar de reclamar. O portão que só diz "não" ensina a tirar coisas.
+        print("  DO NOT drop what the person asked for to make this quiet. "
+              "Removing --hook, --subtitles or the length silences the gate "
+              "and delivers a clip nobody asked for: on 15/09 that shipped two "
+              "cuts with no caption and no hook, reported as done. If you "
+              "cannot clear this, say what is blocking it -- that is a real "
+              "answer; a stripped clip is not.", file=sys.stderr)
         return 1
     # Os avisos que `check` repete em todo veredito DE PROPÓSITO morriam aqui: o
     # caminho da entrega lia `findings` e só imprimia o nível REJECT. Medido: um
@@ -2689,6 +2904,79 @@ def _duracao_decidida(rules, stored):
                       + (" -- " + "; ".join(porque) if porque else ""))
 
 
+# O sufixo que o `captions review --approve` escreve. Ver `S.approval_path`: é
+# o caminho do SRT MAIS isto, então `lote.srt` e `lote.srt.aprovado` são vizinhos
+# de nome e um `--subtitles` errado troca um pelo outro sem nenhum sintoma.
+SUFIXO_ASSINATURA = ".aprovado"
+
+
+def _porque_isso_nao_e_legenda(caminho):
+    """None quando o arquivo TEM cue para queimar; a frase do erro quando não.
+
+    O defeito mais caro do primeiro teste real, medido em 15/09/2026 na
+    sequência de comandos que ficou no `state.db`: o agente levou dois
+    REPROVADO, trocou `--subtitles lote.srt` por `--subtitles lote.srt.aprovado`
+    e seguiu. O `.aprovado` é o arquivo de ASSINATURA -- um JSON com o sha256 do
+    SRT e as janelas que alguém leu -- e não tem uma cue dentro. O `cut` aceitou
+    o caminho, não achou legenda nenhuma, e renderizou MUDO em silêncio. Dois
+    clipes foram entregues sem legenda e sem hook, relatados como prontos.
+
+    O ponto não é o `.aprovado`: é que qualquer caminho existente servia. Um SRT
+    vazio, um arquivo pela metade, um JSON, um mp4 -- todos passavam por
+    `os.path.exists` e todos rendiam o mesmo clipe mudo. Então a pergunta aqui
+    não é "esse caminho existe", é "esse arquivo tem fala dentro". Um clipe sem
+    legenda que ninguém pediu é um clipe refeito, e refazer custa mais do que
+    morrer aqui com o nome do arquivo certo na tela.
+    """
+    if not caminho:
+        return None
+    bruto = os.path.expanduser(str(caminho))
+    if not os.path.isfile(bruto):
+        return (f"--subtitles {caminho} is not a file. Nothing would be burned "
+                f"and the clip would come back silent, which is not the clip "
+                f"that was asked for.")
+    if bruto.endswith(SUFIXO_ASSINATURA):
+        srt = bruto[:-len(SUFIXO_ASSINATURA)]
+        # A frase NOMEIA o arquivo certo, e não só o errado. A alternativa --
+        # "esse arquivo não é uma legenda" -- deixa quem lê procurando, e quem
+        # está procurando tende a tirar o flag em vez de trocá-lo, que foi
+        # exatamente o que aconteceu no passo 4 da sequência medida.
+        return (f"{os.path.basename(bruto)} is the APPROVAL SIGNATURE that "
+                f"`warden captions review --approve` writes, not a subtitle "
+                f"file: it carries the SRT's sha256 and the windows a person "
+                f"actually read, and it has no cue in it. Burning it burns "
+                f"nothing. The subtitle is {srt}"
+                + ("" if os.path.isfile(srt)
+                   else " -- which is not on disk either, so run "
+                        "`warden lote prep` or `warden transcribe` first")
+                + f". Pass `--subtitles {srt}`.")
+    try:
+        cues = _media()._read_srt(bruto)
+    except Exception as exc:
+        return (f"{caminho} cannot be read as a subtitle "
+                f"({type(exc).__name__}: {exc}). A file that does not parse "
+                f"burns nothing: the render would come back silent with every "
+                f"other gate green.")
+    if not cues:
+        return (f"{caminho} has no readable cue in it -- it parsed and came "
+                f"back empty, so there is no line to burn and the clip would "
+                f"come back silent. Check that this is the SRT and not the "
+                f"transcript JSON, the approval card, or a file that was "
+                f"written but never filled.")
+    return None
+
+
+def _exige_legenda_de_verdade(caminho):
+    """Morre com a frase inteira, ou devolve o caminho. Ver a função acima."""
+    porque = _porque_isso_nao_e_legenda(caminho)
+    if porque:
+        die("refusing to cut with this as the subtitle: " + porque
+            + " Rendering without the caption anyway is what this refusal "
+              "exists to stop -- a silent podcast cut looks finished on the "
+              "contact sheet and is a clip nobody can use.", code=2)
+    return caminho
+
+
 def cmd_cut(args):
     if getattr(args, "plan", None):
         return cmd_cut_plan(args)
@@ -2717,6 +3005,11 @@ def cmd_cut(args):
     if planos_pedidos:
         args.start = min(a for a, _b in planos_pedidos)
         args.end = max(b for _a, b in planos_pedidos)
+    # Antes de qualquer coisa cara: o arquivo que foi apontado como legenda é
+    # uma legenda? Aqui em cima de propósito -- depois do render a resposta
+    # custa o render inteiro, e o render é o que demora.
+    if getattr(args, "subtitles", None) is not None:
+        _exige_legenda_de_verdade(args.subtitles)
     rules = regras_de(args.campaign)
     stored = P.load(state_dir())
     # Som e duração são decididos antes de um quadro ser escrito, como sempre
@@ -2736,6 +3029,30 @@ def cmd_cut(args):
     if args.seconds is None and not args.any_length:
         args.seconds, diz_duracao = _duracao_decidida(rules, stored)
         print(diz_duracao, file=sys.stderr)
+    # Este corte já foi feito e já passou? Ver `impressao_do_corte`: a pergunta
+    # só é feita DEPOIS de som e duração estarem decididos, porque os dois
+    # entram no quadro -- perguntá-la antes compararia um corte de 20s com um
+    # de 15s como se fossem o mesmo.
+    impressao = impressao_do_corte(args, rules, planos_pedidos, sound,
+                                   args.seconds)
+    if (ja := renders_liberado(impressao)):
+        print(f"this exact clip has already been rendered and it CLEARED every "
+              f"gate: {ja['clip']}. Same source, same window, same hook, same "
+              f"subtitles, same length -- so re-rendering cannot change a "
+              f"single frame, it can only cost the render again. The file "
+              f"below is that clip; hand it over.", file=sys.stderr)
+        print("  If something about it is wrong, change what is wrong -- "
+              "another window, another hook, another length -- and this will "
+              "render, because it will be another clip. Running the same "
+              "command again is the one thing that cannot help.",
+              file=sys.stderr)
+        return deliver({"out": ja["clip"], "sheet": ja["sheet"],
+                        "notes": list(ja.get("notes") or []),
+                        "style": ja.get("style") or {},
+                        "asked_for_captions": bool(ja.get("asked_for_captions")),
+                        "style_breaches": []},
+                       rules, args.campaign,
+                       ledger_for(args.campaign) if args.campaign else [])
     try:
         result = _media().cut(args.source, clip_out(args.out), rules,
                               args.start, args.end,
@@ -2749,8 +3066,14 @@ def cmd_cut(args):
         die(f"{type(exc).__name__}: {exc}", code=1)
     # Sem campanha não há livro de posts a consultar: o teto por clipador é uma
     # regra de campanha, e uma lista vazia diz exatamente isso.
-    return deliver(result, rules, args.campaign,
+    code = deliver(result, rules, args.campaign,
                    ledger_for(args.campaign) if args.campaign else [])
+    # Só o que PASSOU entra no livro. Um render reprovado tem de poder ser
+    # tentado de novo -- e vai ser, porque consertar a campanha ou o SRT muda o
+    # veredito sem mudar um parâmetro do corte.
+    if code == 0:
+        renders_registra(impressao, result)
+    return code
 
 
 def specs_dir():
@@ -3118,6 +3441,15 @@ def executa_o_plano(plan, args):
         die(f"no source for clip(s) {', '.join(map(str, sem_fonte))}: the plan "
             f"has no 'source' at the top, none was passed, and those clips do "
             f"not carry one of their own")
+    # A mesma pergunta do corte avulso, feita UMA vez para o lote inteiro e
+    # antes do primeiro render: o que foi apontado como legenda tem cue dentro?
+    # Um plano com o `.aprovado` no lugar do SRT renderizava N clipes mudos em
+    # vez de um -- o mesmo defeito de 15/09/2026, multiplicado pelo tamanho do
+    # lote. Ver `_porque_isso_nao_e_legenda`.
+    for legenda in {c.get("subtitles") for c in clips
+                    if isinstance(c, dict)} | {plan.get("subtitles")}:
+        if legenda is not None:
+            _exige_legenda_de_verdade(legenda)
     stored = P.load(state_dir())
     sound, diz_som = _som_decidido(rules, stored,
                                    args.sound or plan.get("sound"))
@@ -3522,6 +3854,146 @@ def _padroes_do_lote(rules, stored, quantos=None, segundos=None, lingua=None,
     return padroes, linhas
 
 
+# ------------------------------------------------- o tamanho da saída do `prep`
+#
+# Medido em 15/09/2026, num podcast real: o `prep` devolvia 43.000 caracteres e
+# o modelo gastava ~40s só LENDO, antes de decidir qualquer coisa. Quase tudo
+# era o digest linha a linha da fonte inteira -- a transcrição de novo, com
+# carimbo de tempo a cada 12 segundos. O modelo não precisa da transcrição para
+# escolher uma janela: ele precisa dos MOMENTOS e de contexto suficiente em
+# volta de cada um para saber do que aquele momento fala.
+#
+# Então a saída deixou de ser "o vídeo inteiro resumido" e passou a ser "os
+# trechos com sinal, com contexto". Nada se perde: a transcrição completa
+# continua em disco e o caminho dela sai como `TRANSCRIPT:` três linhas acima,
+# então uma janela escolhida fora dos trechos continua possível -- é só ler o
+# arquivo. O que sumiu foi a repetição obrigatória.
+#
+# Decisão do dono, 15/09/2026, e a meta dele: abaixo de 15 mil caracteres.
+PREP_TETO_CHARS = 15000
+_TETO_DIGEST = 9000
+_TETO_SINAIS = 2600
+# Quanto de contexto vai em volta de um sinal. Antes menos que depois porque um
+# sinal é quase sempre a REAÇÃO a algo -- a risada vem depois da piada, a
+# resposta depois da pergunta -- e o que vem depois dela é o que diz se aquilo
+# fecha sozinho fora do episódio, que é a pergunta do clipe.
+_ANTES_S = 15.0
+_DEPOIS_S = 25.0
+
+
+def _carimbo(segundos):
+    segundos = int(segundos or 0)
+    return f"{segundos // 60}:{segundos % 60:02d}"
+
+
+def _janela_do_sinal(r, antes=_ANTES_S, depois=_DEPOIS_S):
+    """(de, ate) em volta de um sinal, ou None quando ele não traz tempo."""
+    try:
+        comeco = float(r.get("start") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    try:
+        fim = float(r.get("end") or comeco)
+    except (TypeError, ValueError):
+        fim = comeco
+    return (max(0.0, comeco - antes), fim + depois)
+
+
+def _funde(janelas):
+    """As janelas em ordem de tempo, com as que se tocam viradas uma só.
+
+    Fundir importa: num podcast os sinais vêm em rajada -- três risadas em
+    quarenta segundos -- e três blocos sobrepostos imprimiriam a mesma fala três
+    vezes, que é o desperdício que este corte existe para acabar, em escala
+    menor.
+    """
+    saida = []
+    for de, ate in sorted(janelas):
+        if saida and de <= saida[-1][1]:
+            saida[-1] = (saida[-1][0], max(saida[-1][1], ate))
+        else:
+            saida.append((de, ate))
+    return saida
+
+
+def _o_que_o_modelo_le(segmentos, rows, teto=_TETO_DIGEST):
+    """(texto, trechos mostrados, sinais deixados de fora), dentro do teto.
+
+    O TETO É DURO, e a primeira versão desta função não segurava: ela media
+    bloco a bloco e sempre aceitava o primeiro, e num podcast em que metade das
+    falas carrega sinal os blocos se fundem num só de 34 mil caracteres --
+    medido num transcript sintético de 45 minutos com 351 segmentos marcados.
+    Um teto que o primeiro item pode estourar não é um teto.
+
+    Agora o orçamento é gasto em SEGUNDOS DE FONTE antes de qualquer texto ser
+    montado. `densidade` é quantos caracteres o digest gasta por segundo de
+    episódio -- medida no próprio digest, não estimada -- e o teto vira uma
+    quantidade de fonte que cabe. Os sinais entram por peso até esse orçamento
+    acabar; um sinal que cai dentro do que já foi coberto entra de graça, que é
+    o que faz a rajada valer mais que o sinal solto.
+
+    A ordem de CORTE é por peso e a de IMPRESSÃO é por tempo, de propósito: um
+    modelo que lê fora da ordem do episódio monta janelas que não existem.
+    """
+    try:
+        corrido = _media().digest(segmentos)
+    except Exception as exc:
+        return f"# the digest failed: {type(exc).__name__}: {exc}", 0, 0
+    # Fonte curta: o digest inteiro já cabe, e aí ele é estritamente melhor que
+    # um recorte dele. Cortar por cortar esconderia fala de graça.
+    if len(corrido) <= teto:
+        return corrido, 0, 0
+    janelas = [(i, j) for i, j in
+               ((i, _janela_do_sinal(r)) for i, r in enumerate(rows or []))
+               if j]
+    if not janelas:
+        return (corrido[:teto].rsplit("\n", 1)[0]
+                + f"\n# ... cut at {teto} characters. No moment stood out, so "
+                  f"there was nothing to centre this on: the rest of the words "
+                  f"are in the TRANSCRIPT: file above.", 0, 0)
+    duracao = max((float(s.get("end") or s.get("start") or 0)
+                   for s in segmentos), default=0.0)
+    densidade = (len(corrido) / duracao) if duracao > 0 else 0.0
+    orcamento_s = (teto / densidade) if densidade > 0 else duracao
+    peso = {i: len(set((rows[i].get("signals") or []))) for i, _ in janelas}
+    cobertura, dentro = [], []
+    for i, janela in sorted(janelas, key=lambda par: (-peso[par[0]], par[0])):
+        tentativa = _funde(cobertura + [janela])
+        if sum(b - a for a, b in tentativa) > orcamento_s and dentro:
+            continue
+        cobertura = tentativa
+        dentro.append(i)
+    # Que sinais cada trecho FUNDIDO carrega, para a cabeça do bloco dizer por
+    # que aquele pedaço está ali.
+    sinais_do_trecho = []
+    for de, ate in cobertura:
+        tags = set()
+        for i in dentro:
+            a, b = _janela_do_sinal(rows[i])
+            if a >= de and b <= ate:
+                tags.update(rows[i].get("signals") or [])
+        sinais_do_trecho.append(sorted(tags))
+    blocos = []
+    for (de, ate), tags in zip(cobertura, sinais_do_trecho):
+        try:
+            texto = _media().digest(segmentos, window=(de, ate))
+        except Exception:
+            continue
+        if not str(texto).strip():
+            continue
+        blocos.append(f"--- {_carimbo(de)}-{_carimbo(ate)}  "
+                      f"{','.join(tags) or 'signal'} ---\n{texto}")
+    corpo = "\n".join(blocos)
+    # A garantia final, depois de toda a aritmética: a densidade é uma média, e
+    # uma média erra num trecho denso. O corte é na borda de uma linha, para não
+    # entregar meia fala.
+    if len(corpo) > teto:
+        corpo = (corpo[:teto].rsplit("\n", 1)[0]
+                 + f"\n# ... cut here to hold this under {teto} characters. "
+                   f"The TRANSCRIPT: file above has the rest.")
+    return corpo, len(cobertura), len(rows or []) - len(dentro)
+
+
 def _lote_prep(args):
     """Uma saída só, sem perguntar nada, com tudo para escolher as janelas."""
     url = args.url
@@ -3616,6 +4088,20 @@ def _lote_prep(args):
                            # `prep` teve o cuidado de não afirmar.
                            "language_measured": lingua_medida,
                            "source_language": lingua_do_video,
+                           # A DURAÇÃO QUE A PESSOA PEDIU, pela mesma razão que
+                           # o idioma: o `render` é outro processo e não viu a
+                           # mensagem dela.
+                           #
+                           # Medido em 15/09/2026, no primeiro teste real pela
+                           # linha da Plow: a pessoa escreveu "2 clipes de 20
+                           # segundos", o `prep` leu certo ("duração: 20s
+                           # (pedida na mensagem)") e o `render`, sem `--seconds`
+                           # na linha de comando, caiu na preferência guardada e
+                           # usou 15s. O número que ela disse perdeu para uma
+                           # preferência de outro dia -- que é exatamente o que
+                           # a regra "a duração é o que a mensagem disser" existe
+                           # para impedir. `--seconds` continua vencendo isto.
+                           "seconds": getattr(args, "seconds", None),
                            "url": url, "source_id": _marca_da_fonte(url)}, fh,
                           ensure_ascii=False, indent=1)
         except OSError:
@@ -3627,26 +4113,59 @@ def _lote_prep(args):
     # arquivo, com nenhuma decisão a tomar entre um e outro: separá-los custava
     # uma ida e volta do modelo para devolver algo que já estava decidido.
     segmentos = transcricao.get("segments") or []
-    print("\n===== DIGEST =====")
-    try:
-        print(_media().digest(segmentos))
-    except Exception as exc:
-        print(f"# the digest failed: {type(exc).__name__}: {exc}",
-              file=sys.stderr)
-    print("\n===== SIGNALS =====")
+    # Os sinais são lidos ANTES do digest, embora sejam impressos depois: é em
+    # volta deles que o digest é centrado. Ver `_o_que_o_modelo_le`. A ordem na
+    # TELA continua a de sempre -- primeiro o texto, depois as provas -- porque
+    # é a ordem em que se lê.
     try:
         rows, quiet = _media().analyze_signals(segmentos, source=caminho)
     except Exception as exc:
         rows, quiet = [], f"{type(exc).__name__}: {exc}"
+    print("\n===== DIGEST =====")
+    corpo, trechos, sinais_fora = _o_que_o_modelo_le(segmentos, rows)
+    if trechos:
+        print(f"# NOT the whole transcript: the {trechos} stretch(es) below are "
+              f"where something happens -- a hook, a conflict, a reaction -- "
+              f"with about {_ANTES_S:.0f}s before and {_DEPOIS_S:.0f}s after "
+              f"each, so every one reads on its own. Choosing a window OUTSIDE "
+              f"them is allowed and sometimes right: the full words are in the "
+              f"TRANSCRIPT: file above, and reading it costs one call.")
+    print(corpo)
+    if sinais_fora:
+        print(f"# {sinais_fora} weaker moment(s) fell outside those stretches, "
+              f"to keep this readable. They carry the fewest signals of the "
+              f"list; the SIGNALS section below still names the strongest of "
+              f"them, and the TRANSCRIPT: file has every word.")
+    print("\n===== SIGNALS =====")
     if quiet:
         print(f"# the loud signal is NOT in this list: {quiet}", file=sys.stderr)
     if not rows:
         print("# no strong signal stood out. Choose on the digest; a quiet "
               "transcript is not a bad one.")
-    for r in rows:
-        comeco = r.get("start") or 0
-        stamp = "%d:%02d" % (int(comeco // 60), int(comeco % 60))
-        print(f"[{stamp}] {','.join(r['signals'])}: {r['text']}")
+    # Esta lista também tem teto, e pela mesma razão: num podcast de uma hora
+    # ela sozinha passava de dez mil caracteres, uma linha por segmento, e
+    # devolvia a transcrição pela porta dos fundos. O que sobrevive ao corte é
+    # o trecho mais forte de cada rajada, que é o que decide a janela.
+    # Escolhido por PESO, impresso por TEMPO -- a mesma separação do digest, e
+    # pela mesma razão: uma lista fora da ordem do episódio faz o modelo montar
+    # janelas que não existem.
+    gasto, cortados, ficam = 0, 0, []
+    for i, r in sorted(enumerate(rows or []),
+                       key=lambda par: (-len(set(par[1].get("signals") or [])),
+                                        par[0])):
+        linha = (f"[{_carimbo(r.get('start') or 0)}] "
+                 f"{','.join(r['signals'])}: {r['text']}")
+        if gasto + len(linha) > _TETO_SINAIS and gasto:
+            cortados += 1
+            continue
+        ficam.append((i, linha))
+        gasto += len(linha) + 1
+    for _i, linha in sorted(ficam):
+        print(linha)
+    if cortados:
+        print(f"# and {cortados} more, left out to keep this readable. They "
+              f"carry the fewest signals of the list; the TRANSCRIPT: file has "
+              f"every word.")
 
     # 4. Os padrões, uma linha cada, para o modelo REPETIR e não PERGUNTAR.
     padroes, linhas = _padroes_do_lote(rules, stored, args.n, args.seconds,
@@ -3938,17 +4457,17 @@ def _ficha_da_legenda(out, url, passado=None):
     if passado:
         # Passado à mão é uma decisão de quem passou, inclusive sobre a língua:
         # quem escolheu o arquivo leu o que tem dentro dele.
-        return (passado if os.path.isfile(passado) else None), True, None, None
+        return (passado if os.path.isfile(passado) else None), True, None, None, None
     ficha = os.path.join(out, "lote.legenda.json")
     if not os.path.isfile(ficha):
-        return None, False, None, None
+        return None, False, None, None, None
     try:
         with open(ficha, encoding="utf-8") as fh:
             carregado = json.load(fh)
     except (OSError, ValueError):
-        return None, False, None, None
+        return None, False, None, None, None
     if not isinstance(carregado, dict):
-        return None, False, None, None
+        return None, False, None, None, None
     if carregado.get("source_id") != _marca_da_fonte(url):
         die(f"the caption card in {ficha} is not this link's and will not be "
             f"burned: it was written for "
@@ -3961,7 +4480,7 @@ def _ficha_da_legenda(out, url, passado=None):
     if srt and not os.path.isfile(srt):
         srt = None
     return (srt, bool(carregado.get("published")), carregado.get("language"),
-            bool(carregado.get("language_measured")))
+            bool(carregado.get("language_measured")), carregado.get("seconds"))
 
 
 def _lote_render(args):
@@ -3977,6 +4496,12 @@ def _lote_render(args):
         die("lote render needs --windows: the seconds of the source you chose "
             "on `warden lote prep`, as 181-201.6,745.5-765", code=2)
     janelas = _varias_janelas(args.windows)
+    # `--subtitles` aqui substitui o SRT que o `prep` escreveu, e a substituição
+    # é justamente onde o erro de 15/09/2026 entrou: `lote.srt` e
+    # `lote.srt.aprovado` ficam LADO A LADO no mesmo diretório do lote, com
+    # nomes que só diferem no sufixo. Ver `_porque_isso_nao_e_legenda`.
+    if getattr(args, "subtitles", None) is not None:
+        _exige_legenda_de_verdade(args.subtitles)
     hooks = [h.strip() for h in str(args.hooks or "").split("|")]
     hooks = [h for h in hooks if h] if args.hooks else []
 
@@ -3984,12 +4509,18 @@ def _lote_render(args):
     # ponto: é dela que sai a língua da fonte, e a língua é metade do que o
     # anúncio tem de dizer. Anunciar primeiro e descobrir o idioma depois era
     # anunciar um idioma que ninguém tinha lido.
-    srt, publicada, lingua_da_fonte, lingua_medida = _ficha_da_legenda(
-        out, url, args.subtitles)
+    srt, publicada, lingua_da_fonte, lingua_medida, seg_da_ficha = (
+        _ficha_da_legenda(out, url, args.subtitles))
 
+    # A duração vem, em ordem: do `--seconds` desta linha de comando, depois do
+    # número que a pessoa disse ao `prep` e que a ficha guardou, e só então do
+    # padrão. O meio dessa ordem é o conserto de 15/09: sem ele, um `render`
+    # sem `--seconds` caía direto na preferência guardada e um pedido de "20
+    # segundos" voltava com 15.
+    segundos = args.seconds if args.seconds is not None else seg_da_ficha
     padroes, linhas = _padroes_do_lote(rules, stored,
                                        args.n if args.n is not None else len(janelas),
-                                       args.seconds, lingua=lingua_da_fonte,
+                                       segundos, lingua=lingua_da_fonte,
                                        medida=lingua_medida)
     for linha in linhas:
         print(linha, file=sys.stderr)
@@ -4757,9 +5288,17 @@ def main(argv=None):
     p.set_defaults(func=cmd_tracks)
 
     p = sub.add_parser("inbox")
-    p.add_argument("--wait", type=float, default=20.0,
-                   help="seconds to wait for a message carrying a URL "
-                        "(default 20). Exit 0 with the link, 1 if none came.")
+    p.add_argument("--wait", type=float, default=None,
+                   help=f"seconds to wait for a message carrying a URL "
+                        f"(default {INBOX_ESPERA_S:.0f}, or WARDEN_INBOX_WAIT). "
+                        f"It is deliberately LONG: the link always arrives in a "
+                        f"message of its own, an instant after the one asking "
+                        f"for the cuts, and this command returns the moment it "
+                        f"lands -- it never sits out the window. Waiting costs "
+                        f"nothing when the link comes in 2s; not waiting costs a "
+                        f"whole turn on a question the person had already "
+                        f"answered. Exit 0 with the link, 1 if none came, 2 if "
+                        f"the log could not be read at all.")
     p.set_defaults(func=cmd_inbox)
 
     p = sub.add_parser("voz")

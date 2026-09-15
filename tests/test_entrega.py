@@ -1077,5 +1077,241 @@ class OQueNaoFoiMedidoNaoEAfirmado(_ComAsDuasPontas):
         self.assertIn("never seen in a real gateway log", err)
 
 
+class LegendaPEDIDAEZEROCUESNaTelaEUmClipeMUDO(unittest.TestCase):
+    """O portão perguntava se um CAMINHO foi passado. A pergunta é outra.
+
+    Medido em 15/09/2026: o agente passou `--subtitles lote.srt.aprovado` -- o
+    arquivo de assinatura, sem cue nenhuma dentro -- e o caminho EXISTIA. Daí
+    `asked_for_captions` saiu `True`, o render não queimou nada, e a checagem
+    que deveria travar isso perguntava por um campo booleano em vez de por um
+    número. Dois clipes foram entregues mudos, relatados como prontos.
+
+    A pergunta certa é: QUANTAS cues foram para a tela. `warden_media` já
+    registra o número em `style.caption.cues` -- a contagem de `Dialogue:` no
+    ASS, ou seja, linhas que o libass de fato desenhou. Zero é zero.
+    """
+
+    def setUp(self):
+        self.dir = _temp(self, "warden-cues-")
+        self.estado = os.path.join(self.dir, "estado")
+        os.makedirs(self.estado, exist_ok=True)
+        self._env = os.environ.get("WARDEN_DIR")
+        os.environ["WARDEN_DIR"] = self.estado
+        self.addCleanup(self._repoe)
+        self._probe_antigo = warden.probe
+        self.addCleanup(setattr, warden, "probe", self._probe_antigo)
+        warden.probe = lambda caminho: {
+            "width": 1080, "height": 1920, "duration_s": 3.0, "fps": "30/1",
+            "codec": "h264", "audio_codec": None, "subtitle_tracks": 0,
+            "size_mb": 1.0}
+
+    def _repoe(self):
+        if self._env is None:
+            os.environ.pop("WARDEN_DIR", None)
+        else:
+            os.environ["WARDEN_DIR"] = self._env
+
+    def _regras(self):
+        import warden_rules as R
+        r = R.blank()
+        r.update({"id": "t", "name": "t", "schema": 1})
+        r["video"].update({"duration_min_s": 1, "duration_max_s": 5,
+                           "width": 1080, "height": 1920, "audio": "forbidden"})
+        r["caption"].update({"required_hashtags": [], "required_mentions": [],
+                             "banned_terms": []})
+        return r
+
+    def _resultado(self, caption, pediu=True, notes=()):
+        clipe = os.path.join(self.dir, "corte.mp4")
+        with open(clipe, "wb") as fh:
+            fh.write(b"\x00" * 16)
+        folha = os.path.join(self.dir, "corte-contato.jpg")
+        with open(folha, "wb") as fh:
+            fh.write(b"\x00")
+        return {"out": clipe, "notes": list(notes), "sheet": folha,
+                "style": {"caption": caption}, "style_breaches": [],
+                "asked_for_captions": pediu}
+
+    def _entrega(self, result):
+        saida, erro = io.StringIO(), io.StringIO()
+        with redirect_stdout(saida), redirect_stderr(erro):
+            code = warden.deliver(result, self._regras(), None, [])
+        return code, saida.getvalue(), erro.getvalue()
+
+    def test_zero_cues_com_legenda_pedida_reprova(self):
+        """O caso exato do `.aprovado`: o render devolveu a ficha da legenda com
+        a contagem em zero, porque não havia linha nenhuma para queimar."""
+        code, saida, erro = self._entrega(
+            self._resultado({"cues": 0, "max_lines": 0}))
+        self.assertEqual(code, 1, erro)
+        self.assertEqual(saida, "")
+        self.assertIn("0 cues were burned", erro)
+
+    def test_nenhuma_ficha_de_legenda_com_legenda_pedida_tambem_reprova(self):
+        code, saida, erro = self._entrega(self._resultado(None))
+        self.assertEqual(code, 1, erro)
+        self.assertEqual(saida, "")
+        self.assertIn("0 cues were burned", erro)
+
+    def test_com_cues_na_tela_a_entrega_sai(self):
+        """O conserto não pode custar a entrega: quem queimou legenda passa."""
+        code, saida, erro = self._entrega(
+            self._resultado({"cues": 7, "max_lines": 2}))
+        self.assertEqual(code, 0, erro)
+        self.assertIn("MEDIA:", saida)
+
+    def test_uma_cue_so_ja_nao_e_zero(self):
+        code, _saida, erro = self._entrega(
+            self._resultado({"cues": 1, "max_lines": 1}))
+        self.assertEqual(code, 0, erro)
+
+    def test_sem_legenda_pedida_zero_cues_nao_reprova_nada(self):
+        """Um corte sem `--subtitles` é mudo de propósito."""
+        code, saida, erro = self._entrega(
+            self._resultado(None, pediu=False))
+        self.assertEqual(code, 0, erro)
+        self.assertIn("MEDIA:", saida)
+
+    def test_a_fonte_que_ja_vem_legendada_continua_sendo_a_excecao(self):
+        """Queimar a nossa por cima da do acervo é legenda dupla: não queimar é
+        a decisão CERTA, e reprovar aqui obrigaria a não entregar nada."""
+        result = self._resultado({"cues": 0})
+        result["style"]["source_caption_clash"] = True
+        code, saida, erro = self._entrega(result)
+        self.assertEqual(code, 0, erro)
+        self.assertIn("MEDIA:", saida)
+
+    def test_a_recusa_carrega_o_porque_que_o_render_anotou(self):
+        code, _saida, erro = self._entrega(self._resultado(
+            None, notes=["not burning captions: lote.srt.aprovado has not been "
+                         "approved"]))
+        self.assertEqual(code, 1)
+        self.assertIn("not burning captions", erro)
+
+    def test_a_recusa_proibe_apagar_o_pedido_ate_o_portao_calar(self):
+        """O passo 4 da sequência medida: ele tirou o `--hook` e o portão calou.
+
+        Cada remoção era, isolada, uma reação razoável a uma recusa. Juntas,
+        eram o pedido do dono sendo apagado até a ferramenta parar de reclamar.
+        Um portão que só diz "não" ensina a tirar coisas.
+        """
+        _code, _saida, erro = self._entrega(self._resultado(None))
+        self.assertIn("DO NOT drop what the person asked for", erro)
+        self.assertIn("--hook", erro)
+        self.assertIn("no caption and no hook", erro)
+
+    def test_um_render_antigo_que_so_diz_que_queimou_nao_e_tratado_como_zero(self):
+        """O terceiro estado. Um `style.caption` que é só `True` afirma que
+        queimou e não diz quantas; tratá-lo como zero reprovaria entrega boa."""
+        self.assertEqual(warden._cues_queimadas({"style": {"caption": True}}), -1)
+        self.assertEqual(warden._cues_queimadas({"style": {"caption": None}}), 0)
+        self.assertEqual(
+            warden._cues_queimadas({"style": {"caption": {"cues": 0}}}), 0)
+        self.assertEqual(
+            warden._cues_queimadas({"style": {"caption": {"cues": 12}}}), 12)
+        code, _saida, erro = self._entrega(self._resultado(True))
+        self.assertEqual(code, 0, erro)
+
+
+class OInboxEsperaOBastanteParaNaoPerguntarAToa(unittest.TestCase):
+    """O link SEMPRE chega numa mensagem separada, um instante depois.
+
+    O dono, 15/09/2026: "quando mando o link nas mensagens, mesmo que seja na
+    mesma mensagem, ela vai em outra". Não é "às vezes demora": é o mecanismo.
+
+    Com a janela de 20s isso custou uma ida e volta inteira -- o `inbox` esperou
+    20s, nada veio, o agente perguntou "qual é o link?", e o link entrou 1
+    SEGUNDO depois da pergunta. A pergunta não acelerou nada e queimou um turno.
+
+    A conta é assimétrica e é por isso que a janela ficou grande: o comando
+    devolve no INSTANTE em que o link chega, então esperar custa zero no caso
+    comum, e não esperar custa um turno.
+    """
+
+    def setUp(self):
+        self.dir = _temp(self, "warden-espera-")
+        self.log = os.path.join(self.dir, "gateway.log")
+        self._antigo = warden.GATEWAY_LOG
+        warden.GATEWAY_LOG = self.log
+        self.addCleanup(setattr, warden, "GATEWAY_LOG", self._antigo)
+        self._ambiente = os.environ.pop("WARDEN_INBOX_WAIT", None)
+        self.addCleanup(self._repoe_ambiente)
+        self._ms = 0
+
+    def _repoe_ambiente(self):
+        if self._ambiente is None:
+            os.environ.pop("WARDEN_INBOX_WAIT", None)
+        else:
+            os.environ["WARDEN_INBOX_WAIT"] = self._ambiente
+
+    def _escreve(self, *textos):
+        with open(self.log, "a", encoding="utf-8") as fh:
+            for texto in textos:
+                self._ms = (self._ms + 1) % 1000
+                carimbo = (time.strftime("%Y-%m-%d %H:%M:%S")
+                           + f",{self._ms:03d}")
+                fh.write(f"{carimbo} INFO gateway.run: inbound message: "
+                         f"platform=plow_chat user=x chat=cht_a msg='{texto}' "
+                         f"reply_to_id=None reply_to_text=''\n")
+
+    def _chega(self, texto, depois=0.4):
+        import threading
+        t = threading.Thread(
+            target=lambda: (time.sleep(depois), self._escreve(texto)))
+        t.start()
+        self.addCleanup(t.join)
+        return t
+
+    def test_o_padrao_e_grande_o_bastante_para_o_link_da_mensagem_seguinte(self):
+        self.assertGreaterEqual(warden.INBOX_ESPERA_S, 45.0)
+        self.assertEqual(warden._espera_do_inbox(None), warden.INBOX_ESPERA_S)
+
+    def test_a_linha_de_comando_continua_mandando_no_numero(self):
+        self.assertEqual(warden._espera_do_inbox(3.0), 3.0)
+
+    def test_o_ambiente_decide_quando_ninguem_passou_o_flag(self):
+        """Quem roda a suíte não quer 45s de relógio por chamada, e não deveria
+        ter de editar o código para não tê-los."""
+        os.environ["WARDEN_INBOX_WAIT"] = "2"
+        self.assertEqual(warden._espera_do_inbox(None), 2.0)
+        # e um valor que não é número não derruba nada: cai no padrão
+        os.environ["WARDEN_INBOX_WAIT"] = "logo"
+        self.assertEqual(warden._espera_do_inbox(None), warden.INBOX_ESPERA_S)
+
+    def test_o_comando_devolve_no_instante_em_que_o_link_chega(self):
+        """O ponto inteiro: a janela larga NÃO é tempo gasto.
+
+        A espera pedida aqui é de 30s e o link entra em 0,4s. Se o comando
+        sentasse na janela, este teste levaria 30 segundos.
+        """
+        self._escreve("me faz dois cortes desse video aqui")
+        self._chega("https://www.youtube.com/watch?v=9rwEGPyPasY", depois=0.4)
+        comeco = time.time()
+        saida, erro = io.StringIO(), io.StringIO()
+        with redirect_stdout(saida), redirect_stderr(erro):
+            code = warden.cmd_inbox(type("A", (), {"wait": 30.0})())
+        gasto = time.time() - comeco
+        self.assertEqual(code, 0, erro.getvalue())
+        self.assertEqual(saida.getvalue().strip(),
+                         "https://www.youtube.com/watch?v=9rwEGPyPasY")
+        self.assertLess(gasto, 5.0,
+                        f"esperou {gasto:.1f}s por um link que chegou em 0,4s")
+
+    def test_o_help_diz_o_numero_e_diz_por_que_ele_e_grande(self):
+        """Um número grande sem explicação parece descuido, e o próximo a
+        passar por aqui o "conserta" de volta para 20."""
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            try:
+                warden.main(["inbox", "--help"])
+            except SystemExit:
+                pass
+        texto = " ".join(buf.getvalue().split())
+        self.assertIn(f"default {warden.INBOX_ESPERA_S:.0f}", texto)
+        self.assertIn("WARDEN_INBOX_WAIT", texto)
+        self.assertIn("message of its own", texto)
+        self.assertIn("never sits out the window", texto)
+
+
 if __name__ == "__main__":
     unittest.main()
