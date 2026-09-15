@@ -5181,3 +5181,63 @@ class OLinkChegaDoisSegundosDepoisDaRespostaQueDizQueEleFalta(unittest.TestCase)
         self.W.GATEWAY_LOG = os.path.join(self.dir, "nao-existe.log")
         with self.assertRaises(SystemExit):
             self._rodar(espera=1.0)
+
+
+class OEditEmendaPlanosEmVezDeIgnorarALista(unittest.TestCase):
+    """`shots` era aceito e descartado, e o render dizia isso em voz alta.
+
+    Até 15/09 `warden_media.cut()` recebia a lista de planos, ela atravessava a
+    assinatura inteira, e o único código que a lia escrevia uma nota:
+    "IGNOREI os N planos deste clipe". O render era sempre uma janela contínua
+    -- um `-ss`, um `-t`, um zoom linear -- com planos ou sem.
+
+    Foi o que produziu o "edit" do Djokovic: 12 trocas de cena em 20,8s que
+    eram as trocas do VÍDEO ORIGINAL, não escolhas. Contra a grade de 92,3 BPM
+    da trilha, 4 de 12 caíam dentro de 80ms da batida, que é o que o acaso dá.
+    """
+
+    def setUp(self):
+        import warden_beat as B
+        self.B = B
+
+    def test_a_duracao_de_cada_plano_vira_numero_inteiro_de_batidas(self):
+        planos = self.B.snap_shots([(10.0, 11.1), (20.0, 22.4)], 0.6501)
+        self.assertEqual([n for _a, _b, n in planos], [2, 4])
+        for a, b, n in planos:
+            self.assertAlmostEqual(b - a, n * 0.6501, places=3)
+
+    def test_o_inicio_do_plano_nao_e_mexido(self):
+        # Quem escolheu o plano escolheu ONDE ele começa no material. Mexer
+        # nisso trocaria a imagem para acertar o relógio.
+        planos = self.B.snap_shots([(10.0, 11.1), (20.0, 22.4)], 0.6501)
+        self.assertEqual([a for a, _b, _n in planos], [10.0, 20.0])
+
+    def test_um_plano_curto_demais_e_esticado_ate_o_minimo(self):
+        # Meia batida de imagem não lê como plano, lê como falha.
+        planos = self.B.snap_shots([(10.0, 10.2)], 0.6501)
+        self.assertEqual(planos[0][2], 2)
+
+    def test_sem_grade_os_planos_saem_como_vieram(self):
+        planos = self.B.snap_shots([(10.0, 11.1)], None)
+        self.assertEqual(planos, [(10.0, 11.1, None)])
+
+    def test_a_fase_da_grade_e_procurada_e_nao_suposta(self):
+        # Supor que a grade começa no `first_beat_s` da detecção é assumir o
+        # que se quer medir: foi o que fez a referência aprovada parecer
+        # desalinhada (93ms) quando ela está a 33ms.
+        beat = 0.4644
+        cortes = [0.371 + i * 2 * beat for i in range(6)]
+        errs, fase = self.B.erro_na_grade(cortes, beat)
+        self.assertLess(max(errs), 0.005, f"fase achada {fase}")
+        self.assertIsNotNone(fase)
+
+    def test_a_referencia_aprovada_corta_na_batida(self):
+        # Os cortes medidos no short que o dono deu como referência
+        # (youtube.com/shorts/QmrLImO6fus), 129,2 BPM, batida 0,4644s.
+        cortes = [1.75, 3.6, 4.633, 5.533, 8.233, 9.183,
+                  11.167, 11.917, 12.917, 14.8]
+        errs, _fase = self.B.erro_na_grade(cortes, 0.4644)
+        mediano = sorted(errs)[len(errs) // 2]
+        self.assertLess(mediano, 0.080,
+                        f"a referência mediu {mediano * 1000:.0f}ms")
+        self.assertGreaterEqual(sum(1 for e in errs if e < 0.080), 7)

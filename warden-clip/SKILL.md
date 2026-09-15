@@ -265,6 +265,57 @@ plate, a creature, an object -- falls back to the centre and says so, and there
 before a batch: a comparison video with the subject off to one side is exactly
 what a fixed centre crop gets wrong.
 
+### The edit, and what it actually is
+
+An edit is not a window with music over it. Measured on the reference the owner
+gave (`youtube.com/shorts/QmrLImO6fus`), 129.2 BPM:
+
+| | The reference | The "edit" of 15/09 |
+|---|---|---|
+| Scene changes | 10 to 13 in 15.8s = **12.6 to 16.4 per 20s** | 12 in 20.8s |
+| Error against the beat | **median 33ms**, 8 of 10 under 80ms | median 122ms, 4 of 12 |
+| Where the cuts came from | chosen | **the source video's own cuts** |
+| Caption | none -- a fixed score graphic | none |
+
+4 of 12 under 80ms is what chance gives you on a 650ms grid. So the old edit was
+a continuous window with music on top, and the scene changes in it were the ones
+the footage already had.
+
+```
+warden cut <src> --campaign <id> --shots 71.4-74.0,77.0-79.5,80.5-83.0 \
+  --track <name> --subtitles <srt> --any-length --out edit.mp4
+```
+
+`--shots` is the list of pieces to splice, **on the file's own clock**, like
+`--start`. Each one's length is snapped to a whole number of beats of the track,
+so every scene change lands on the music: measured 0ms of error on a 7-shot
+edit. Two beats is the short shot, four the long one, which is the reference's
+own grammar. The sidecar records every cut and its error, so "it cuts on the
+beat" is a number and not an impression.
+
+Each shot gets its own light zoom, alternating in and out. The framing is done
+once, after the splice: cropping shot by shot would give the same scene a
+different frame each time.
+
+**Two things the renderer will refuse, and both are the point:**
+
+- **The caption becomes a collage.** With shots taken from all over the source,
+  each one opens in the middle of a sentence and the caption reads "portas, a
+  que vai pra sala / e a que vai Você lembra," -- measured, from a real render.
+  When more than half the spliced stretches open mid-sentence, it ships with no
+  caption and says so. Fix it by starting each shot where a line of speech
+  starts, or drop `--subtitles` and put a written line on it with `--hook`,
+  which is what the reference does.
+- **The source already burns its own captions in one of the shots.** The frames
+  it samples come from the SHOTS, not from a continuous stretch -- sampling
+  `start..start+length` on an edit looks at footage the clip never shows, and
+  that is how a second caption got into a render on 15/09 and was only caught in
+  the full-resolution frame.
+
+The source's speech is dropped on a spliced edit: continuous speech over a
+picture that jumps is talking over the wrong scene. The track is the audio, and
+what the speech had to say is in the caption.
+
 For an edit, add `--track <name|file>` -- a track already kept by
 `warden tracks add` is found by its name. `warden beat <track>` shows what it found:
 tempo, where the grid starts, how long a bar is, and where the track gains body.

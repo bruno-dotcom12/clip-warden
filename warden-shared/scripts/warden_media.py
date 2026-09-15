@@ -33,6 +33,7 @@ import urllib.request
 from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import warden_beat
 import warden_rules as R
 import warden_style as S
 
@@ -1964,7 +1965,6 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     # bans embedded audio can have an edit at all.
     grid = None
     if track:
-        import warden_beat
         grid = warden_beat.analyse(track)
         snapped, bars = warden_beat.snap(length, grid["bar_s"], lo, hi)
         if snapped is None:
@@ -2047,8 +2047,47 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     # cadeia. Até aqui ela media pixels sem nunca olhar nenhum, e foi assim que
     # a borda do material entrou no enquadramento e a legenda do acervo ficou
     # cortada ao meio embaixo da nossa.
+    # ------------------------------------------------------ decupagem
+    #
+    # A lista de planos, encaixada na batida. `planos` é [(in, out, batidas)]
+    # no relógio da FONTE; `length` passa a ser a soma das durações, porque um
+    # edit dura o que os planos dele somam e não o que a janela media.
+    planos = []
+    if shots:
+        pedidos = []
+        for plano in shots:
+            if isinstance(plano, dict):
+                a = plano.get("in", plano.get("start"))
+                b = plano.get("out", plano.get("end"))
+            else:
+                a, b = plano[0], plano[1]
+            if a is None or b is None or float(b) <= float(a):
+                raise RuntimeError(
+                    f"a shot needs an in and an out, and out after in; got "
+                    f"{plano!r}. A shot list that does not describe a shot is "
+                    f"not something to render past.")
+            pedidos.append((float(a), float(b)))
+        planos = warden_beat.snap_shots(pedidos, (grid or {}).get("beat_s"))
+        length = round(sum(b - a for a, b, _ in planos), 3)
+        bordas = []
+        acc = 0.0
+        for a, b, _ in planos[:-1]:
+            acc += (b - a)
+            bordas.append(round(acc, 4))
+        notes.append(
+            f"{len(planos)} shots spliced in order, {length:.2f}s in total"
+            + (f", each a whole number of beats ("
+               + ", ".join(str(n or "?") for _, _, n in planos) + ")"
+               if (grid or {}).get("beat_s") else
+               ", with no beat grid to snap to -- durations are as asked"))
+
     try:
-        looked = S.sample_frames(source, start, length, count=8)
+        # Com planos, os quadros vêm DOS PLANOS. Amostrar start..start+length
+        # num edit olha um trecho contínuo que o clipe não mostra -- e foi
+        # exatamente assim que uma legenda do próprio vídeo passou pela
+        # detecção e apareceu atrás da nossa.
+        looked = (S.sample_shots(source, planos, count=8) if planos
+                  else S.sample_frames(source, start, length, count=8))
     except Exception as exc:
         raise RuntimeError(
             f"could not open any frame of {os.path.basename(source)} between "
@@ -2097,24 +2136,12 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     # `shots` é a gramática dos EDITS portada: uma lista de planos com `in`/`out`
     # e um `efeito`. Sem ela, um zoom leve único cobre a janela inteira, que é o
     # mínimo para o clipe não ler como trecho bruto.
-    if shots:
-        # A nota daqui dizia "scale moves on each", e era mentira: `shots` chega
-        # do plano, atravessa a assinatura inteira e não é lido por mais nenhuma
-        # linha deste arquivo. O render aplica UM zoom linear sobre a janela
-        # toda, com planos ou sem.
-        #
-        # Mentira de relatório é pior que recurso faltando: quem lê a nota
-        # acredita que a decupagem foi respeitada e não abre o mosaico para
-        # conferir. O recurso continua não existindo -- multiplano é a lista da
-        # resposta sobre EDIT, não deste bloco -- mas a nota passa a dizer o que
-        # aconteceu de verdade.
-        notes.append(
-            f"IGNOREI os {len(shots)} planos deste clipe. Este renderizador "
-            f"ainda não faz decupagem: ele aplica um único zoom linear sobre a "
-            f"janela inteira, com `shots` ou sem. O campo foi aceito e "
-            f"descartado -- se a decupagem importa para este corte, ela não "
-            f"está no arquivo.")
-    if motion:
+    # `shots` deixou de ser aceito-e-descartado. Até 15/09 este bloco escrevia
+    # uma nota dizendo "IGNOREI os N planos deste clipe", e era a verdade: o
+    # campo atravessava a assinatura inteira e nenhuma linha do render o lia.
+    # A decupagem agora é feita mais abaixo, em `_decupagem()`, e o que sobra
+    # aqui é o zoom da janela contínua -- que é o caso SEM planos.
+    if motion and not planos:
         zoom_from, zoom_to = 1.0, 1.06
         if isinstance(motion, dict):
             zoom_from = float(motion.get("de", zoom_from))
@@ -2302,8 +2329,17 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         else:
             # A janela QUE VAI QUEIMAR, no tempo da fonte -- não o arquivo.
             # Perguntar pelo arquivo era a porta por onde `aromasas` passou.
-            queima_de = fonte_zero + float(start)
-            queima_ate = queima_de + length
+            #
+            # Com planos, não há UMA janela: há várias, e a aprovação tem de
+            # cobrir todas. Perguntar só pela primeira e pela última aprovaria
+            # de brinde tudo o que está entre elas, inclusive material que este
+            # corte nem mostra.
+            if planos:
+                queima_de = fonte_zero + min(a for a, _b, _n in planos)
+                queima_ate = fonte_zero + max(b for _a, b, _n in planos)
+            else:
+                queima_de = fonte_zero + float(start)
+                queima_ate = queima_de + length
             approved, why = S.approval_state(
                 caption_srt, start=queima_de, end=queima_ate)
             if not approved:
@@ -2313,8 +2349,89 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                 burn_reason = f"not burning captions: {why}"
             else:
                 rows = _read_srt(caption_srt)
-                window = [r for r in rows
-                          if r["end"] > queima_de and r["start"] < queima_ate]
+                if planos:
+                    # A fala de cada plano, realocada para o relógio da EMENDA.
+                    # O plano vem do minuto três da fonte e vai para o segundo
+                    # sete do clipe; a cue tem de ir junto, ou a legenda fala de
+                    # uma cena que já passou. É o mesmo defeito do arquivo de
+                    # janela com relógio próprio, multiplicado por N.
+                    window = []
+                    saida = 0.0
+                    # Quantos planos ABREM no meio de uma frase. Com planos
+                    # espalhados pelo material é quase todo: a fala de cada um
+                    # começa antes do plano e termina depois dele, então o que
+                    # sobra são meias-frases emendadas. Medido em 15/09 num edit
+                    # de 15 planos: a legenda saiu "portas, a que vai pra sala /
+                    # e a que vai Você lembra," seguida de "Nossa dispensa é
+                    # cheia. Então," -- mecanicamente correta, ilegível.
+                    partidos = 0
+                    # Planos COLADOS um no outro são um trecho só para a fala:
+                    # a imagem não pula, então a frase continua. Cortar a cue em
+                    # cada borda de plano nesse caso partiria frases que a
+                    # emenda não partiu.
+                    trechos = []
+                    for a0, b0, _n in planos:
+                        if trechos and abs(a0 - trechos[-1][1]) <= 0.05:
+                            trechos[-1] = (trechos[-1][0], b0)
+                        else:
+                            trechos.append((a0, b0))
+                    for a0, b0 in trechos:
+                        a, b = fonte_zero + a0, fonte_zero + b0
+                        primeira = True
+                        for r in rows:
+                            if r["end"] <= a or r["start"] >= b:
+                                continue
+                            de = max(r["start"], a)
+                            ate = min(r["end"], b)
+                            if ate - de < 0.12:
+                                continue          # sobra de cue, não é fala
+                            if primeira and r["start"] < a - 0.05:
+                                partidos += 1
+                            primeira = False
+                            window.append({
+                                "start": round(queima_de + saida + (de - a), 3),
+                                "end": round(queima_de + saida + (ate - a), 3),
+                                "text": r["text"],
+                                "words": [
+                                    {**w,
+                                     "start": round(queima_de + saida
+                                                    + (float(w["start"]) - a), 3),
+                                     "end": round(queima_de + saida
+                                                  + (float(w["end"]) - a), 3)}
+                                    for w in (r.get("words") or [])
+                                    if a <= float(w.get("start", -1)) < b],
+                            })
+                        saida += (b - a)
+                    window.sort(key=lambda r: r["start"])
+                    queima_ate = round(queima_de + saida, 3)
+                    colagem = len(trechos) > 1 and partidos > len(trechos) / 2
+                    style_facts["caption_collage"] = {
+                        "runs": len(trechos),
+                        "runs_opening_mid_sentence": partidos,
+                        "shots": len(planos),
+                        "is_collage": bool(colagem),
+                    }
+                    if colagem:
+                        # Não é aviso: é recusa. Uma legenda de meias-frases é
+                        # pior que legenda nenhuma, pela mesma razão que uma
+                        # palavra errada queimada é -- ela vai para a tela e
+                        # fica lá. O edit sai sem legenda e o motivo é dito.
+                        burn_reason = (
+                            f"not burning captions: {partidos} of "
+                            f"{len(trechos)} spliced stretches open in the "
+                            f"middle of a "
+                            f"sentence, so the caption would be a collage of "
+                            f"half-sentences -- measured, it reads like "
+                            f"'portas, a que vai pra sala / e a que vai Você "
+                            f"lembra,'. Either take the shots from one "
+                            f"continuous moment so the speech holds together, "
+                            f"or drop --subtitles and put a written line on it "
+                            f"with --hook, which is what the approved "
+                            f"reference does.")
+                        window = []
+                else:
+                    window = [r for r in rows
+                              if r["end"] > queima_de and r["start"] < queima_ate]
                 clash = S.language_clash(
                     hook, " ".join(r["text"] for r in window),
                     declared=language or R.get(rules, "caption.language"))
@@ -2693,7 +2810,13 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     silent = audio_policy == "forbidden" or (sound == "platform" and audio_policy != "required")
     embed = bool(track) and not silent
 
-    args = ["ffmpeg", "-y", "-ss", f"{float(start):.3f}", "-i", source]
+    # Com planos, a entrada é posicionada no PRIMEIRO plano e cada `trim` corre
+    # relativo a isso: `-ss` antes de `-i` é o seek rápido (o wiki do ffmpeg diz
+    # "very fast" contra "relatively slow, frame-by-frame" para a forma de
+    # saída), e um edit que decodifica desde o zero de uma fonte de 18 minutos
+    # paga isso em cada plano.
+    seek = float(planos[0][0]) if planos else float(start)
+    args = ["ffmpeg", "-y", "-ss", f"{seek:.3f}", "-i", source]
     next_input = 1
     track_index = None
     if embed:
@@ -2734,7 +2857,39 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         camadas.append(("ass", ass_path))
     camadas += [("overlay",) + o for o in overlays if o[0] != footer]
 
-    partes = [f"[0:v]{chain}[v0]"]
+    if planos:
+        # Um `trim` por plano, cada um com o seu zoom, e `concat` no fim. O
+        # enquadramento vertical vem DEPOIS da emenda, uma vez só: recortar
+        # plano a plano daria a cada um um enquadramento diferente da mesma
+        # cena, que é o oposto do que um edit quer.
+        cortes = []
+        rotulos = []
+        for i, (a, b, _batidas) in enumerate(planos):
+            dur = b - a
+            filtro = (f"[0:v]trim=start={a - seek:.4f}:end={b - seek:.4f},"
+                      f"setpts=PTS-STARTPTS,fps=30")
+            if motion:
+                # Zoom leve POR PLANO, alternando o sentido: todo plano
+                # empurrando para dentro lê como um efeito, não como montagem.
+                de, para = (1.0, 1.06) if i % 2 == 0 else (1.06, 1.0)
+                quadros = max(1.0, dur * 30)
+                passo = (para - de) / quadros
+                filtro += (f",zoompan=z='clip({de}+{passo:.8f}*on,"
+                           f"{min(de, para)},{max(de, para)})'"
+                           f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1"
+                           f":s={sw or width}x{sh or height}:fps=30,setsar=1")
+            filtro += f"[p{i}]"
+            cortes.append(filtro)
+            rotulos.append(f"[p{i}]")
+        cortes.append("".join(rotulos)
+                      + f"concat=n={len(planos)}:v=1:a=0[emendado]")
+        partes = cortes + [f"[emendado]{chain}[v0]"]
+        if motion:
+            notes.append(f"scale moves on each of the {len(planos)} shots, "
+                         f"alternating in and out. A cut with no scale move "
+                         f"reads as raw footage.")
+    else:
+        partes = [f"[0:v]{chain}[v0]"]
     last, n = "v0", 0
     for camada in camadas:
         n += 1
@@ -2787,23 +2942,43 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         if not has_source_audio:
             notes.append("this footage has no audio track, so the clip carries "
                          "only the music -- no speech was dropped, there was none")
-        if has_source_audio:
+        if has_source_audio and not planos:
             # Speech over music, not music over speech: the track carries the
             # cut, the words carry the clip.
             mix = (f"[0:a]atrim=duration={length:.3f},asetpts=N/SR/TB,volume=1.0[v];"
                    f"[v][m]amix=inputs=2:duration=first:weights=1 0.55[a]")
         else:
             mix = "[m]anull[a]"
+        if has_source_audio and planos:
+            # Mesma razão do bloco acima: a fala contínua sobre imagem emendada
+            # fala da cena errada. Num edit a trilha é o áudio, e o que a fala
+            # tinha a dizer está na legenda.
+            notes.append("the source speech was left out: the picture is "
+                         "spliced from several places and continuous speech "
+                         "would be talking over the wrong scene. The track is "
+                         "the audio, and the words are in the caption.")
         args += ["-filter_complex", f"{video};{music};{mix}",
                  "-map", "[vid]", "-map", "[a]"]
         notes.append(f"track mixed in from {float(at):.2f}s with a {fade:.1f}s fade out")
-    elif overlays or ass_path:
+    elif overlays or ass_path or planos:
         # `ass_path` sem overlay nenhum é um caso real: clipe com legenda e sem
         # hook. Com o teste velho (`elif overlays`) ele caía no `-vf chain` e
-        # saía sem legenda, sem erro e sem nota.
+        # saía sem legenda, sem erro e sem nota. `planos` entra pelo mesmo
+        # motivo: a emenda vive no filter_complex, e cair no `-vf` a jogaria
+        # fora em silêncio -- que é o defeito que este bloco existe para não
+        # repetir.
         args += ["-filter_complex", video, "-map", "[vid]"]
-        if not silent:
+        if not silent and not planos:
             args += ["-map", "0:a?"]
+        elif planos and not silent:
+            # A fala da fonte não acompanha uma imagem emendada: os planos vêm
+            # de pontos diferentes do material e o áudio contínuo ficaria
+            # falando sobre a cena errada a partir do primeiro corte. Um edit
+            # sem trilha e com planos sai mudo, e diz isso.
+            args += ["-an"]
+            notes.append("spliced shots and no track, so this clip ships "
+                         "silent: the source speech does not follow a picture "
+                         "that jumps, and the platform is where the sound goes.")
     else:
         args += ["-vf", chain]
 
@@ -2848,6 +3023,37 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     # `caption.max_lines`) e não camadas, porque uma cue de duas linhas lê como
     # duas faixas -- entre uma linha e outra passa imagem limpa. Cruzar com
     # `text_layers`, que diria 1, reprovaria todo corte de fala do projeto.
+    # As bordas dos planos, no relógio do CLIPE, e o erro de cada uma contra a
+    # grade de batida. É o que transforma "cortou na batida" em número: sem
+    # isso, quem olha o mosaico vê trocas de cena e não tem como saber se elas
+    # caem na música ou se são as do material de origem -- que foi exatamente o
+    # que aconteceu no edit do Djokovic, onde as 12 trocas eram do vídeo e
+    # nenhuma tinha sido escolhida.
+    if planos:
+        bordas, acc = [], 0.0
+        for a, b, _n in planos[:-1]:
+            acc += (b - a)
+            bordas.append(round(acc, 4))
+        erros, fase = warden_beat.erro_na_grade(bordas, (grid or {}).get("beat_s"))
+        style_facts["shots"] = {
+            "count": len(planos),
+            "cuts_s": bordas,
+            "beats": [n for _a, _b, n in planos],
+            "per_20s": round(len(planos) * 20.0 / max(0.001, length), 1),
+            "beat_s": (grid or {}).get("beat_s"),
+            "grid_phase_s": fase,
+            "cut_error_ms": [round(e * 1000) for e in erros],
+            "worst_error_ms": round(max(erros) * 1000) if erros else 0,
+        }
+        if erros:
+            pior = max(erros) * 1000
+            notes.append(
+                f"the {len(bordas)} scene change(s) land on the beat to within "
+                f"{pior:.0f}ms at worst"
+                + ("" if pior < 80 else
+                   " -- over the 80ms the approved reference measures, so this "
+                   "does not read as cut to the music"))
+
     style_facts["text_layers"] = (
         (1 if footer else 0)
         + (1 if style_facts.get("caption") else 0)

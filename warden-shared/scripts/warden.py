@@ -1484,15 +1484,53 @@ def deliver(result, rules, campaign, ledger):
     return 0
 
 
+def _planos_pedidos(args):
+    """`--shots 12.0-13.9,41.2-42.1` -> [(12.0, 13.9), (41.2, 42.1)].
+
+    Os tempos são do relógio do ARQUIVO, exatamente como `--start` e `--end`.
+    Num arquivo de janela isso quer dizer a partir do `IN_POINT` que o
+    `archive` imprimiu, e não do segundo da fonte -- o mesmo relógio, a mesma
+    regra, para não haver dois.
+    """
+    bruto = getattr(args, "shots", None)
+    if not bruto:
+        return None
+    planos = []
+    for pedaco in str(bruto).split(","):
+        pedaco = pedaco.strip()
+        if not pedaco:
+            continue
+        try:
+            a, b = [float(x) for x in pedaco.split("-", 1)]
+        except ValueError:
+            die("--shots is a comma separated list of in-out pairs on the "
+                "file's own clock, as 2.0-3.9,7.2-8.1", code=2)
+        planos.append((a, b))
+    if len(planos) < 2:
+        die("--shots with fewer than two shots is a window, not an edit: pass "
+            "--start/--end for that.", code=2)
+    return planos
+
+
 def cmd_cut(args):
     if getattr(args, "plan", None):
         return cmd_cut_plan(args)
-    missing = [name for name in ("source", "campaign", "start", "end", "out")
+    # Com `--shots` o começo e o fim vêm dos planos: o primeiro plano é o
+    # começo e a soma das durações é o comprimento. Exigir `--start/--end`
+    # junto seria pedir a mesma coisa duas vezes, e em dois relógios que podem
+    # discordar.
+    planos_pedidos = _planos_pedidos(args)
+    obrigatorios = ("source", "campaign", "out") if planos_pedidos else (
+        "source", "campaign", "start", "end", "out")
+    missing = [name for name in obrigatorios
                if getattr(args, name, None) is None]
     if missing:
         die("cut needs " + ", ".join("--" + m if m != "source" else "a source"
                                      for m in missing)
             + " -- or a --plan that carries them for a whole batch")
+    if planos_pedidos:
+        args.start = min(a for a, _b in planos_pedidos)
+        args.end = max(b for _a, b in planos_pedidos)
     rules = load_campaign(args.campaign)
     # Sound is decided before a frame is written, and never by default. If the
     # campaign settles it, use that; otherwise it is the owner's stored choice;
@@ -1527,7 +1565,7 @@ def cmd_cut(args):
                               track_start=args.track_start,
                               sound=sound, crop=args.crop,
                               motion=args.motion, cover_footer=args.cover_footer,
-                              asked_s=args.seconds)
+                              asked_s=args.seconds, shots=planos_pedidos)
     except Exception as exc:
         die(f"{type(exc).__name__}: {exc}", code=1)
     return deliver(result, rules, args.campaign, ledger_for(args.campaign))
@@ -2318,6 +2356,12 @@ def main(argv=None):
     p.add_argument("--out")
     p.add_argument("--subtitles")
     p.add_argument("--hook")
+    p.add_argument("--shots",
+                   help="an EDIT: the shots to splice, comma separated, on the "
+                        "file's own clock like --start (2.0-3.9,7.2-8.1). Each "
+                        "one's length "
+                        "is snapped to a whole number of beats of --track, so "
+                        "the scene changes land on the music. Two or more.")
     p.add_argument("--track", help="audio file to cut to, for an edit")
     p.add_argument("--track-start", type=float,
                    help="where the track enters; its drop by default")

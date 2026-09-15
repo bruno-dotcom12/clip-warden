@@ -173,3 +173,72 @@ def snap(length, bar_s, lo=None, hi=None, floor_bars=2):
         if hi is not None and best > hi:
             return None, None                  # no whole bar count fits this window
     return round(best, 3), bars
+
+
+# Quantas batidas um plano de edit dura, medido na referência que o dono deu.
+#
+# O short de futebol (`youtube.com/shorts/QmrLImO6fus`) foi baixado e medido em
+# 15/09: 129,2 BPM, batida de 0,464s, 10 a 13 cortes distintos em 15,83s -- ou
+# seja **12,6 a 16,4 cortes por 20 segundos**. Os intervalos entre cortes, em
+# batidas: 1,7 · 2,0 · 2,1 · 2,1 · 2,1 · 2,2 · 4,0 · 4,1 · 4,3 · 5,8. O plano
+# curto é de DUAS batidas (meia barra, ~0,93s) e o longo, de quatro (uma barra).
+#
+# E eles caem na batida de verdade: com a fase ajustada aos cortes em vez de
+# suposta a partir de `first_beat_s`, o erro mediano é de **28 a 33ms**, com 8
+# de 10 (e 11 de 13) dentro de 80ms. Contra a barra o erro mediano é 38ms, e
+# contra a meia barra, o mesmo da batida -- o que quer dizer que a grade que
+# governa é a BATIDA, e a meia barra é só onde os cortes mais caem.
+PLANO_BATIDAS = (2, 4)
+PLANO_MIN_BATIDAS = 2
+
+
+def snap_shots(shots, beat_s, minimo=PLANO_MIN_BATIDAS):
+    """Encaixa a duração de cada plano num número inteiro de batidas.
+
+    Devolve `[(in, out, batidas)]` com os `out` recalculados, e o `in` de cada
+    plano preservado: quem escolheu o plano escolheu ONDE ele começa no material,
+    e mexer nisso trocaria a imagem para acertar o relógio. O que se ajusta é
+    quanto ele dura, que é o que a batida governa.
+
+    Sem grade -- faixa sem batida detectável, ou edit sem trilha -- devolve os
+    planos como vieram, com `batidas=None`. Um plano que ficaria com menos que o
+    mínimo é esticado até ele: meia batida de imagem não lê como plano, lê como
+    falha.
+    """
+    if not shots:
+        return []
+    if not beat_s or beat_s <= 0:
+        return [(float(a), float(b), None) for a, b in shots]
+    saiu = []
+    for a, b in shots:
+        a, b = float(a), float(b)
+        batidas = max(int(minimo), round((b - a) / beat_s))
+        saiu.append((a, round(a + batidas * beat_s, 4), batidas))
+    return saiu
+
+
+def erro_na_grade(bordas, beat_s, fase=None):
+    """O erro de cada borda contra a grade de batida, em segundos.
+
+    `fase` é onde a grade começa. Quando não é dada, é procurada: a fase que
+    minimiza o erro mediano. Supor que a grade começa no `first_beat_s` da
+    detecção é assumir o que se quer medir -- foi o que fez a referência parecer
+    desalinhada (erro mediano de 93ms) quando ela está a 33ms.
+    """
+    bordas = [float(x) for x in bordas]
+    if not bordas or not beat_s or beat_s <= 0:
+        return [], None
+    if fase is None:
+        melhor, menor = 0.0, None
+        f = 0.0
+        while f < beat_s:
+            errs = [min((x - f) % beat_s, beat_s - ((x - f) % beat_s))
+                    for x in bordas]
+            m = sorted(errs)[len(errs) // 2]
+            if menor is None or m < menor:
+                melhor, menor = f, m
+            f += 0.001
+        fase = melhor
+    errs = [min((x - fase) % beat_s, beat_s - ((x - fase) % beat_s))
+            for x in bordas]
+    return errs, round(fase, 4)

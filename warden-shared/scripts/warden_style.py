@@ -1133,6 +1133,36 @@ def write_approval(srt_path, start=None, end=None):
 
 # ------------------------------------------------------------------ olhar o material
 
+def sample_shots(video, planos, count=8):
+    """`count` quadros tirados DOS PLANOS, não de um trecho contínuo.
+
+    Um edit é feito de pedaços espalhados pelo material, e amostrar
+    `start..start+length` olha um trecho contínuo que o clipe não mostra. Medido
+    em 15/09: um edit de 7 planos entre 11s e 100s da fonte teve os 8 quadros
+    tirados de 11s a 29s, a detecção disse "limpo", e o render saiu com a
+    legenda do próprio vídeo aparecendo atrás da nossa em um dos planos. O
+    quadro em resolução cheia mostrou as duas.
+
+    Cada plano recebe pelo menos um quadro; o resto é repartido pelos mais
+    longos, que é onde há mais material para uma faixa de texto aparecer.
+    """
+    if not planos:
+        return []
+    count = max(1, int(count))
+    quotas = [1] * len(planos)
+    sobra = max(0, count - len(planos))
+    if sobra:
+        ordem = sorted(range(len(planos)),
+                       key=lambda i: planos[i][1] - planos[i][0], reverse=True)
+        for k in range(sobra):
+            quotas[ordem[k % len(ordem)]] += 1
+    saiu = []
+    for (a, b, *_), quota in zip(planos, quotas):
+        dur = max(0.1, float(b) - float(a))
+        saiu += sample_frames(video, float(a), dur, count=quota)
+    return saiu
+
+
 def sample_frames(video, start, length, count=8):
     """`count` quadros da janela, como imagens do PIL. [] quando não deu.
 

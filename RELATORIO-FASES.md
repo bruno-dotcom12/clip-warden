@@ -495,3 +495,136 @@ para ver chegada em vez de fingir que nada chegou.
   a ser necessária.
 - Se a pessoa demorar mais de 20 segundos para colar o link, a pergunta acontece
   do mesmo jeito. O prazo é ajustável e 20s cobre os 7s medidos com folga.
+
+---
+
+## FASE 5 — O edit de verdade
+
+### A referência, medida antes de copiada
+
+Baixei o short que você deu (`youtube.com/shorts/QmrLImO6fus`), 1152x1536, 60fps,
+15,83s, e medi:
+
+| | Valor |
+|---|---|
+| BPM da trilha | **129,2** (batida de 0,464s, barra de 1,858s) |
+| Trocas de cena | **10 a 13** distintas (limiar 0,3 e 0,2) |
+| **Cortes por 20 segundos** | **12,6 a 16,4** |
+| Intervalo mediano entre cortes | 0,95 a 1,03s |
+| Intervalo dominante, em batidas | **2 batidas** (meia barra), com 4 batidas frequentes |
+| **Erro contra a batida** | **mediano 28 a 33ms**, 8 de 10 (e 11 de 13) dentro de 80ms |
+| Erro contra a barra | 38ms |
+
+**Um detalhe do método importa.** Na primeira medição a referência pareceu
+desalinhada — erro mediano de 93ms — porque eu supus que a grade começava no
+`first_beat_s` que a detecção devolve. Isso é assumir o que se quer medir.
+Procurando a fase que minimiza o erro, a referência está a **33ms**. A grade que
+governa é a **batida**, não a barra.
+
+**E a referência não tem legenda de fala.** Olhei o mosaico dela: o que está na
+tela é um **placar fixo** com os escudos dos times, uma marca d'água, e
+transições borradas entre planos. Nenhuma palavra falada queimada. Isso não muda
+o que você pediu — você pediu legenda — mas vale estar escrito.
+
+### O que o edit do Djokovic era
+
+| | A referência | O "edit" de 15/09 |
+|---|---|---|
+| Trocas por 20s | 12,6 a 16,4 | 11,5 |
+| Erro contra a batida | mediano **33ms** | mediano **122ms** |
+| Dentro de 80ms | 8 de 10 | **4 de 12** |
+| De onde vieram os cortes | escolhidos | **do próprio vídeo** |
+| Legenda | placar fixo | nenhuma |
+
+4 de 12 dentro de 80ms numa grade de 650ms é o que o acaso dá (o esperado é 3).
+
+### O que mudou no código
+
+**`shots` deixou de ser aceito-e-descartado.** O bloco que existia escrevia, com
+todas as letras, `"IGNOREI os N planos deste clipe"` — e era a verdade: o campo
+atravessava a assinatura inteira e nenhuma linha do render o lia.
+
+Agora:
+
+- **Emenda de verdade.** Um `trim` por plano, `concat` no fim, e o enquadramento
+  vertical aplicado **uma vez, depois** da emenda — recortar plano a plano daria
+  a cada um um enquadramento diferente da mesma cena.
+- **Cada plano dura um número inteiro de batidas.** O começo do plano nunca é
+  mexido (quem escolheu o plano escolheu onde ele começa); o que se ajusta é
+  quanto ele dura. Mínimo de duas batidas: meia batida de imagem não lê como
+  plano, lê como falha.
+- **Zoom leve por plano, alternando** para dentro e para fora. Todo plano
+  empurrando no mesmo sentido lê como efeito, não como montagem.
+- **A trilha entra no drop** e o áudio da fonte é descartado num edit emendado:
+  fala contínua sobre imagem que pula está falando da cena errada.
+- **A legenda acompanha os planos**: as falas de cada trecho são realocadas para
+  o relógio da emenda. Planos colados são tratados como um trecho só, senão a
+  frase seria cortada numa borda que a imagem não cortou.
+- **O sidecar grava cada corte e o erro dele** contra a grade, com a fase
+  procurada. "Cortou na batida" virou um número.
+
+### Duas recusas novas, e as duas são o ponto
+
+**A legenda que vira colagem.** Com planos espalhados pelo material, cada um
+abre no meio de uma frase. Medido num render real de 15 planos, a legenda saiu:
+
+> "portas, a que vai pra sala / e a que vai Você lembra," → "Nossa dispensa é
+> cheia. Então," → "» para gravação. Vamos respirar. Mas enfim,"
+
+Mecanicamente correta, ilegível. Agora, quando mais da metade dos trechos
+emendados abre no meio de uma frase, o clipe sai **sem legenda** e diz por quê,
+com as duas saídas: começar cada plano onde uma fala começa, ou usar `--hook` em
+vez de `--subtitles`, que é o que a referência faz.
+
+**A amostragem que olhava o lugar errado — e este era um defeito meu.** A
+detecção de texto queimado na fonte amostra 8 quadros entre `start` e
+`start+length`. Num edit isso olha um trecho **contínuo que o clipe não mostra**:
+num edit de 7 planos entre 11s e 100s, os 8 quadros saíram de 11s a 29s. A
+detecção disse "limpo" e o render saiu com a legenda do próprio vídeo aparecendo
+atrás da nossa. **Eu só peguei isso porque extraí o quadro em resolução cheia** —
+no mosaico reduzido as duas se confundem. Corrigido: os quadros agora vêm **dos
+planos**, e com a correção a mesma renderização passou a recusar a legenda, que
+é a resposta certa.
+
+### O edit que bate o critério
+
+`f5-final.mp4`, 7 planos de 4 batidas, na região do material que a sondagem
+mostrou limpa, com cada plano começando onde uma fala começa:
+
+| Critério | Pedido | Medido |
+|---|---|---|
+| Trocas na batida | erro < 80ms | **0ms**, nas 6 |
+| Cenas em 20s | ≥ 5 | **7,7** |
+| Legenda | sim | **14 cues**, até 2 linhas, com destaque palavra a palavra |
+| Colagem | — | 0 de 7 trechos abrem no meio de frase |
+| Contact sheet | olhado | olhado, item por item |
+
+### Auditoria da FASE 5
+
+**O mosaico foi olhado, item por item.** Oito cenas visivelmente diferentes —
+corredor, corredor mais perto, corredor aberto, ilha da cozinha, bancada,
+geladeira, forno. A legenda em duas linhas, amarela, com o destaque acompanhando
+a fala. Rosto livre. Sem tarja preta. Sem borda de material cortada.
+
+**Um item do checklist falha, e quem apontou foi a própria ferramenta:** uma cue
+fecha em `"de crédito, era 10 vezes no"` — termina numa preposição. Está no
+sidecar como `hanging_endings`. Não vou chamar o clipe de limpo: ele tem esse
+defeito.
+
+**O que ficou aberto, e é uma tensão real, não um item de lista:**
+
+Um edit não consegue ter, ao mesmo tempo, **trocas de cena visíveis** e **legenda
+de fala coerente**, quando a fonte é uma pessoa falando continuamente. Ou os
+planos vêm do mesmo trecho — e aí a fala fecha, mas os cortes são invisíveis — ou
+vêm de lugares diferentes — e aí a imagem muda, mas a fala vira colagem. O que
+funciona é o meio-termo que produziu o `f5-final`: planos de dois a três
+segundos, espalhados, **cada um começando onde uma fala começa**. Isso é
+trabalho de escolha, e o agente ainda escolhe à mão.
+
+A referência resolve isso de outro jeito: **não usa legenda de fala.** Usa um
+gráfico fixo. Se você quiser o edit mais próximo dela, o caminho é `--hook` com
+uma linha escrita, sem `--subtitles`.
+
+**A suíte: 368 testes, todos passando.** Seis novos medem o encaixe na batida, e
+um deles é a própria referência: os dez cortes medidos no seu short passam pelo
+mesmo teste de 80ms que o nosso edit tem de passar.
