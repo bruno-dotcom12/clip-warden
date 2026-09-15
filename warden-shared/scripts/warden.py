@@ -431,6 +431,14 @@ def probe(path):
         "fps": fields.get("r_frame_rate"),
         "duration_s": number(duration),
         "audio_codec": audio or None,
+        # Faixas de legenda DENTRO do contêiner. Não é a legenda queimada: o
+        # que este projeto queima vira pixel e o ffprobe não vê pixel. Está
+        # aqui porque sem campanha o `check` é uma MEDIÇÃO, e "tem faixa de
+        # legenda?" é uma das poucas perguntas sobre legenda que um ffprobe
+        # responde. Quem quer saber se a fala está escrita na tela abre o
+        # contact sheet, que é o único portão que olha a imagem.
+        "subtitle_tracks": sum(1 for c in correntes
+                               if c.get("codec_type") == "subtitle"),
         "size_mb": round(os.path.getsize(path) / (1024 * 1024), 2),
     }
 
@@ -618,9 +626,31 @@ def verdict(findings):
 
 
 def render(findings, rules, media):
-    lines = [f"{rules.get('name', rules.get('id'))}  |  "
-             f"{media.get('width')}x{media.get('height')}, "
-             f"{(media.get('duration_s') or 0):.1f}s, {media.get('size_mb')} MB", ""]
+    # A LINHA MEDIDA, e ela cresceu de propósito em 15/09/2026.
+    #
+    # Sem campanha não há regra para julgar, e a persona deste projeto manda
+    # que todo número citado venha do `warden` e nunca da leitura do modelo --
+    # "se você vai dizer que um clipe tem 28 segundos, rode o check e cite".
+    # Se este cabeçalho não traz o número, não existe de onde citá-lo, e a
+    # única saída que sobra ao agente é falar de cabeça, que é o que a regra
+    # proíbe. Então tudo o que o ffprobe respondeu aparece aqui: duração,
+    # resolução, fps, codec, som e faixas de legenda.
+    nome = rules.get("name") or rules.get("id")
+    fps = media.get("fps")
+    if fps and "/" in str(fps):
+        try:
+            a, b = str(fps).split("/", 1)
+            fps = f"{float(a) / float(b):.3g}"
+        except (ValueError, ZeroDivisionError):
+            pass
+    medido = (f"{media.get('width')}x{media.get('height')}, "
+              f"{(media.get('duration_s') or 0):.1f}s, "
+              f"{fps or '?'} fps, {media.get('codec') or 'codec ?'}, "
+              f"audio {media.get('audio_codec') or 'none'}, "
+              f"{media.get('subtitle_tracks', 0)} subtitle track(s), "
+              f"{media.get('size_mb')} MB")
+    lines = [f"{nome}  |  {medido}" if nome
+             else f"(no campaign)  |  {medido}", ""]
     order = {REPROVA: 0, ATENCAO: 1, OK: 2}
     label = {REPROVA: "REJECT ", ATENCAO: "CHECK  ", OK: "ok     "}
     for level, message in sorted(findings, key=lambda f: order[f[0]]):
@@ -628,6 +658,20 @@ def render(findings, rules, media):
     lines.append("")
     if verdict(findings) == REPROVA:
         lines.append("Do not post this one. Fix what is marked REJECT and run it again.")
+    elif not nome:
+        # SEM CAMPANHA O VEREDITO NÃO É "PASSA". Não pode ser: não havia regra
+        # para ser quebrada, então nada foi aprovado -- foi medido. Dizer
+        # "nothing blocks this clip" aqui seria a mesma mentira que um campo
+        # adivinhado ("a guessed field reads as a rule and gets a clipper
+        # rejected for obeying you"), com a diferença de que ninguém sequer
+        # adivinhou: o silêncio estaria passando por aprovação.
+        lines.append("MEASURED, NOT APPROVED: no campaign was given, so there "
+                     "was no rule to judge this against. The numbers above are "
+                     "the file; every field is unchecked. Cite the numbers, and "
+                     "do not say this clip passes anything.")
+        lines.append("Whether the words are on screen is not in this list: a "
+                     "burned caption is pixels, and ffprobe reads tracks. The "
+                     "contact sheet is what answers that.")
     else:
         lines.append("Nothing blocks this clip. The CHECK lines are yours to confirm.")
     return "\n".join(lines)
@@ -835,14 +879,37 @@ def cmd_campaign(args):
 
 
 def cmd_check(args):
+    """Mede o arquivo, e julga-o quando existe uma campanha para julgá-lo.
+
+    `--campaign` deixou de ser obrigatória em 15/09/2026, e o motivo é uma
+    corrente de regras que não fechava. A persona manda citar números do
+    `warden` e nunca da própria leitura; a tabela de provas dela manda provar
+    a duração com `warden check`; a skill do clipe PROÍBE inventar uma campanha
+    para passar de um flag obrigatório -- "that was the road into the caption
+    question that stopped every first clip". Com `--campaign` obrigatória, um
+    link solto deixava o agente sem saída nenhuma: precisava checar, não podia
+    checar, não podia inventar campanha e não podia falar de cabeça.
+
+    Sem campanha isto é uma MEDIÇÃO e diz que é: cada campo sai como não
+    conferido, e o veredito não afirma que o clipe passa, porque não havia
+    regra da qual passar.
+    """
     if not os.path.exists(args.video):
         die(f"no such clip: {args.video}")
-    rules = load_campaign(args.campaign)
+    rules = regras_de(args.campaign)
     media = probe(args.video)
     caption = read_text(args.caption)
-    findings = check(rules, media, caption, ledger_for(args.campaign))
+    findings = check(rules, media, caption,
+                     ledger_for(args.campaign) if args.campaign else [])
     if args.json:
-        print(json.dumps({"verdict": verdict(findings), "media": media,
+        print(json.dumps({"verdict": verdict(findings),
+                          # Sem campanha, `verdict` diz OK porque nada foi
+                          # rejeitado -- e OK sem regra não é aprovação. O
+                          # campo abaixo é o que impede um `--json` de ser lido
+                          # como um passe: ele diz que não houve julgamento.
+                          "judged": bool(args.campaign),
+                          "campaign": args.campaign,
+                          "media": media,
                           "findings": [{"level": l, "message": m} for l, m in findings]},
                          indent=2, ensure_ascii=False))
     else:
@@ -873,10 +940,22 @@ def cmd_package(args):
 
     Not a creative act and not meant to be one: the hook is the owner's, and
     everything after it is what the brief demands, in the brief's own spelling.
+
+    Sem campanha não há brief, e portanto não há hashtag nem menção a exigir:
+    sai o gancho do dono e mais nada. Inventar uma hashtag aqui seria o defeito
+    que o `warden_rules` inteiro existe para não cometer -- um campo adivinhado
+    lê como regra -- só que do lado da legenda, onde ele custa a submissão de
+    quem obedeceu.
     """
-    rules = load_campaign(args.campaign)
+    rules = regras_de(args.campaign)
     caption, max_len = _monta_legenda(rules, args.hook)
     print(caption)
+    if not args.campaign:
+        print("\n[no campaign was given, so nothing was required of this "
+              "caption: no hashtag, no mention, no exact wording, and no "
+              "length limit. This is your hook and nothing else. If there is a "
+              "campaign, pass --campaign and run it again -- a missing tag is "
+              "the cheapest rejection there is.]", file=sys.stderr)
     if max_len and len(caption) > max_len:
         print(f"\n[{len(caption)} characters, over the {max_len} this campaign allows]",
               file=sys.stderr)
@@ -965,9 +1044,19 @@ def cmd_youtube(args):
     única porta é cadastrar a conta à mão COM A SENHA dela
     (developers.tiktok.com/doc/add-a-sandbox). Isso não escala e não se pede a
     um estranho. O YouTube, com o app publicado em produção, deixa qualquer
-    pessoa autorizar sozinha. O preço é que o vídeo sobe privado enquanto o app
-    não for verificado -- e esse último toque é, na prática, o consentimento
-    final dela.
+    pessoa autorizar sozinha.
+
+    O preço, e ele é maior do que este arquivo dizia até 15/09/2026: enquanto o
+    projeto não passar na auditoria da YouTube API Services, todo vídeo enviado
+    pela API fica TRANCADO como privado. Está na fonte oficial
+    (support.google.com/youtube/answer/7300965): não aceita recurso e não pode
+    ser tornado público depois -- nem no Studio, nem por apelação. Só a
+    auditoria tira isso, e o Google não publica prazo.
+
+    A frase que estava aqui dizia que esse último toque era "na prática, o
+    consentimento final dela". Era falsa nas duas metades: não existe toque, e
+    portanto ele não consente nada. Publicar continua sendo possível por este
+    caminho; o que não se pode é vendê-lo como publicação.
     """
     Y = _youtube()
     fala = lambda m: print(f"  {m}", file=sys.stderr)
@@ -1018,6 +1107,128 @@ def cmd_youtube(args):
     print(f"uploaded: {url}")
     for aviso in saida.get("avisos") or []:
         fala(aviso)
+    # Este comando e `warden post youtube` passaram a parecer a mesma coisa, e
+    # o que mente é este, o mais antigo. O upload acima existe -- há um videoId
+    # e um 200 -- e ele está TRANCADO como privado, porque o projeto Google
+    # deste repositório não passou pela auditoria da YouTube API Services
+    # (support.google.com/youtube/answer/7300965): não aceita recurso e não se
+    # desfaz no Studio. Um 200 aqui não é publicação, e quem lê esta saída tem
+    # de sair dela sabendo qual é o comando que publica de verdade.
+    fala("this upload is locked as PRIVATE by YouTube and cannot be made "
+         "public later -- not in Studio, not by appeal. The command that "
+         "actually publishes is `warden post youtube`, which goes through an "
+         "already-audited app; run `warden post status` to see whether it is "
+         "on.")
+    return 0
+
+
+def cmd_post(args):
+    """Publica pelo INTERMEDIÁRIO auditado, que é o caminho que não trava.
+
+    Por que este comando existe ao lado de `warden youtube publish`: aquele
+    sobe pela YouTube Data API com o projeto Google DESTE repositório, que não
+    passou pela auditoria, e o YouTube tranca o vídeo como privado sem recurso
+    (support.google.com/youtube/answer/7300965). Ele devolve 200 e um videoId,
+    e nada disso é publicação. Este aqui manda por um app JÁ auditado, e em
+    15/09/2026 foi medido saindo PÚBLICO no canal do dono.
+
+    O que este comando NUNCA faz: dizer que o vídeo está público porque a API
+    respondeu 200. Ela responde 200 do mesmo jeito para um vídeo que ficou
+    privado. Quem confirma é a janela anônima, e é isso que a última linha da
+    saída manda fazer.
+    """
+    P = _post()
+
+    # O portão de "desligado", e ele vem ANTES de tudo. Sem chave não há
+    # requisição, não há traceback e não há `invalid choice`: há uma frase que
+    # diz o que falta e o que o agente faz em vez disso. Código 1 e não 2 de
+    # propósito -- 2 é erro de uso do comando, e não usar errado quem não
+    # configurou o ambiente.
+    if not P.esta_configurado():
+        die("the publishing intermediary is OFF: WARDEN_POST_API_KEY is not "
+            "set in this environment, so nothing was sent and nothing was "
+            "tried. Until the owner exports that key, do NOT claim anything "
+            "was published -- hand the finished file over in your final "
+            "message instead, with the title and the description written out, "
+            "so the owner can upload it by hand in under a minute.", code=1)
+
+    if args.action == "status":
+        try:
+            saida = P.status()
+        except P.PostIndisponivel as exc:
+            die(str(exc), code=2)
+        except Exception as exc:
+            die(f"{type(exc).__name__}: {exc}", code=1)
+        print(f"provider: {saida['provedor']} ({saida['base']})")
+        print(f"account:  {saida['email']} -- plan {saida['plano']}")
+        print(f"profile:  {saida['perfil'] or 'NOT CHOSEN'}")
+        for perfil in saida["perfis"]:
+            for rede, conta in sorted(perfil["contas"].items()):
+                if not conta["conectada"]:
+                    estado = "not connected"
+                elif conta["reauth_required"]:
+                    estado = "CONNECTED BUT NEEDS REAUTH -- it will not publish"
+                else:
+                    estado = f"{conta['display_name']} {conta['handle']}"
+                print(f"  {perfil['nome']}/{rede}: {estado}")
+        for aviso in saida["avisos"]:
+            print(f"  note: {aviso}", file=sys.stderr)
+        return 0
+
+    # ── warden post youtube <clip> --title "..."
+    if not args.file:
+        die("post youtube needs the clip to publish: "
+            "`warden post youtube CLIP --title \"...\"`", code=2)
+    if not args.title:
+        die("post youtube needs --title. YouTube requires a title, and this "
+            "command will not invent one for the owner's channel.", code=2)
+
+    try:
+        envio = P.publish_youtube(args.file, args.title,
+                                  descricao=args.description or "",
+                                  privacidade=args.privacy,
+                                  shorts=args.shorts)
+    except P.PostIndisponivel as exc:
+        die(str(exc), code=2)
+    except Exception as exc:
+        die(f"{type(exc).__name__}: {exc}", code=1)
+
+    print(f"accepted for processing: request_id={envio['request_id']}", file=sys.stderr)
+    for aviso in envio["avisos"]:
+        print(f"  note: {aviso}", file=sys.stderr)
+
+    try:
+        saida = P.wait_for(envio["request_id"], timeout_s=args.wait)
+    except P.PostIndisponivel as exc:
+        die(str(exc), code=2)
+    except Exception as exc:
+        die(f"{type(exc).__name__}: {exc}", code=1)
+
+    # Os avisos primeiro, e em stderr: é ali que mora "a API não confirmou a
+    # privacidade" e "pedi público e voltou privado". Enterrá-los depois do
+    # endereço é o mesmo que não os ter.
+    for aviso in saida["avisos"]:
+        print(f"  note: {aviso}", file=sys.stderr)
+
+    if not saida["concluido"]:
+        print(f"still processing after {saida['esperou_s']}s -- this is neither "
+              f"a failure nor a success. Ask again:")
+        print(f"  request_id: {saida['request_id']}")
+        return 0
+    if saida["sucesso"] is False:
+        die(f"the intermediary reported the upload FAILED, so nothing was "
+            f"published. Its own words are in the notes above.", code=2)
+
+    if saida["post_url"]:
+        print(saida["post_url"])
+    print(f"  video id: {saida['platform_post_id']}", file=sys.stderr)
+    if saida["prevalidacao"]:
+        meta = saida["prevalidacao"]
+        print(f"  the intermediary read the file as {meta.get('width')}x"
+              f"{meta.get('height')}, {meta.get('duration')}s, "
+              f"{meta.get('video_codec')}", file=sys.stderr)
+    # A última linha, e a única que prova alguma coisa.
+    print(f"\n{saida['prova']}", file=sys.stderr)
     return 0
 
 
@@ -1351,6 +1562,11 @@ def _tiktok():
     return warden_tiktok
 
 
+def _post():
+    import warden_post
+    return warden_post
+
+
 def _youtube():
     import warden_youtube
     return warden_youtube
@@ -1455,13 +1671,88 @@ def cmd_trusted(args):
     die(f"unknown trusted action {args.action!r}")
 
 
+def links_path():
+    return os.path.join(state_dir(), "links.json")
+
+
+def registra_link(url, porque):
+    """O rastro de um link que entrou pela mão de quem o mandou.
+
+    Não é um portão -- nada aqui recusa nada. É o registro de que aquele
+    endereço entrou nesta máquina, quando, e por qual motivo foi tratado como
+    autorizado. Existe porque a decisão do dono de 15/09/2026 tirou a pergunta
+    sobre direitos do caminho ("quem manda o link está afirmando que pode usar
+    o material") e uma decisão sem rastro é uma decisão que ninguém consegue
+    revisar depois.
+
+    Escreve e segue. Um estado não gravável não pode impedir um corte: perder o
+    rastro é ruim, recusar-se a cortar por causa dele é pior.
+    """
+    linha = {"url": url, "why": porque,
+             "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    try:
+        rows = []
+        if os.path.exists(links_path()):
+            with open(links_path()) as fh:
+                carregado = json.load(fh)
+            if isinstance(carregado, list):
+                rows = carregado
+        rows.append(linha)
+        tmp = links_path() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(rows[-200:], fh, indent=2, ensure_ascii=False)
+        os.replace(tmp, links_path())
+    except (OSError, ValueError):
+        pass
+    return linha
+
+
+def avaliza_o_link_de_quem_mandou(url, entries):
+    """A lista de fontes do dono, mais o link que a pessoa acabou de mandar.
+
+    A decisão do dono, de 15/09/2026: QUEM MANDA O LINK ESTÁ AFIRMANDO QUE PODE
+    USAR O MATERIAL. O agente não pede licença, não pergunta sobre direitos e
+    não trava um link solto por ele não estar numa lista.
+
+    O que estava errado não era a lista -- ela continua valendo e continua
+    sendo o que avaliza um link que o agente foi BUSCAR sozinho. O que estava
+    errado era aplicá-la ao link que a própria pessoa colou na conversa, e o
+    preço disso foi medido: `warden archive --trusted <url>` recusava o link do
+    dono antes de baixar um byte, e a conversa virava um pedido de permissão
+    para uma coisa que ele tinha acabado de mandar fazer.
+
+    As regras de campanha continuam valendo onde sempre valeram -- no `check`,
+    no `deliver` e na checagem do pacote de post.
+    """
+    from urllib.parse import urlparse
+    saida = [str(e).strip() for e in (entries or []) if str(e).strip()]
+    host = (urlparse(str(url or "")).netloc or "").strip()
+    if host and host not in saida:
+        saida.append(host)
+    return saida
+
+
 def cmd_authorize(args):
     """Decide whether a link is in the campaign's archive, and say why.
 
     The one honest answer to 'can I clip this video?' when the archive is a set
     of playlists: expand them and look, rather than claim membership you cannot
     see. Exit 0 authorised, exit 1 not -- so a skill can gate on it.
+
+    SEM campanha não há arquivo a consultar e não há pergunta a fazer: o link
+    veio da pessoa, e ela está afirmando que pode usar o material. Sai 0 e
+    escreve o rastro. Este comando nunca foi sobre direitos autorais -- ele é
+    sobre a lista que UMA campanha publicou -- e usá-lo como se fosse era o
+    agente inventando um portão que a decisão do dono não tem.
     """
+    if not args.campaign:
+        registra_link(args.url, "sent by the person, with no campaign to check "
+                                "it against")
+        print(f"authorised: this link came from the person who asked for the "
+              f"clip, and that is the authorisation. No campaign was named, so "
+              f"there is no archive list to check it against -- campaign rules "
+              f"still apply to the post package when there is a campaign.")
+        return 0
     rules = load_campaign(args.campaign)
     try:
         ok, reason, title = _media().authorize(rules, args.url)
@@ -1532,8 +1823,15 @@ def _diz_as_janelas(resultados, janelas):
 
 
 def _archive_trusted(args, url):
-    """O mesmo caminho barato, com o portão da lista do dono em vez do acervo."""
-    entries = load_trusted()
+    """O mesmo caminho barato, para um link que a pessoa mandou.
+
+    A lista do dono continua na conta -- ela é o que avaliza um link que o
+    agente foi buscar sozinho -- mas o link que veio na mensagem entra junto
+    dela, com rastro. Ver `avaliza_o_link_de_quem_mandou`: quem manda o link
+    está afirmando que pode usar o material.
+    """
+    registra_link(url, "sent by the person to `warden archive`")
+    entries = avaliza_o_link_de_quem_mandou(url, load_trusted())
     out = safe_out(args.out or os.path.join(state_dir(), "footage", "trusted"),
                    "footage directory")
     varias = getattr(args, "windows", None)
@@ -1568,20 +1866,24 @@ def _archive_trusted(args, url):
 
 
 def cmd_archive(args):
-    """Puxa o material, pelo caminho barato, com um dos dois portões.
+    """Puxa o material, pelo caminho barato, de onde alguém apontou.
 
-    Os dois portões são a campanha e a lista de fontes do dono. Um dos dois tem
-    de existir: sem nenhum, não há quem responda se este link pode ser cortado,
-    e a resposta nunca é o palpite de quem está lendo o link.
+    Os dois caminhos são a campanha e o link. A campanha traz o acervo que o
+    brief publicou; o `--link` (ou `--trusted`, o nome antigo) traz o endereço
+    que a pessoa mandou. Um dos dois tem de existir porque sem nenhum não há
+    ENDEREÇO de onde puxar -- não porque falte permissão. Quem manda o link
+    está afirmando que pode usar o material, e isso é decisão do dono, de
+    15/09/2026.
     """
     confiavel = getattr(args, "trusted", None)
     if confiavel and args.campaign:
-        die("--campaign and --trusted are the two gates and you pick one: the "
-            "campaign's archive, or the owner's trusted list.", code=2)
+        die("--campaign and --link name two different sources and you pick "
+            "one: the campaign's archive, or the link the person sent.", code=2)
     if not confiavel and not args.campaign:
-        die("this needs a gate: `--campaign <id>` to pull that campaign's "
-            "archive, or `--trusted <url>` to pull one link the owner vouched "
-            "for. There is no third way to decide a link may be cut.", code=2)
+        die("this needs an address to pull from: `--campaign <id>` for that "
+            "campaign's archive, or `--link <url>` for the link the person "
+            "sent. Neither is a permission check -- there is just nowhere to "
+            "download from without one of them.", code=2)
 
     if confiavel:
         return _archive_trusted(args, confiavel)
@@ -1872,18 +2174,86 @@ def deliver(result, rules, campaign, ledger):
     print(f'  <caption>\n\n  MEDIA:{result["out"]}', file=sys.stderr)
     print("  Only the final message of a turn is read for attachments. A MEDIA: "
           "line written between tool calls attaches nothing and says nothing: "
-          "the prose arrives and the file does not. Start the next render in "
-          "the background first, so its finishing wakes you for the next clip.",
-          file=sys.stderr)
+          "the prose arrives and the file does not.", file=sys.stderr)
+    # A frase que estava aqui -- "comece o próximo render em background primeiro,
+    # que o fim dele te acorda para o próximo clipe" -- mandava fazer exatamente
+    # o que não funciona, e foi escrita antes de a medição existir.
+    #
+    # Medido em 15/09/2026: a linha `MEDIA:` numa mensagem INTERMEDIÁRIA (a que
+    # sai com `finish_reason=tool_calls`, porque ainda vem uma chamada de
+    # ferramenta depois) é DESCARTADA pelo gateway -- 5 de 5 pedidos de mais de
+    # um clipe. Na mensagem FINAL (`finish_reason=stop`) o anexo chega sempre:
+    # 8 de 8, inclusive com duas linhas `MEDIA:` juntas na mesma mensagem.
+    #
+    # Ou seja: "um clipe por turno" não é uma regra do gateway, é uma regra que
+    # este arquivo inventou. Um turno leva quantos anexos couberem na última
+    # mensagem, e a única coisa que perde anexo é escrever a linha antes do fim.
+    print("  If more clips were asked for, render ALL of them first and only "
+          "then answer: every MEDIA: line goes in the SAME final message, one "
+          "under the other. Two MEDIA: lines in one final message arrive "
+          "(measured 15/09, 8 of 8); a MEDIA: line with another tool call "
+          "after it does not (measured 15/09, 0 of 5).", file=sys.stderr)
     # A dívida, em disco, no instante em que o caminho fica disponível. Daqui
     # para a frente existe uma pergunta com resposta -- `warden delivered` --
     # em vez de só a memória do turno, que foi o que falhou em 14/09.
     entregas_registra(result["out"])
-    print(f"  and when the send comes back, run `warden delivered "
+    # E a confirmação é no turno SEGUINTE, não neste. O texto antigo -- "quando
+    # o envio voltar, rode `warden delivered`" -- pedia uma coisa impossível:
+    # o anexo só sai QUANDO o turno termina, então não existe instante dentro
+    # deste turno em que este comando possa ver o envio que ele cobra.
+    print(f"  then, at the START of your NEXT turn, run `warden delivered "
           f"{result['out']}` so the count stops owing this one.",
           file=sys.stderr)
     print(f"MEDIA:{result['out']}")
     return 0
+
+
+def bloco_da_mensagem_final(liberados, arquivo=None):
+    """O texto exato da mensagem que entrega o lote, pronto para copiar.
+
+    Escrito uma vez e impresso pelo `cut --plan` e pelo `lote render`, porque
+    duas versões dele são duas ordens de trabalho -- e a versão anterior desta
+    saída dava a ordem ERRADA: ela mandava entregar "um clipe por turno", com
+    `MEDIA:` na última mensagem de cada turno.
+
+    Medido em 15/09/2026, e é por isso que a ordem mudou: o gateway lê `MEDIA:`
+    só da mensagem FINAL do turno (`finish_reason=stop`), e dessa ele lê
+    QUANTAS houver -- duas linhas juntas chegaram nas 8 de 8 vezes. A linha
+    escrita numa mensagem intermediária (`finish_reason=tool_calls`) foi
+    descartada nas 5 de 5. Então o lote inteiro cabe num turno, e o que perde
+    clipe é escrever a linha antes do fim, não escrever duas.
+
+    `liberados` é [(nome, caminho)]. Vai para stderr de propósito: o stdout do
+    lote já carrega um `MEDIA:` por clipe, impresso pelo `deliver`, e repetir
+    os mesmos caminhos lá faria a contagem de anexos do lote dobrar.
+    """
+    if not liberados:
+        return
+    print("", file=sys.stderr)
+    print("END YOUR TURN NOW with exactly this as your final message (no tool "
+          "call after it):", file=sys.stderr)
+    print("", file=sys.stderr)
+    for i, (_nome, caminho) in enumerate(liberados, 1):
+        if i > 1:
+            print("", file=sys.stderr)
+        print(f"Corte {i}: <caption>", file=sys.stderr)
+        print(f"MEDIA:{caminho}", file=sys.stderr)
+    print("", file=sys.stderr)
+    print(f"That is ONE message carrying all {len(liberados)} clip(s). Replace "
+          f"each <caption> with the line for that clip and send nothing else "
+          f"after it: a tool call after these lines throws the attachments "
+          f"away, silently.", file=sys.stderr)
+    if arquivo:
+        # O bloco também em disco, porque copiar de stderr um bloco de seis
+        # linhas é onde uma linha se perde.
+        try:
+            with open(arquivo, "w", encoding="utf-8") as fh:
+                for i, (_nome, caminho) in enumerate(liberados, 1):
+                    fh.write(f"Corte {i}: <caption>\nMEDIA:{caminho}\n\n")
+            print(f"# the same block is in {arquivo}, if you would rather read "
+                  f"it than scroll.", file=sys.stderr)
+        except OSError:
+            pass
 
 
 def _planos_pedidos(args):
@@ -1936,6 +2306,92 @@ def _janela_sa(start, end, seconds):
     return None
 
 
+def regras_de(cid):
+    """As regras da campanha, ou um conjunto em branco quando não há campanha.
+
+    O portão de link solto, por decisão do dono de 15/09/2026: QUEM MANDA O
+    LINK ESTÁ AFIRMANDO QUE PODE USAR O MATERIAL. O agente não pede licença,
+    não pergunta sobre direitos e não trava um link por não estar numa lista.
+
+    O que some não é a checagem, é a PERGUNTA. `R.blank()` tem todos os campos
+    nulos, e campo nulo neste projeto nunca foi "pode": ele é reportado como
+    "ninguém checou", e o `check` repete isso em todo veredito. Então um corte
+    sem campanha sai com a lista do que ninguém conferiu em cima dele, que é a
+    resposta honesta -- e não com uma recusa sobre direitos que quem mandou o
+    link já resolveu.
+
+    Com campanha, nada muda: as regras dela continuam vencendo em `check`, no
+    `deliver` e no pacote de post.
+    """
+    if cid:
+        return load_campaign(cid)
+    vazio = R.blank()
+    # Os campos de identidade do TEMPLATE são textos de exemplo --
+    # "slug-of-the-campaign", "Campaign as the brief names it" -- escritos para
+    # o modelo preencher. Deixados de pé, o `render` imprimiria "Campaign as
+    # the brief names it" como cabeçalho de um clipe que não tem campanha
+    # nenhuma, e um exemplo na tela lê como um fato. Nulos, eles dizem a
+    # verdade: não há campanha.
+    for campo in ("id", "name", "source", "captured_at"):
+        vazio[campo] = None
+    return vazio
+
+
+def _som_decidido(rules, stored, override=None):
+    """(som, linha a dizer em voz alta ou None).
+
+    Nunca devolve "não decidido". Antes devolvia, e a ausência de decisão
+    virava um `die` que custava uma pergunta ao dono antes do primeiro clipe --
+    medido em 15/09: 10min34s dos 26min22s até o único clipe foram perguntas.
+
+    O padrão é o som ORIGINAL do arquivo, e a campanha continua vencendo: a
+    regra `video.audio` = "forbidden" força `platform` dentro de `effective()`,
+    que é onde ela sempre venceu.
+    """
+    settings, _ = P.effective(stored, rules)
+    if override:
+        return override, None
+    som = settings.get("sound") or "embedded"
+    if R.get(rules, "video.audio"):
+        return som, (f"som: {'mudo' if som == 'platform' else 'original'} "
+                     f"(a campanha decide isso: video.audio="
+                     f"{R.get(rules, 'video.audio')!r})")
+    if "sound" in (stored or {}):
+        return som, None
+    return som, "som: original (padrão; a campanha não decide isso)"
+
+
+def _duracao_decidida(rules, stored):
+    """(segundos, linha a dizer em voz alta). O número SAI DAQUI, nunca do modelo.
+
+    Era um `die` -- "ninguém disse quanto tempo" -- e o `die` estava certo
+    sobre o problema e errado sobre o remédio: a duração tinha de virar
+    parâmetro, não tinha de virar pergunta. Agora ela vira parâmetro com um
+    padrão anunciado, e quem quiser outro número passa `--seconds`.
+
+    Os limites da campanha vencem, e vencem em `P.effective()`, que é onde eles
+    já venciam: um padrão de 20s numa campanha que exige no mínimo 25 sai 25, e
+    a linha diz que foi a campanha que mandou.
+    """
+    settings, sobrepostas = P.effective(stored, rules)
+    try:
+        segundos = float(settings.get("target_s") or P.DEFAULTS["target_s"])
+    except (TypeError, ValueError):
+        segundos = float(P.DEFAULTS["target_s"])
+    de_onde = ("da sua preferência guardada" if "target_s" in (stored or {})
+               else f"padrão de {P.DEFAULTS['target_s']}s")
+    lo = R.get(rules, "video.duration_min_s")
+    hi = R.get(rules, "video.duration_max_s")
+    faixa = ""
+    if lo is not None or hi is not None:
+        faixa = (f", dentro dos limites da campanha ("
+                 f"{'min ' + str(lo) + 's' if lo is not None else 'sem mínimo'}, "
+                 f"{'max ' + str(hi) + 's' if hi is not None else 'sem máximo'})")
+    porque = [r for r in sobrepostas if "campaign" in r]
+    return segundos, (f"duração: {segundos:.0f}s ({de_onde}{faixa})"
+                      + (" -- " + "; ".join(porque) if porque else ""))
+
+
 def cmd_cut(args):
     if getattr(args, "plan", None):
         return cmd_cut_plan(args)
@@ -1944,8 +2400,13 @@ def cmd_cut(args):
     # junto seria pedir a mesma coisa duas vezes, e em dois relógios que podem
     # discordar.
     planos_pedidos = _planos_pedidos(args)
-    obrigatorios = ("source", "campaign", "out") if planos_pedidos else (
-        "source", "campaign", "start", "end", "out")
+    # `campaign` saiu daqui em 15/09/2026. Ver `regras_de`: quem manda o link
+    # está afirmando que pode usar o material, e exigir uma campanha para
+    # cortar um link solto era o agente pedindo licença por algo que a pessoa
+    # já decidiu. Um corte sem campanha sai com todos os campos como "ninguém
+    # checou", que é o que eles são.
+    obrigatorios = ("source", "out") if planos_pedidos else (
+        "source", "start", "end", "out")
     if (mal := _janela_sa(getattr(args, "start", None),
                           getattr(args, "end", None),
                           getattr(args, "seconds", None))):
@@ -1959,32 +2420,25 @@ def cmd_cut(args):
     if planos_pedidos:
         args.start = min(a for a, _b in planos_pedidos)
         args.end = max(b for _a, b in planos_pedidos)
-    rules = load_campaign(args.campaign)
-    # Sound is decided before a frame is written, and never by default. If the
-    # campaign settles it, use that; otherwise it is the owner's stored choice;
-    # and if neither has said, the render stops rather than shipping a silent
-    # clip nobody asked to be silent.
-    sound = args.sound or P.effective(P.load(state_dir()), rules)[0].get("sound")
-    if not sound:
-        die("no sound decision: this campaign does not settle it and the owner "
-            "has not chosen. Ask whether the clip keeps the original sound or "
-            "ships silent for the platform to add its own, then "
-            "`warden prefs set --key sound --value embedded|platform` (or pass "
-            "--sound). A clip must not ship silent by accident.", code=1)
-    # A duração é decidida antes de um quadro ser escrito, como o som. O
-    # mecanismo do `--seconds` já existia e já funcionava -- quando ele chega, a
-    # janela é movida para o número e o portão de entrega cobra. O que não
-    # existia era nada que NOTASSE a falta dele. No vlog de 14/09 pediram 20
-    # segundos e saíram 24,5s e 15,4s: 22% acima e 23% abaixo, com as janelas
-    # coladas nas fronteiras da transcrição e o número da pessoa nunca tendo
-    # virado parâmetro. Nenhum portão disparou, porque sem `asked_s` não há o
-    # que comparar. Agora a ausência é uma decisão que alguém toma em voz alta.
+    rules = regras_de(args.campaign)
+    stored = P.load(state_dir())
+    # Som e duração são decididos antes de um quadro ser escrito, como sempre
+    # foram. O que mudou em 15/09/2026 é que a falta de decisão deixou de ser
+    # um `die` e passou a ser um PADRÃO ANUNCIADO.
+    #
+    # Os dois `die` que estavam aqui estavam certos sobre o problema -- um
+    # clipe mudo por acidente, um clipe 22% mais longo que o número pedido --
+    # e errados sobre o remédio. Eles não impediam o defeito, eles obrigavam
+    # uma pergunta: e a pergunta custa um turno inteiro, medido em 10min34s de
+    # 26min22s no pedido de 15/09. Um padrão dito em voz alta corrige as duas
+    # coisas -- a pessoa vê qual número foi usado e de onde ele veio, e pode
+    # discordar no turno seguinte em vez de esperar para ser consultada.
+    sound, diz_som = _som_decidido(rules, stored, args.sound)
+    if diz_som:
+        print(diz_som, file=sys.stderr)
     if args.seconds is None and not args.any_length:
-        die("no duration decision: nobody said how long this clip should be. If "
-            "the person named a number, pass --seconds <n> and the cut lands on "
-            "it. If nobody named one, pass --any-length and the window decides. "
-            "A clip that came out 22% longer than the number someone said is a "
-            "clip they have to ask for again.", code=1)
+        args.seconds, diz_duracao = _duracao_decidida(rules, stored)
+        print(diz_duracao, file=sys.stderr)
     try:
         result = _media().cut(args.source, clip_out(args.out), rules,
                               args.start, args.end,
@@ -1996,7 +2450,10 @@ def cmd_cut(args):
                               asked_s=args.seconds, shots=planos_pedidos)
     except Exception as exc:
         die(f"{type(exc).__name__}: {exc}", code=1)
-    return deliver(result, rules, args.campaign, ledger_for(args.campaign))
+    # Sem campanha não há livro de posts a consultar: o teto por clipador é uma
+    # regra de campanha, e uma lista vazia diz exatamente isso.
+    return deliver(result, rules, args.campaign,
+                   ledger_for(args.campaign) if args.campaign else [])
 
 
 def specs_dir():
@@ -2329,37 +2786,60 @@ def cmd_cut_plan(args):
         die(f"could not read the plan {args.plan}: {type(exc).__name__}: {exc}")
     if not isinstance(plan, dict) or not isinstance(plan.get("clips"), list):
         die(f"{args.plan} is not a cut plan: it needs a 'clips' list")
+    liberados, failed, asked, _mosaicos = executa_o_plano(plan, args)
+    return conta_do_lote(liberados, failed, asked)
+
+
+def executa_o_plano(plan, args):
+    """Renderiza e libera os clipes do plano. ([(nome, caminho)], [(nome, porquê)], N).
+
+    Separada de `cmd_cut_plan` para que `warden lote render` reuse o MOTOR do
+    lote em vez de escrever outro. Duas implementações de "renderiza N janelas
+    e cobra a conta" são duas contagens que divergem no dia em que uma delas
+    ganha um conserto -- e a contagem é justamente o que se está consertando.
+
+    Quem chama decide o que fazer com o resultado: `cmd_cut_plan` imprime a
+    conta e o bloco da mensagem final; `lote render` monta o contact sheet
+    combinado do lote antes de fazer o mesmo.
+    """
     clips = plan["clips"]
     if not clips:
-        die(f"{args.plan} asks for no clips")
+        die(f"{getattr(args, 'plan', None) or 'this batch'} asks for no clips")
 
+    # Sem campanha o lote roda igual, com todos os campos como "ninguém
+    # checou". Ver `regras_de`: quem manda o link autorizou o material.
     cid = args.campaign or plan.get("campaign")
-    if not cid:
-        die("the plan has no 'campaign' and --campaign was not passed")
-    rules = load_campaign(cid)
+    rules = regras_de(cid)
+    # A fonte do TOPO é o padrão de quem não trouxer a sua. Exigi-la mesmo
+    # quando todo clipe traz a dele quebrava o `lote render`, onde cada clipe
+    # sai de um ARQUIVO DE JANELA diferente e não existe uma fonte só para o
+    # lote inteiro. O que continua sendo erro é um clipe sem fonte nenhuma.
     source = args.source or plan.get("source")
-    if not source:
-        die("the plan has no 'source' and none was passed")
-    sound = (args.sound or plan.get("sound")
-             or P.effective(P.load(state_dir()), rules)[0].get("sound"))
-    if not sound:
-        die("no sound decision for this batch: neither the campaign, the plan "
-            "nor the owner has chosen. Ask, then set it in the plan's 'sound' "
-            "or with `warden prefs set --key sound --value embedded|platform`.",
-            code=1)
+    sem_fonte = [i for i, c in enumerate(clips, 1)
+                 if not (isinstance(c, dict) and c.get("source"))]
+    if not source and sem_fonte:
+        die(f"no source for clip(s) {', '.join(map(str, sem_fonte))}: the plan "
+            f"has no 'source' at the top, none was passed, and those clips do "
+            f"not carry one of their own")
+    stored = P.load(state_dir())
+    sound, diz_som = _som_decidido(rules, stored,
+                                   args.sound or plan.get("sound"))
+    if diz_som:
+        print(diz_som, file=sys.stderr)
 
-    # O mesmo portão do corte avulso, na porta do lote. `seconds` no topo do
-    # plano vale para todos; um clipe pode trazer o seu.
+    # O mesmo padrão do corte avulso, na porta do lote. `seconds` no topo do
+    # plano vale para todos; um clipe pode trazer o seu; e quando ninguém disse
+    # nada, o padrão entra e é dito em voz alta -- era um `die` até 15/09/2026,
+    # e o `die` custava uma pergunta antes do primeiro clipe.
     pedido_topo = plan.get("seconds", getattr(args, "seconds", None))
     sem_pedido = [c for c in clips
                   if not isinstance(c, dict) or c.get("seconds") is None]
     if pedido_topo is None and sem_pedido and not args.any_length:
-        die(f"no duration decision for this batch: {len(sem_pedido)} of "
-            f"{len(clips)} clips say nothing about how long they should be. Put "
-            f"the number the person said in the plan's 'seconds' (or on each "
-            f"clip), or pass --any-length if nobody named one. On 14/09 two "
-            f"clips of \"20 segundos\" came out 24.5s and 15.4s because the "
-            f"number never reached the renderer.", code=1)
+        pedido_topo, diz_duracao = _duracao_decidida(rules, stored)
+        plan["seconds"] = pedido_topo
+        print(f"{diz_duracao} -- for the {len(sem_pedido)} of {len(clips)} "
+              f"clips in this plan that name no length of their own",
+              file=sys.stderr)
 
     asked = len(clips)
     # "delivered" era a palavra errada e ela contradizia o conserto do P0: este
@@ -2367,12 +2847,25 @@ def cmd_cut_plan(args):
     # este processo não escreve. Dizer "2 of 2 delivered" aqui é a ferramenta
     # afirmando uma entrega que não aconteceu -- exatamente o defeito de 14/09,
     # dito pela outra ponta.
+    # "one clip per turn" saiu daqui em 15/09/2026, porque foi medido e é
+    # falso: a mensagem FINAL de um turno leva quantos `MEDIA:` tiver (8 de 8,
+    # inclusive com duas linhas juntas). O que perde anexo é escrever a linha
+    # antes do fim do turno (0 de 5), e não escrever duas.
     print(f"# {asked} clips asked for. This command RENDERS and clears them; it "
-          f"does not deliver. Each one reaches the person only when a turn ENDS "
-          f"with its MEDIA: line in the last message, one clip per turn.",
-          file=sys.stderr)
-    liberados, failed = [], []
-    ledger = ledger_for(cid)
+          f"does not deliver. They reach the person when a turn ENDS with their "
+          f"MEDIA: lines in the last message -- all of them in that SAME last "
+          f"message.", file=sys.stderr)
+    if asked > LOTE_INLINE:
+        # Rede de segurança barata: este comando imprime TODAS as linhas, e
+        # `lote render` é quem divide o lote para que os primeiros clipes
+        # cheguem antes de o último terminar de renderizar.
+        print(f"# {asked} clips is more than {LOTE_INLINE}: this command "
+              f"renders all of them before printing anything to send, so the "
+              f"first clip waits for the last. `warden lote render` splits the "
+              f"batch instead -- the first {LOTE_INLINE} come out now and the "
+              f"rest finish in the background.", file=sys.stderr)
+    liberados, failed, mosaicos = [], [], []
+    ledger = ledger_for(cid) if cid else []
 
     def _renderiza(spec, i):
         """Só o render. A entrega fica na thread principal, em ordem."""
@@ -2473,7 +2966,13 @@ def cmd_cut_plan(args):
                       file=sys.stderr)
                 continue
             if code == 0:
-                liberados.append(name)
+                # Nome E caminho. O bloco final tem de imprimir a linha
+                # `MEDIA:` pronta para copiar, e um nome solto não é um
+                # caminho: foi por caminho digitado de memória que este
+                # projeto já entregou arquivo que não existia.
+                liberados.append((name, result["out"]))
+                if result.get("sheet"):
+                    mosaicos.append((name, result["sheet"]))
             else:
                 failed.append((name, "rendered but did not clear delivery"))
     except (SystemExit, KeyboardInterrupt):
@@ -2486,32 +2985,515 @@ def cmd_cut_plan(args):
         raise
     finally:
         piscina.shutdown(wait=True)
+    return liberados, failed, asked, mosaicos
 
+
+def conta_do_lote(liberados, failed, asked, sheet=None, depois=None):
+    """A conta do lote e o bloco da mensagem final. 0 se todos saíram, 1 se não.
+
+    `sheet` é o contact sheet combinado do lote, quando quem chama montou um;
+    `depois` é o que ficou renderizando em background, quando ficou.
+    """
     print(f"\n# {len(liberados)} of {asked} cleared for delivery. NONE of them "
           f"has been sent by this command.", file=sys.stderr)
     for name, why in failed:
         print(f"#   missing: {name} -- {why}", file=sys.stderr)
+    if sheet:
+        # UM mosaico para o lote inteiro. Cada clipe já tem o seu -- `deliver`
+        # não entrega sem ele -- e este não substitui nenhum: ele é a
+        # conferência única do lote, para que olhar dois clipes não custe dois
+        # `vision_analyze` de ~14s cada.
+        print(f"SHEET:{sheet}")
+        print(f"# one image for the whole batch: open it once and check every "
+              f"clip on it, instead of one look per clip.", file=sys.stderr)
+    if depois:
+        print(f"# still rendering in the background: {', '.join(depois)}. "
+              f"Deliver the ones below now -- do not wait. When that render "
+              f"finishes it wakes you, and then those go out in the final "
+              f"message of THAT turn.", file=sys.stderr)
     if liberados:
-        # Esta linha sai SEMPRE que algo passou, inclusive num lote curto. Sem
-        # isso, um lote em que o clipe 1 explode e os clipes 2 e 3 ficam
+        # Este bloco sai SEMPRE que algo passou, inclusive num lote curto. Sem
+        # ele, um lote em que o clipe 1 explode e os clipes 2 e 3 ficam
         # prontos não tinha uma linha mandando enviá-los: eles apareciam só
         # numa contagem, e clipe pronto que ninguém manda é clipe perdido --
         # que é o defeito de 14/09 chegando por outra porta.
-        print(f"# deliver the {len(liberados)} that cleared, one per turn, "
-              f"MEDIA: in the last message of each, and confirm every one with "
-              f"`warden delivered`: " + ", ".join(liberados), file=sys.stderr)
+        print(f"# {len(liberados)} clip(s) cleared: "
+              + ", ".join(n for n, _c in liberados), file=sys.stderr)
+        bloco_da_mensagem_final(liberados)
     if len(liberados) < asked:
-        print(f"# and then say this batch is NOT done: "
+        print(f"# and say in that same message that this batch is NOT done: "
               f"{asked - len(liberados)} of the {asked} clips asked for did not even "
               f"clear. Name which failed and why. Do not report the batch as "
               f"finished, and do not quietly deliver fewer than were asked for.",
               file=sys.stderr)
         return 1
-    print("# the batch is done when those sends came back, not when this line "
-          "printed. `warden delivered` answers whether any are still owed, and "
-          "it exits 1 while one is. Run it before you end your turn.",
-          file=sys.stderr)
+    print("# the batch is done when those attachments came back, not when this "
+          "line printed. Run `warden delivered` at the START of your NEXT turn: "
+          "it reads whether each path actually left in a final message. It "
+          "cannot confirm a send that has not happened yet, so running it "
+          "before you end this turn answers nothing.", file=sys.stderr)
     return 0
+
+
+# ════════════════════════════════════════════════════════════════════ o lote
+#
+# `warden lote` existe por uma medição, e a medição é sobre CHAMADAS DO MODELO.
+#
+# Em 15/09/2026 um pedido de 2 clipes levou 26min22s até o primeiro -- e único
+# -- clipe. A decomposição: 10min34s de perguntas que não mudaram um quadro,
+# 8min50s de 35 chamadas do modelo, e 4min52s de ferramenta. Ou seja: o
+# trabalho custou cinco minutos e a CONVERSA sobre o trabalho custou vinte.
+#
+# Nenhuma dessas 35 chamadas foi desnecessária isoladamente. O que era
+# desnecessário era o formato: `archive`, `transcribe`, `digest`, `signals`,
+# `captions review`, `cut`, `delivered` são sete comandos, cada um com uma
+# saída que o modelo lê e sobre a qual decide a próxima -- e entre duas delas
+# não há decisão nenhuma a tomar. `digest` e `signals` leem o MESMO arquivo e
+# respondem sobre o MESMO texto; separá-los custa uma ida e volta para
+# devolver algo que já estava decidido.
+#
+# Então `lote` é duas saídas, não sete. `prep` junta tudo o que o modelo
+# precisa para escolher as janelas; `render` faz tudo o que vem depois de
+# escolhê-las. A meta é ~4 chamadas do modelo por pedido, contra 35.
+#
+# Ele NÃO é um comando novo por dentro: cada pedaço aqui chama a função que já
+# existia. Duas implementações de "renderiza N janelas" são duas contagens que
+# divergem no primeiro conserto de uma delas.
+
+LOTE_INLINE = 3
+"""Quantos clipes saem no turno que pediu, antes de o resto ir para o fundo.
+
+Três porque a conta é de tempo e não de gosto: um render mede ~64s neste
+container, e o quarto clipe empurra a primeira entrega para mais de quatro
+minutos de silêncio. Os três primeiros chegam, e o resto acorda o agente
+quando fica pronto -- o que é melhor que os cinco chegarem juntos vinte
+minutos depois de ninguém ver nada.
+"""
+
+
+def _dir_do_lote():
+    return safe_out(os.path.join(state_dir(), "footage", "lote"),
+                    "batch directory")
+
+
+def _padroes_do_lote(rules, stored, quantos=None, segundos=None):
+    """As decisões que o lote toma sozinho, e a linha que anuncia cada uma.
+
+    Devolve (dict, [linhas]). Nenhuma delas é uma pergunta: a decisão do dono
+    de 15/09/2026 é no máximo UMA mensagem com perguntas antes do primeiro
+    clipe, e só quando o pedido não diz nem quantidade nem duração. Estas
+    linhas existem para que o agente repita UMA delas ao dono em vez de abrir
+    uma conversa com ele.
+    """
+    settings, _ = P.effective(stored, rules)
+    som, diz_som = _som_decidido(rules, stored)
+    duracao, diz_duracao = (
+        (float(segundos), f"duração: {float(segundos):.0f}s (pedida na mensagem)")
+        if segundos is not None else _duracao_decidida(rules, stored))
+    if quantos is not None:
+        n, diz_n = int(quantos), f"quantidade: {int(quantos)} clipe(s) (pedida na mensagem)"
+    else:
+        n = int(settings.get("batch") or P.DEFAULTS["batch"])
+        diz_n = (f"quantidade: {n} clipe(s) (padrão; ninguém disse quantos)")
+    hook = settings.get("hook") or "pt"
+    # A legenda é determinística, e é o serviço contratado numa campanha
+    # musical: a campanha vem do detentor dos direitos, entrega o material
+    # oficial e EXIGE legenda em português. Transcrever e queimar é o trabalho,
+    # não uma escolha editorial -- então a ferramenta faz, e o modelo não
+    # precisa repetir o texto da letra na conversa para que aconteça.
+    #
+    # Duas coisas desligam: a preferência `captions` em "no", e a ficha da
+    # campanha dizendo que o MATERIAL JÁ VEM LEGENDADO
+    # (`sources.archive_has_captions`), caso em que queimar a nossa por cima
+    # entrega legenda dupla.
+    ja_legendado = R.get(rules, "sources.archive_has_captions") is True
+    legenda = (settings.get("captions") != "no") and not ja_legendado
+    if ja_legendado:
+        diz_legenda = ("legenda: NÃO queimar (a ficha da campanha diz que o "
+                       "material já vem legendado)")
+    elif legenda:
+        diz_legenda = ("legenda: queimar em português, transcrita pela "
+                       "ferramenta (padrão)")
+    else:
+        diz_legenda = "legenda: não queimar (sua preferência guardada)"
+    padroes = {"n": n, "seconds": duracao, "sound": som, "hook": hook,
+               "captions": legenda}
+    linhas = [diz_n, diz_duracao,
+              diz_som or f"som: {'mudo' if som == 'platform' else 'original'}",
+              f"hook: {hook} (idioma da linha em cima do quadro)",
+              diz_legenda]
+    return padroes, linhas
+
+
+def _lote_prep(args):
+    """Uma saída só, sem perguntar nada, com tudo para escolher as janelas."""
+    url = args.url
+    registra_link(url, "sent by the person to `warden lote prep`")
+    rules = regras_de(args.campaign)
+    stored = P.load(state_dir())
+    entries = avaliza_o_link_de_quem_mandou(url, load_trusted())
+    out = _dir_do_lote()
+
+    # 1+2. O portão e o texto, na mesma chamada. O portão não pergunta e não
+    # pede licença: quem mandou o link autorizou o material (decisão do dono,
+    # 15/09/2026). O que o `archive_trusted` traz em `mode="text"` é a legenda
+    # publicada quando ela existe, e o áudio quando não existe -- nunca o vídeo
+    # inteiro, que é o que custava 13s e 382 MB por fonte.
+    try:
+        caminho = _media().archive_trusted(url, out, entries, mode="text")
+    except Exception as exc:
+        die(f"could not pull the words of {url}: {type(exc).__name__}: {exc}",
+            code=1)
+    print(f"SOURCE_TEXT:{caminho}")
+
+    # A fonte INTEIRA, porque é nela que se escolhe o momento. `proposito` diz
+    # para que serve e é o que escolhe o modelo barato para esta passada: o
+    # texto que vira legenda é transcrito de novo, janela a janela, na hora do
+    # render.
+    try:
+        transcricao = _media().transcribe(caminho, proposito="fonte")
+    except Exception as exc:
+        die(f"could not read the words of {os.path.basename(caminho)}: "
+            f"{type(exc).__name__}: {exc}", code=1)
+    alvo = safe_out(os.path.join(out, "lote.transcript.json"), "transcript")
+    try:
+        with open(alvo, "w", encoding="utf-8") as fh:
+            json.dump(transcricao, fh, ensure_ascii=False, indent=1)
+    except OSError as exc:
+        die(f"could not write {alvo}: {exc}", code=1)
+    print(f"TRANSCRIPT:{alvo}")
+    print(f"# the words came from: {transcricao.get('source')}")
+
+    # O SRT ao lado, e a ficha de ONDE ele veio. A ficha é o que deixa o
+    # `render` aprovar sozinho as linhas: aprovar automaticamente o que uma
+    # transcrição inventou seria assinar palavra não lida, e foi assim que
+    # `jokovic jokovic` foi para a tela. Aprovar o que o detentor dos direitos
+    # publicou é outra coisa.
+    srt = None
+    publicada = "published subtitle" in str(transcricao.get("source") or "")
+    texto_srt = _media().to_srt(transcricao.get("segments") or [])
+    if texto_srt.strip():
+        srt = safe_out(os.path.join(out, "lote.srt"), "subtitles")
+        try:
+            with open(srt, "w", encoding="utf-8") as fh:
+                fh.write(texto_srt)
+            with open(os.path.join(out, "lote.legenda.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"srt": srt, "published": publicada,
+                           "source": transcricao.get("source")}, fh,
+                          ensure_ascii=False, indent=1)
+        except OSError:
+            srt = None
+    if srt:
+        print(f"SRT:{srt}")
+
+    # 3. digest E signals na MESMA saída. Eram dois comandos sobre o mesmo
+    # arquivo, com nenhuma decisão a tomar entre um e outro: separá-los custava
+    # uma ida e volta do modelo para devolver algo que já estava decidido.
+    segmentos = transcricao.get("segments") or []
+    print("\n===== DIGEST =====")
+    try:
+        print(_media().digest(segmentos))
+    except Exception as exc:
+        print(f"# the digest failed: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+    print("\n===== SIGNALS =====")
+    try:
+        rows, quiet = _media().analyze_signals(segmentos, source=caminho)
+    except Exception as exc:
+        rows, quiet = [], f"{type(exc).__name__}: {exc}"
+    if quiet:
+        print(f"# the loud signal is NOT in this list: {quiet}", file=sys.stderr)
+    if not rows:
+        print("# no strong signal stood out. Choose on the digest; a quiet "
+              "transcript is not a bad one.")
+    for r in rows:
+        comeco = r.get("start") or 0
+        stamp = "%d:%02d" % (int(comeco // 60), int(comeco % 60))
+        print(f"[{stamp}] {','.join(r['signals'])}: {r['text']}")
+
+    # 4. Os padrões, uma linha cada, para o modelo REPETIR e não PERGUNTAR.
+    padroes, linhas = _padroes_do_lote(rules, stored, args.n, args.seconds)
+    print("\n===== O QUE VAI SER FEITO, SEM PERGUNTAR =====")
+    for linha in linhas:
+        print(linha)
+    print("\n# Say those five lines to the person in ONE line of prose and keep "
+          "going. Do not ask them to confirm: each of these has a default and "
+          "the default is what they get, so a question here buys a turn of "
+          "waiting and changes nothing. If they want another number, they say "
+          "so and the next render uses it.")
+    # Até onde a fonte vai, para que as janelas escolhidas caibam nela. Sai do
+    # FIM do último segmento e não do começo dele, que é a diferença entre
+    # dizer onde a fala acaba e dizer onde a última frase começa.
+    fim = max((seg.get("end") or seg.get("start") or 0 for seg in segmentos),
+              default=0)
+    print(f"# then, in the SAME turn, pick {padroes['n']} window(s) on the text "
+          f"above and run:\n"
+          f"#   warden lote render {url} --windows <a-b,c-d> "
+          f"--hooks '<gancho 1>|<gancho 2>'"
+          + (f" --campaign {args.campaign}" if args.campaign else "")
+          + (f"\n# the words run to about {int(fim // 60)}:{int(fim % 60):02d}, "
+             f"so every window has to end before that." if fim else ""))
+    return 0
+
+
+def _aprova_as_janelas(srt, janelas, guardadas):
+    """Assina as linhas das janelas escolhidas. ({janela: ok}, [avisos]).
+
+    Automático porque a legenda vem PUBLICADA pelo detentor dos direitos, e é
+    o serviço contratado numa campanha musical: a campanha entrega o material
+    oficial e exige legenda em português, então transcrever e queimar é o
+    trabalho, não uma opinião. A revisão humana linha a linha existia para o
+    que o Whisper inventa; ela não se aplica ao que o dono dos direitos
+    escreveu.
+
+    O que NÃO é automático continua não sendo: uma linha suspeita -- número,
+    palavra repetida, marcador `>>` de auto-legenda -- só é assinada se vier
+    repetida de volta em `--keep`, exatamente como em `warden captions review`.
+    É o portão que foi contornado em 15/09, quando uma linha foi marcada como
+    provavelmente errada e assinada no mesmo fôlego, e "Em 1826" foi para a
+    tela.
+
+    Uma janela que não pôde ser assinada não derruba o lote e não vira legenda
+    errada: ela renderiza SEM legenda e o aviso diz qual `--keep` a libera.
+    """
+    import warden_style as S
+    decididas = {t.strip() for t in (guardadas or [])}
+    linhas = _media()._read_srt(srt)
+    situacao, avisos = {}, []
+    for de, ate in janelas:
+        dentro = [r for r in linhas if r["end"] > de and r["start"] < ate]
+        if not dentro:
+            situacao[(de, ate)] = False
+            avisos.append(f"{de:.1f}-{ate:.1f}s: no caption line falls in this "
+                          f"window, so it renders with no words on screen")
+            continue
+        pendentes = [r for r, _w in linhas_suspeitas(dentro)
+                     if r["text"].strip() not in decididas]
+        if pendentes:
+            situacao[(de, ate)] = False
+            # O `--keep` EXATO, com a linha entre aspas, pronto para colar. A
+            # diferença entre isto e "há uma linha suspeita" é a diferença
+            # entre o clipe sair com legenda e sair mudo numa campanha que
+            # paga pela legenda: uma frase que descreve o problema sem dar o
+            # comando que o resolve é uma frase que custa mais um turno.
+            colar = " ".join(f'--keep "{r["text"].strip()}"' for r in pendentes)
+            avisos.append(
+                f"{de:.1f}-{ate:.1f}s: {len(pendentes)} suspect line(s) are "
+                f"not decided, so this clip renders WITHOUT captions rather "
+                f"than burn a word nobody read. Read each line below against "
+                f"the video; if it is right, re-run this SAME command with "
+                f"these flags appended and the words burn:\n#     {colar}\n"
+                f"#   the lines, as they will appear on screen: "
+                + " | ".join(r["text"].strip() for r in pendentes))
+            continue
+        S.write_approval(srt, start=de, end=ate)
+        situacao[(de, ate)] = True
+    return situacao, avisos
+
+
+def _mosaico_do_lote(mosaicos, destino):
+    """Empilha os contact sheets dos clipes num só. O caminho, ou None.
+
+    UMA conferência visual por lote. Cada clipe continua tendo o seu -- o
+    `deliver` não entrega sem ele, e essa regra não se toca -- mas olhar dois
+    clipes custava duas chamadas de visão de ~14s cada. Esta imagem é as duas
+    numa, e não é um render novo: são os mosaicos que já foram escritos, um
+    embaixo do outro.
+
+    None quando não deu para montar, e quem chama trata None como "não há
+    mosaico do lote", nunca como detalhe: os mosaicos por clipe continuam
+    todos impressos pelo `deliver`.
+    """
+    if not mosaicos:
+        return None
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        abertas = []
+        for nome, caminho in mosaicos:
+            if caminho and os.path.isfile(caminho):
+                abertas.append((nome, Image.open(caminho).convert("RGB")))
+        if not abertas:
+            return None
+        largura = max(im.width for _n, im in abertas)
+        altura = sum(im.height for _n, im in abertas)
+        folha = Image.new("RGB", (largura, altura), (16, 16, 16))
+        y = 0
+        for _nome, im in abertas:
+            folha.paste(im, (0, y))
+            y += im.height
+        folha.save(destino, quality=88)
+        for _n, im in abertas:
+            im.close()
+        return destino
+    except Exception:
+        # Um mosaico que não montou não pode derrubar um lote que renderizou.
+        return None
+
+
+def _lote_render(args):
+    """Baixa as janelas, aprova a legenda delas, renderiza e entrega o lote."""
+    url = args.url
+    registra_link(url, "sent by the person to `warden lote render`")
+    rules = regras_de(args.campaign)
+    stored = P.load(state_dir())
+    entries = avaliza_o_link_de_quem_mandou(url, load_trusted())
+    out = _dir_do_lote()
+    if not args.windows:
+        die("lote render needs --windows: the seconds of the source you chose "
+            "on `warden lote prep`, as 181-201.6,745.5-765", code=2)
+    janelas = _varias_janelas(args.windows)
+    hooks = [h.strip() for h in str(args.hooks or "").split("|")]
+    hooks = [h for h in hooks if h] if args.hooks else []
+
+    padroes, linhas = _padroes_do_lote(rules, stored,
+                                       args.n if args.n is not None else len(janelas),
+                                       args.seconds)
+    for linha in linhas:
+        print(linha, file=sys.stderr)
+    if hooks and len(hooks) < len(janelas):
+        print(f"# {len(janelas)} windows and {len(hooks)} hook(s): the clips "
+              f"past the last hook render with no line on top of the frame.",
+              file=sys.stderr)
+
+    # 1. Só as janelas escolhidas, numa execução do yt-dlp. Os arquivos que
+    # saem daqui têm RELÓGIO PRÓPRIO -- ver `archive_window` -- e é por isso
+    # que o `IN_POINT` de cada um vira o `start` do corte, e não o segundo da
+    # fonte.
+    try:
+        resultados = _media().archive_windows(
+            None, out, url, janelas, trusted=entries)
+    except Exception as exc:
+        die(f"could not pull the windows of {url}: {type(exc).__name__}: {exc}",
+            code=1)
+    _diz_as_janelas(resultados, janelas)
+
+    # 2. A legenda das janelas, assinada sozinha quando ela é a publicada.
+    srt, publicada = args.subtitles, False
+    ficha = os.path.join(out, "lote.legenda.json")
+    if not srt and os.path.isfile(ficha):
+        try:
+            with open(ficha, encoding="utf-8") as fh:
+                carregado = json.load(fh)
+            srt = carregado.get("srt")
+            publicada = bool(carregado.get("published"))
+        except (OSError, ValueError):
+            srt = None
+    elif srt:
+        publicada = True          # passado à mão é uma decisão de quem passou
+    if srt and not os.path.isfile(srt):
+        srt = None
+    queimar = {}
+    if srt and padroes["captions"]:
+        if publicada:
+            queimar, avisos = _aprova_as_janelas(srt, janelas,
+                                                 getattr(args, "keep", None))
+        else:
+            # Transcrição nossa: continua exigindo `warden captions review`.
+            # Assinar em massa o que o Whisper escreveu é exatamente o defeito
+            # que a revisão existe para impedir.
+            queimar = {}
+            avisos = [f"the words in {os.path.basename(srt)} are a "
+                      f"transcription, not a published subtitle, so nothing is "
+                      f"signed automatically. Read them with `warden captions "
+                      f"review {srt} --start <s> --end <s> --approve`."]
+        for aviso in avisos:
+            print(f"# {aviso}", file=sys.stderr)
+    elif srt:
+        print("# captions are off for this batch, so nothing is signed or "
+              "burned.", file=sys.stderr)
+
+    # 3. O plano, e o motor do lote que já existe. `lote` é orquestração: uma
+    # segunda implementação de "renderiza N janelas e cobra a conta" é uma
+    # segunda contagem, e a contagem é o que se está consertando.
+    clips = []
+    for i, ((caminho, dentro), (de, ate)) in enumerate(zip(resultados, janelas), 1):
+        clips.append({"out": f"corte-{i:02d}.mp4", "source": caminho,
+                      "start": dentro, "end": dentro + (ate - de),
+                      "hook": hooks[i - 1] if i <= len(hooks) else None,
+                      "subtitles": srt if queimar.get((de, ate)) else None,
+                      "seconds": padroes["seconds"],
+                      "_": f"janela {de:.1f}-{ate:.1f}s da fonte"})
+    plano = {"campaign": args.campaign, "sound": padroes["sound"],
+             "seconds": padroes["seconds"], "crop": args.crop,
+             "clips": clips}
+
+    # Mais de três: os três primeiros saem NESTE turno e o resto vai para o
+    # fundo. Não é um limite de capacidade, é um limite de silêncio: um render
+    # mede ~64s, e o quarto clipe empurra a primeira entrega para além de
+    # quatro minutos com nada na tela. Quem espera clipe prefere três agora e
+    # dois depois a cinco daqui a vinte minutos.
+    depois = []
+    if len(clips) > LOTE_INLINE:
+        resto = clips[LOTE_INLINE:]
+        plano["clips"] = clips[:LOTE_INLINE]
+        caminho_resto = os.path.join(out, "lote-resto.json")
+        sobra = dict(plano)
+        sobra["clips"] = resto
+        try:
+            with open(caminho_resto, "w", encoding="utf-8") as fh:
+                json.dump(sobra, fh, ensure_ascii=False, indent=1)
+            # Desacoplado de propósito: este processo termina quando o turno
+            # termina, e o render que sobrou não pode morrer junto. Quando ele
+            # acaba, o fim dele é o que acorda o agente.
+            registro = open(os.path.join(out, "lote-resto.log"), "wb")
+            try:
+                subprocess.Popen(
+                    [sys.executable, os.path.abspath(__file__), "cut",
+                     "--plan", caminho_resto],
+                    stdout=registro, stderr=subprocess.STDOUT,
+                    start_new_session=True)
+            finally:
+                # O filho já herdou o descritor; segurar o nosso só deixaria
+                # um arquivo aberto neste processo até ele morrer.
+                registro.close()
+            depois = [c["out"] for c in resto]
+            print(f"# {len(clips)} clips asked for, and {LOTE_INLINE} come out "
+                  f"in this turn. The other {len(resto)} started rendering in "
+                  f"the background from {caminho_resto}; their finishing is "
+                  f"what wakes you for them. Deliver these first {LOTE_INLINE} "
+                  f"now instead of waiting for all {len(clips)}.",
+                  file=sys.stderr)
+        except Exception as exc:
+            # Falhou o background: renderiza tudo aqui mesmo. Entregar menos
+            # clipes do que foram pedidos porque um Popen não subiu seria a
+            # falta de 14/09 com outra desculpa.
+            plano["clips"] = clips
+            depois = []
+            print(f"# could not start the background render "
+                  f"({type(exc).__name__}: {exc}), so all {len(clips)} clips "
+                  f"render in this turn instead. It will take longer and "
+                  f"nothing is lost.", file=sys.stderr)
+
+    argumentos = argparse.Namespace(
+        plan=None, campaign=args.campaign, source=None,
+        sound=padroes["sound"], seconds=padroes["seconds"], any_length=False)
+    liberados, failed, asked, mosaicos = executa_o_plano(plano, argumentos)
+    folha = _mosaico_do_lote(mosaicos, os.path.join(out, "lote-contato.jpg"))
+    return conta_do_lote(liberados, failed, asked, sheet=folha, depois=depois)
+
+
+def cmd_lote(args):
+    """Do link aos clipes em duas saídas, em vez de sete comandos.
+
+    `prep` é tudo o que o modelo precisa para ESCOLHER as janelas: o material,
+    o texto, o digest, os sinais e os padrões que serão usados -- numa leitura
+    só. `render` é tudo o que vem depois de escolhê-las: as janelas baixadas, a
+    legenda assinada, os N renders, um contact sheet do lote e as linhas
+    `MEDIA:` juntas no fim.
+
+    Nenhuma das duas pergunta nada. A decisão do dono, de 15/09/2026: no máximo
+    UMA mensagem com perguntas antes do primeiro clipe, e só quando o pedido
+    não diz nem quantidade nem duração.
+    """
+    if args.action == "prep":
+        return _lote_prep(args)
+    if args.action == "render":
+        return _lote_render(args)
+    die(f"unknown lote action {args.action!r}")
 
 
 # O log do gateway é o ÚNICO registro independente de que um anexo saiu.
@@ -2530,6 +3512,37 @@ GATEWAY_LOG = os.environ.get("WARDEN_GATEWAY_LOG",
                              "/var/lib/hermes/logs/gateway.log")
 _SAIU = "Sending video attachment"
 _FALHOU = "Failed to send media"
+_ANUNCIOU = re.compile(r"Delivering (\d+) non-image MEDIA")
+
+# O state.db do Hermes é o registro do que ESTE agente escreveu, e é o que o
+# log do gateway não tem: o caminho do arquivo.
+#
+# Medido em 15/09/2026, e é a razão de este bloco existir. O `warden delivered`
+# de antes não verificava clipe nenhum: ele contava QUALQUER "Sending video
+# attachment" no gateway.log desde que o clipe foi liberado. Num lote de dois,
+# o clipe 1 saindo fazia o comando confirmar o clipe 2 também -- o clipe
+# PERDIDO era riscado pelo anexo do outro. A conta que ele fazia respondia
+# "algum anexo saiu?", e a pergunta é "ESTE arquivo saiu?".
+#
+# O state.db responde essa. Cada mensagem do assistente está lá com o texto e
+# com o `finish_reason`, e é o `finish_reason` que decide o destino do anexo:
+#   `stop`        -> mensagem FINAL do turno. O gateway lê o MEDIA:. 8 de 8.
+#   `tool_calls`  -> mensagem do MEIO do turno. O gateway descarta. 0 de 5.
+# Então "o caminho aparece numa mensagem com finish_reason=stop" é a única
+# afirmação verificável de que aquele clipe foi anexado, e o gateway.log
+# confirma que o anexo realmente subiu depois dela.
+#
+# O schema é INTERNO do Hermes e pode mudar a cada atualização dele. Por isso
+# tudo aqui degrada para "não consegui verificar" -- nunca para uma exceção e
+# nunca para um silêncio que pareça confirmação. Ler é só leitura: `mode=ro`,
+# que não cria arquivo, não roda migração e não mexe no WAL de quem está
+# escrevendo.
+STATE_DB = os.environ.get("WARDEN_STATE_DB", "/var/lib/hermes/state.db")
+
+# As colunas que esta verificação lê, e nada além delas. Uma a menos e o
+# comando diz que o schema mudou, em vez de estourar um `sqlite3.OperationalError`
+# no meio de uma entrega.
+_COLUNAS_ESPERADAS = ("role", "content", "timestamp", "finish_reason")
 
 
 def _carimbo_do_log(linha):
@@ -2550,30 +3563,161 @@ def _carimbo_do_log(linha):
 
 
 def envios_desde(quando):
-    """(anexos que saíram, falhas de envio) no log do gateway, depois de `quando`.
+    """O que o log do gateway registrou depois de `quando`.
 
-    `None, None` quando não há log para ler -- que é diferente de zero. Zero é
-    uma medida; "não consegui olhar" não é, e tratar os dois como a mesma coisa
-    é como este projeto perdeu clipe antes.
+    Devolve {"saiu", "falhou", "anunciados"} -- anexos de vídeo que subiram,
+    falhas de envio, e quantos MEDIA o gateway disse que ia entregar
+    ("Delivering N non-image MEDIA") -- ou None quando não há log para ler.
+
+    None é diferente de zero, e a diferença é o projeto inteiro: zero é uma
+    medida, "não consegui olhar" não é, e tratar os dois como a mesma coisa é
+    como este projeto perdeu clipe antes.
     """
     if not os.path.isfile(GATEWAY_LOG):
-        return None, None
-    saiu, falhou = 0, 0
+        return None
+    saiu, falhou, anunciados = 0, 0, 0
     try:
         with open(GATEWAY_LOG, encoding="utf-8", errors="replace") as fh:
             for linha in fh:
-                if _SAIU not in linha and _FALHOU not in linha:
+                anuncio = _ANUNCIOU.search(linha)
+                if _SAIU not in linha and _FALHOU not in linha and not anuncio:
                     continue
                 t = _carimbo_do_log(linha)
                 if t is None or t < float(quando) - 2:
                     continue
-                if _FALHOU in linha:
+                if anuncio:
+                    try:
+                        anunciados += int(anuncio.group(1))
+                    except ValueError:
+                        pass
+                elif _FALHOU in linha:
                     falhou += 1
                 else:
                     saiu += 1
     except OSError:
-        return None, None
-    return saiu, falhou
+        return None
+    return {"saiu": saiu, "falhou": falhou, "anunciados": anunciados}
+
+
+def _carimbo_da_mensagem(valor):
+    """Segundos epoch do `timestamp` de uma linha do state.db, ou None.
+
+    O Hermes é de outra equipe e o formato desta coluna é dele: já foi visto
+    como epoch (int ou float) e como texto ISO. Ler os dois é mais barato que
+    depender de qual deles a próxima versão vai gravar -- e quando não é
+    nenhum dos dois, isto devolve None e quem chama trata como "não deu para
+    ler a hora", nunca como zero.
+    """
+    if isinstance(valor, (int, float)):
+        return float(valor)
+    texto = str(valor or "").strip()
+    if not texto:
+        return None
+    try:
+        return float(texto)
+    except ValueError:
+        pass
+    try:
+        return datetime.fromisoformat(texto.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        pass
+    return _carimbo_do_log(texto)
+
+
+def mensagem_que_citou(caminho):
+    """O que o state.db diz sobre a última mensagem do agente que citou `caminho`.
+
+    Uma das cinco respostas, e nenhuma delas é um palpite:
+
+      {"estado": "ilegivel", "porque": <frase>}  -- não deu para ler o registro
+      {"estado": "ausente"}                      -- nenhuma mensagem citou o arquivo
+      {"estado": "meio-do-turno", ...}           -- citou, mas com tool_calls depois
+      {"estado": "final", ...}                   -- citou na mensagem final do turno
+
+    `ilegivel` cobre tudo o que pode dar errado ao ler um banco de outra
+    equipe: arquivo ausente, sqlite recusando abrir, WAL travado por quem está
+    escrevendo, schema com outras colunas. Cada um traz a sua frase, porque
+    "não verifiquei" sem dizer o que não deu para ler é uma frase que ninguém
+    consegue consertar.
+    """
+    import sqlite3
+    alvo = os.path.abspath(os.path.expanduser(str(caminho or "")))
+    if not os.path.isfile(STATE_DB):
+        return {"estado": "ilegivel",
+                "porque": f"the Hermes state.db is not at {STATE_DB}, so "
+                          f"nothing here can read which of your messages "
+                          f"carried this path"}
+    con = None
+    try:
+        # Somente leitura, e é uma exigência e não um detalhe: este banco é de
+        # outro processo que está escrevendo nele agora. `mode=ro` não cria
+        # arquivo, não roda migração e não toca no journal de quem escreve.
+        con = sqlite3.connect("file:" + STATE_DB + "?mode=ro", uri=True,
+                              timeout=5.0)
+        colunas = {linha[1] for linha in
+                   con.execute("PRAGMA table_info(messages)").fetchall()}
+        if not colunas:
+            return {"estado": "ilegivel",
+                    "porque": f"{STATE_DB} has no `messages` table, so this is "
+                              f"not the schema this check was written against "
+                              f"(the Hermes schema is internal and changes with "
+                              f"its updates)"}
+        faltando = [c for c in _COLUNAS_ESPERADAS if c not in colunas]
+        if faltando:
+            return {"estado": "ilegivel",
+                    "porque": f"the `messages` table in {STATE_DB} has no "
+                              f"{', '.join(faltando)} column, so this check "
+                              f"cannot tell a final message from a mid-turn one "
+                              f"(the Hermes schema is internal and changes with "
+                              f"its updates)"}
+        # O LIKE filtra no sqlite e o `in` confere em Python: o LIKE é para não
+        # arrastar a conversa inteira para a memória, e a conferência é porque
+        # `_` e `%` são curingas do LIKE e um caminho de arquivo tem `_`.
+        linhas = con.execute(
+            "SELECT content, timestamp, finish_reason FROM messages "
+            "WHERE role = 'assistant' AND content LIKE ? "
+            "ORDER BY id DESC LIMIT 200",
+            ("%MEDIA:%" + os.path.basename(alvo) + "%",)).fetchall()
+    except sqlite3.OperationalError as exc:
+        # "database is locked" é o WAL de quem está escrevendo, e é o caso
+        # mais provável de todos: o gateway grava a conversa enquanto isto lê.
+        travado = "locked" in str(exc).lower() or "busy" in str(exc).lower()
+        return {"estado": "ilegivel",
+                "porque": (f"{STATE_DB} is locked by whoever is writing to it "
+                           f"({exc}), so this check could not read your "
+                           f"messages") if travado else
+                          (f"{STATE_DB} did not open for reading ({exc})")}
+    except sqlite3.Error as exc:
+        return {"estado": "ilegivel",
+                "porque": f"{STATE_DB} is not readable as a sqlite database "
+                          f"({type(exc).__name__}: {exc})"}
+    except OSError as exc:
+        return {"estado": "ilegivel",
+                "porque": f"{STATE_DB} could not be opened "
+                          f"({type(exc).__name__}: {exc})"}
+    except Exception as exc:
+        # A rede de segurança final. O schema do Hermes é interno: uma coluna
+        # que troca de tipo, um `content` que vira BLOB, uma versão do sqlite
+        # que levanta outra coisa. Nenhuma dessas pode virar um traceback no
+        # meio de uma entrega -- todas viram "não consegui verificar".
+        return {"estado": "ilegivel",
+                "porque": f"reading {STATE_DB} failed in a way this check does "
+                          f"not know ({type(exc).__name__}: {exc}). The Hermes "
+                          f"schema is internal and changes with its updates"}
+    finally:
+        if con is not None:
+            try:
+                con.close()
+            except Exception:
+                pass
+    for content, quando, finish in linhas:
+        texto = content if isinstance(content, str) else str(content or "")
+        if ("MEDIA:" + alvo) not in texto and ("MEDIA:" + str(caminho)) not in texto:
+            continue
+        ts = _carimbo_da_mensagem(quando)
+        estado = "final" if (finish or "") == "stop" else "meio-do-turno"
+        return {"estado": estado, "at_ts": ts, "finish_reason": finish}
+    return {"estado": "ausente"}
 
 
 def cmd_delivered(args):
@@ -2587,9 +3731,14 @@ def cmd_delivered(args):
     promessa. Antes, este comando acreditava no modelo: ele dizia "entreguei" e
     o clipe era riscado. Isso valia zero, porque o caso que se quer pegar é
     justamente aquele em que o modelo acha que entregou e não entregou -- foi o
-    que aconteceu três vezes seguidas. Agora o comando vai ao log do gateway e
-    pergunta se um anexo realmente saiu depois que aquele clipe foi liberado.
-    Sem essa linha, ele RECUSA riscar.
+    que aconteceu três vezes seguidas.
+
+    E a versão seguinte, que lia o gateway.log, valia quase zero pelo mesmo
+    motivo por outro caminho: ela contava QUALQUER anexo saído desde que o
+    clipe foi liberado, sem olhar o caminho. Num lote de dois, o anexo do
+    clipe 1 confirmava o clipe 2 -- o comando riscava como entregue exatamente
+    o clipe que se perdeu. Agora a pergunta é por ARQUIVO: em qual mensagem
+    sua este caminho apareceu, e essa mensagem foi a FINAL do turno?
     """
     if args.clip:
         registro = entregas_registro(args.clip)
@@ -2599,34 +3748,73 @@ def cmd_delivered(args):
                   f"the last {PRAZO_ENTREGA_H}h.", file=sys.stderr)
             return 1 if entregas_pendentes() else 0
 
-        saiu, falhou = envios_desde(registro["at_ts"])
-        if saiu is None:
-            # Nada para ler não é permissão para acreditar. Mas travar a
-            # entrega inteira porque o log mudou de lugar seria pior que o
-            # defeito: aqui se risca e se diz, em voz alta, o que não foi
-            # possível verificar.
-            entregas_confirma(args.clip)
-            print(f"confirmed: {os.path.basename(args.clip)} -- but NOT "
-                  f"verified: {GATEWAY_LOG} is not readable from here, so "
-                  f"nothing independent says the attachment went out.",
-                  file=sys.stderr)
-        elif falhou:
-            print(f"NOT confirming {os.path.basename(args.clip)}: the gateway "
-                  f"logged {falhou} media send failure(s) since this clip was "
-                  f"cleared. The person does not have it. Send it again, in "
-                  f"the LAST message of your turn, and say in one line that "
-                  f"you are resending.", file=sys.stderr)
-        elif saiu < 1:
-            print(f"NOT confirming {os.path.basename(args.clip)}: no attachment "
-                  f"has left this machine since it was cleared. A `MEDIA:` "
-                  f"line written anywhere but the LAST message of a turn "
-                  f"attaches nothing, silently -- that is how two clips were "
-                  f"lost. Put it in the final message and end the turn.",
-                  file=sys.stderr)
+        nome = os.path.basename(args.clip)
+        citou = mensagem_que_citou(args.clip)
+        estado = citou.get("estado")
+        if estado == "ausente":
+            # (a) Ninguém escreveu esta linha em lugar nenhum. Não é um envio
+            # que falhou, é um envio que nunca foi tentado.
+            print(f"NOT sent: nenhuma mensagem sua citou esse arquivo. "
+                  f"{nome} was rendered and cleared, and no message of yours "
+                  f"in this conversation carries its MEDIA: line. The person "
+                  f"does not have it. Put `MEDIA:{os.path.abspath(args.clip)}` "
+                  f"in the FINAL message of a turn.", file=sys.stderr)
+        elif estado == "meio-do-turno":
+            # (b) O caso medido: a linha existe, o arquivo existe, e o anexo
+            # foi descartado porque o turno continuou depois dela.
+            ts = citou.get("at_ts")
+            hora = (datetime.fromtimestamp(ts).strftime("%H:%M")
+                    if ts else "??:??")
+            print(f"NOT sent: MEDIA escrito no meio do turno (msg às {hora}). "
+                  f"Esse anexo foi descartado. Repita essa linha MEDIA: na "
+                  f"mensagem FINAL. The message that carried {nome} ended with "
+                  f"finish_reason={citou.get('finish_reason')!r}, not 'stop': "
+                  f"another tool call came after it, and the gateway reads "
+                  f"MEDIA: only from the last message of a turn (measured "
+                  f"15/09: 0 of 5 mid-turn lines arrived, 8 of 8 final ones "
+                  f"did).", file=sys.stderr)
+        elif estado == "final":
+            log = envios_desde(citou.get("at_ts") or registro["at_ts"])
+            if log is None:
+                # Metade lida é melhor que nenhuma, e ela é dita como metade.
+                entregas_confirma(args.clip)
+                print(f"confirmed: {nome} -- the message carrying its MEDIA: "
+                      f"line was the final one of a turn, which is what "
+                      f"attaches. NOT verified beyond that: {GATEWAY_LOG} is "
+                      f"not readable from here, so nothing independent says the "
+                      f"attachment actually left the machine.", file=sys.stderr)
+            elif log["falhou"]:
+                print(f"NOT confirming {nome}: the gateway logged "
+                      f"{log['falhou']} media send failure(s) after the message "
+                      f"that carried it. The person does not have it. Send it "
+                      f"again, in the LAST message of your turn, and say in one "
+                      f"line that you are resending.", file=sys.stderr)
+            elif log["saiu"] < 1:
+                print(f"NOT confirming {nome}: the message carrying its MEDIA: "
+                      f"line was a final one, but the gateway logged no video "
+                      f"attachment leaving after it"
+                      + (f" (it announced {log['anunciados']} MEDIA and sent "
+                         f"none)" if log["anunciados"] else "")
+                      + ". Send it again in the LAST message of a turn.",
+                      file=sys.stderr)
+            else:
+                entregas_confirma(args.clip)
+                print(f"confirmed: {nome} -- its MEDIA: line was in a final "
+                      f"message"
+                      + (f", the gateway announced {log['anunciados']} MEDIA"
+                         if log["anunciados"] else "")
+                      + f" and {log['saiu']} video attachment(s) left after it.")
         else:
+            # Não deu para ler o registro. Riscar em silêncio seria a mentira
+            # que este comando existe para não contar, e travar a entrega
+            # porque um banco de outra equipe mudou seria pior que o defeito.
+            # Então risca e diz, em voz alta, o que não foi possível ler.
             entregas_confirma(args.clip)
-            print(f"confirmed: {os.path.basename(args.clip)} "
-                  f"({saiu} attachment(s) left the machine since it cleared)")
+            print(f"{nome}: NOT verified -- {citou.get('porque')}. Crossing it "
+                  f"off anyway, because a batch cannot stop on a record this "
+                  f"command does not own. Nothing here says this clip arrived: "
+                  f"if the person has not said they got it, ask.",
+                  file=sys.stderr)
         pendentes = entregas_pendentes()
     else:
         pendentes = entregas_pendentes()
@@ -2638,10 +3826,16 @@ def cmd_delivered(args):
           f"as sent:", file=sys.stderr)
     for row in pendentes:
         print(f"  {row['clip']}", file=sys.stderr)
+    # A frase que estava aqui -- "não termine o turno enquanto este comando
+    # sair 1" -- pedia uma condição impossível, e foi ela que travou o pedido
+    # de 15/09: o anexo só sai QUANDO o turno termina, então o comando não
+    # pode ver o envio antes do fim do turno, e o agente não pode terminar o
+    # turno antes de o comando ver. Os dois ficavam esperando um pelo outro.
     print("Each one is a file the person does not have. Put its `MEDIA:` line "
-          "in the LAST message of a turn -- nowhere else delivers -- then run "
-          "this again. Do not end your turn while this command exits 1.",
-          file=sys.stderr)
+          "in the LAST message of a turn -- all of them in the SAME last "
+          "message, nowhere else delivers. Rode este comando no INÍCIO do "
+          "turno seguinte. Ele não pode confirmar um envio que ainda não "
+          "aconteceu.", file=sys.stderr)
     return 1
 
 
@@ -2693,6 +3887,19 @@ def cmd_prefs(args):
                          indent=2, ensure_ascii=False))
         return 0
     if args.action == "ask":
+        # O grupo `edit` deixou de ter perguntas em 15/09/2026, e a saída diz
+        # isso em vez de listar o que "falta". Todas as preferências de edição
+        # têm padrão agora -- inclusive `sound` -- então listar as não
+        # respondidas era entregar ao modelo uma lista de perguntas a fazer
+        # antes do primeiro clipe. Medido no pedido de 15/09: 10min34s dos
+        # 26min22s até o único clipe foram perguntas, e nenhuma mudou um
+        # quadro. O grupo `search` continua igual: lá a resposta muda QUAIS
+        # campanhas aparecem, e adivinhar o nicho de alguém é entregar a lista
+        # errada.
+        if args.group == "edit":
+            print("nothing to ask before a clip: every edit preference has a "
+                  "default")
+            return 0
         left = P.missing(prefs, args.group)
         for key in left:
             question = next(q for q in P.QUESTIONS if q[0] == key)
@@ -2719,9 +3926,11 @@ def cmd_prefs(args):
                 die(f"{args.key} takes one of: {', '.join(allowed)}")
         prefs[args.key] = value
         P.save(state_dir(), prefs)
-        left = P.missing(prefs, P.GROUPS[args.key])
-        print(f"{args.key} = {value}"
-              + (f", still to ask: {', '.join(left)}" if left else ", nothing left to ask"))
+        # Só `chave = valor`. O "still to ask: ..." que saía aqui era uma lista
+        # de perguntas entregue ao modelo no exato momento em que ele acabava
+        # de gravar uma resposta -- e ele fazia todas, uma por mensagem. Não
+        # falta nada antes de um clipe: toda preferência de edição tem padrão.
+        print(f"{args.key} = {value}")
         return 0
     die(f"unknown prefs action {args.action!r}")
 
@@ -2742,13 +3951,22 @@ def main(argv=None):
 
     p = sub.add_parser("check")
     p.add_argument("video")
-    p.add_argument("--campaign", required=True)
+    # Sem campanha isto vira uma medição em vez de um veredito. Ver
+    # `cmd_check`: exigir a campanha aqui deixava um link solto sem saída
+    # nenhuma, porque a persona manda citar número do `warden` e a skill
+    # proíbe inventar uma campanha para passar do flag.
+    p.add_argument("--campaign", help="judge against this campaign's rules. "
+                                      "Without it the file is only MEASURED, "
+                                      "and the verdict says so")
     p.add_argument("--caption", help="path, or - for stdin")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_check)
 
     p = sub.add_parser("package")
-    p.add_argument("--campaign", required=True)
+    p.add_argument("--campaign", help="the hashtags, mentions and exact "
+                                      "wording this campaign requires. Without "
+                                      "it the caption is the hook and nothing "
+                                      "else, and it says so")
     p.add_argument("--hook", default="")
     p.set_defaults(func=cmd_package)
 
@@ -2761,12 +3979,43 @@ def main(argv=None):
     p.add_argument("--title", help="the video title; at most 100 characters")
     p.add_argument("--privacy", default="private",
                    choices=["private", "unlisted", "public"],
-                   help="private by default, and an unverified app cannot do "
-                        "better: YouTube forces private on uploads from "
-                        "unverified projects. The owner flips it in one tap.")
+                   help="private by default, and an unaudited project cannot "
+                        "do better: until this project passes the YouTube API "
+                        "Services audit, YouTube LOCKS the upload as private, "
+                        "and that does not come undone in Studio or by appeal "
+                        "(support.google.com/youtube/answer/7300965). Only the "
+                        "audit lifts it, and Google publishes no deadline for "
+                        "one.")
     p.add_argument("--wait", type=float, default=300,
                    help="seconds to wait for the phone approval (default 300)")
     p.set_defaults(func=cmd_youtube)
+
+    # O comando que a persona já mandava usar e que não existia. Sem ele o
+    # agente levava `invalid choice: 'post'` e código 2 -- que não é o estado
+    # "desligado" que a persona previu, então a rota de fallback nunca era
+    # acionada e ele prometia uma publicação que não acontecia.
+    p = sub.add_parser("post",
+                       help="publish through the audited intermediary -- the "
+                            "path that does NOT get locked as private")
+    p.add_argument("action", choices=["youtube", "status"])
+    p.add_argument("file", nargs="?", help="the clip to publish")
+    p.add_argument("--title", help="the video title; at most 100 characters, "
+                                   "and this refuses a longer one rather than "
+                                   "truncating it in silence")
+    p.add_argument("--description", default="", help="the video description")
+    p.add_argument("--privacy", default="public",
+                   choices=["public", "unlisted", "private"],
+                   help="public by default, and unlike `warden youtube "
+                        "publish` that default actually holds: the "
+                        "intermediary's app is audited, so YouTube does not "
+                        "lock the upload as private. Measured public on "
+                        "15/09/2026.")
+    p.add_argument("--shorts", action="store_true",
+                   help="append #Shorts to the description. A HINT only -- "
+                        "YouTube decides what a Short is from the file itself")
+    p.add_argument("--wait", type=float, default=300,
+                   help="seconds to wait for the upload to finish (default 300)")
+    p.set_defaults(func=cmd_post)
 
     p = sub.add_parser("tiktok",
                        help="upload a finished clip to the TikTok inbox as a draft")
@@ -2796,7 +4045,12 @@ def main(argv=None):
 
     p = sub.add_parser("authorize")
     p.add_argument("url")
-    p.add_argument("--campaign", required=True)
+    # Deixou de ser obrigatória em 15/09/2026. Sem campanha não existe lista a
+    # consultar, e a resposta é sim: o link veio da pessoa.
+    p.add_argument("--campaign", help="check the link against THIS campaign's "
+                                      "published archive. Without it the "
+                                      "answer is yes, because the person sent "
+                                      "the link")
     p.set_defaults(func=cmd_authorize)
 
     p = sub.add_parser("tracks")
@@ -2817,11 +4071,17 @@ def main(argv=None):
 
     p = sub.add_parser("archive")
     p.add_argument("--campaign", help="the campaign whose archive to pull from")
-    p.add_argument("--trusted", metavar="URL",
-                   help="a single link from the owner's trusted list, when "
-                        "there is no campaign. Same gate, different list: "
-                        "`warden trusted check` decides, and an unvouched "
-                        "source is refused before a byte comes down.")
+    # `--link` é o nome que descreve o que isto é hoje: o endereço que a pessoa
+    # mandou. `--trusted` continua funcionando porque é o que as skills e as
+    # conversas antigas escrevem, e um flag que some é um comando que quebra
+    # na mão de quem já sabia usá-lo. Mesmo destino, então os dois são a mesma
+    # coisa e não há dois caminhos para manter.
+    p.add_argument("--trusted", "--link", metavar="URL",
+                   help="the link the person sent, when there is no campaign. "
+                        "Sending it is the authorisation: the owner's trusted "
+                        "list still vouches for links the agent goes looking "
+                        "for on its own, and this one is added to it for the "
+                        "pull, with a line in links.json as the trail.")
     p.add_argument("--out")
     p.add_argument("--limit", type=int)
     p.add_argument("--window",
@@ -2916,6 +4176,37 @@ def main(argv=None):
                    "this flag is required, because the centre is a guess and a "
                    "guess ships the subject's face sliced at the edge")
     p.set_defaults(func=cmd_cut)
+
+    # O caminho do link até os clipes, em duas chamadas em vez de sete. Ver o
+    # comentário de `cmd_lote`: a medição de 15/09 é de 35 chamadas do modelo
+    # para dois clipes, e a meta é ~4.
+    p = sub.add_parser("lote",
+                       help="link -> clipes em duas saídas: `prep` junta tudo "
+                            "para escolher as janelas, `render` faz o resto")
+    p.add_argument("action", choices=["prep", "render"])
+    p.add_argument("url")
+    p.add_argument("--campaign", help="as regras dessa campanha; sem ela o "
+                                      "lote roda igual, com tudo marcado como "
+                                      "não conferido")
+    p.add_argument("--n", type=int, help="quantos clipes. Sem isto, o padrão "
+                                         "do dono, que é 2")
+    p.add_argument("--seconds", type=float,
+                   help="a duração que a PESSOA pediu. Sem isto, o padrão do "
+                        "dono, que é 20s, dentro dos limites da campanha")
+    p.add_argument("--windows", help="render: as janelas escolhidas na fonte, "
+                                     "como 181-201.6,745.5-765")
+    p.add_argument("--hooks", help="render: os ganchos, um por janela, "
+                                   "separados por | ")
+    p.add_argument("--subtitles", help="render: um SRT já lido e aprovado, em "
+                                       "vez do que o `prep` escreveu")
+    p.add_argument("--keep", action="append", metavar="LINE",
+                   help="render: uma linha suspeita repetida de volta, exata, "
+                        "querendo dizer que você a leu e ela está certa. Sem "
+                        "isto a janela dela renderiza SEM legenda, nunca com "
+                        "uma palavra que ninguém leu")
+    p.add_argument("--crop", help="render: qual lado de uma fonte mais larga "
+                                  "fica, como em `warden cut --crop`")
+    p.set_defaults(func=cmd_lote)
 
     p = sub.add_parser("style")
     p.add_argument("action", choices=["extract", "check"])
