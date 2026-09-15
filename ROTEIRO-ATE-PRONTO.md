@@ -30,12 +30,32 @@ dependência ausente causa silêncio.
 
 ## Bloco B. Qualidade visual
 
-Hook que sai da tela depois de ~3s em vez de ficar os 20 segundos. Quebra de
-cue por fronteira sintática e não só por tempo. Destaque palavra a palavra.
-Mais as três pendências do briefing anterior (renomear o spec de scenepack,
-cruzamento da métrica de pixel, varredura de descarte silencioso).
+Os seis itens estão no código, todos verificáveis no arquivo:
 
-Fecha quando: os mesmos dois cortes saem de novo e nenhum item da lista abaixo
+- **O hook sai da tela aos 3s**, com fade de 0,4s (`HOOK_SECONDS`,
+  `HOOK_FADE_S` em `warden_style`), e o sidecar anota `seconds_on_screen`. Em
+  14/09 a frase estava nos oito quadros do mosaico, de 1,2s a 18,8s.
+- **A cue quebra por fronteira sintática**, não só por tempo: `NAO_FECHA_CUE`
+  lista as palavras que não podem fechar uma cue, e a cue pode estender até
+  `CUE_TOLERANCIA_S = 1,0` além do alvo de 2,2s para alcançar uma vírgula.
+- **Destaque palavra a palavra**: a legenda deixou de ser PNG do PIL e virou ASS
+  queimado pelo libass, com `{\k}`. O hook continua PNG, porque é medido antes
+  de ser desenhado.
+- **O spec foi renomeado** para `SPECS/estilo-aprovado-scenepack.json`, e
+  `specs_path_antigo()` existe só para dizer onde ela foi parar.
+- **A métrica de pixel é cruzada com o `-estilo.json`**: reprova quando os dois
+  instrumentos apontam largura demais, e quando discordam diz qual é qual em vez
+  de calar um.
+- **O descarte deixou de ser silencioso**: `_merge_spans` anexa em `descartes` o
+  que jogou fora e por quê, e o `cut` recusa queimar legenda sem libass em vez
+  de entregar clipe sem legenda.
+
+**O bloco NÃO está fechado.** O critério dele é os mesmos dois cortes saírem de
+novo e nenhum item aparecer no contact sheet, e essa rodada não aconteceu: o que
+existe é código e teste verde, não clipe olhado. Testes verdes não são um clipe
+visto.
+
+Fecha quando: os mesmos dois cortes saem de novo e nenhum item da lista acima
 aparece no contact sheet.
 
 ## Bloco C. Fidelidade do relatório

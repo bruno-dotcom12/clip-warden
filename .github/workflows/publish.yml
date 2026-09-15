@@ -95,6 +95,12 @@ jobs:
       # checagem, uma imagem quebrada chega à máquina de um host e o defeito
       # aparece como um clipe com o rosto na borda do quadro, não como um build
       # vermelho aqui.
+      #
+      # libass entra pelo mesmo motivo, com uma diferença: ele não degrada, ele
+      # recusa. A legenda deste renderizador é ASS com destaque palavra a
+      # palavra, e o filtro `ass` é opção de compilação do ffmpeg. Uma base que
+      # perca o `--enable-libass` publica verde aqui e faz TODO corte com
+      # legenda parar na máquina de quem instalou.
       - name: o que a imagem precisa ter
         run: |
           IMG="ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
@@ -105,6 +111,7 @@ jobs:
           ok, why = M.face_detection_status()
           assert ok, 'sem detector de rosto: ' + why
           assert S.font_available(), 'sem a fonte Anton'
+          assert M.ffmpeg_tem_filtro('ass'), 'este ffmpeg nao tem o filtro ass: sem libass nenhum corte queima legenda'
           assert os.path.isfile('/opt/hermes/skills/SPECS/estilo-aprovado-scenepack.json')
           import PIL, numpy, faster_whisper, yt_dlp
           print('ok:', why)

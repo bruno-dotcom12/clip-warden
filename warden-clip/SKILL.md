@@ -162,10 +162,35 @@ time-to-first-window from **211s to 30s** on the same source.
 When the source publishes no subtitle, `--text-first` pulls the **audio** — 15 MB
 against 345 MB for the same words — and you transcribe that.
 
-**Do not pull only the chosen windows.** It was measured and it is slower:
-`--download-sections` costs 37s for two windows against 25s for the whole file,
-because each section renegotiates. It saves disk, not time. And with the current
-format selector it silently produces an mp4 with no video track at all.
+### Then pull only the windows you chose
+
+```
+warden archive --campaign <id> --window 181-201.6
+→ /var/lib/hermes/warden/footage/<id>/janela-....mp4
+→ IN_POINT:2.000
+```
+
+It prints `IN_POINT:` because the file it wrote is **not** the source: it is
+that window plus a couple of seconds of keyframe slack. Cut it with
+`--start <IN_POINT> --end <IN_POINT + length>`, never with the source's own
+timestamps, which that file no longer has.
+
+Two things about this path, both measured:
+
+- **It costs disk, not time.** Two windows download in 37s against 25s for the
+  whole file, because each section renegotiates the connection. What it saves is
+  ~340 MB per source. On an 18-minute video the whole file is fine; on a
+  two-hour stream the windows are the only sane way.
+- **It goes through the same archive gate.** `archive_window` refuses a link
+  that is not in `sources.archive_urls` before a single byte comes down, and
+  says so: downloading a slice is still downloading. A fast clip made of
+  unauthorised footage is worse than a slow one — it is rejected *after* the
+  views, and the clipper is the one who loses the work.
+
+The format selector on this path pins `[protocol^=http]` on purpose. Without it
+yt-dlp picks the HLS stream, and `--download-sections` over HLS writes an mp4
+**with no video track, silently**. The tool probes the file and deletes it
+rather than handing it on.
 
 ### The number the person said is the request
 
@@ -184,6 +209,17 @@ had been aligned to transcript boundaries and nobody went back to the number.
 
 Only a campaign rule may override it. When one does, `cut` says which rule, and
 you repeat that to the person. "It came out a bit longer" is not a reason.
+
+### The batch renders in parallel and reports in order
+
+`warden cut --plan` renders two clips at a time and prints each one **the moment
+it is ready** — clip 2 is already rendering while you are looking at clip 1's
+contact sheet. Two at a time, not more: the container has 3 GB and a single
+render with transcription peaked at 1815 MiB. It beats the clock every 15s while
+a render is running, because a minute of silence reads as a dead agent.
+
+That order matters for delivery: look at clip 1's sheet and `send_message` it
+straight away. Do not hold the first clip hostage to the last one.
 
 ### Do not re-cut four times to find the window
 

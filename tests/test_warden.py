@@ -1260,7 +1260,11 @@ class BatchContract(unittest.TestCase):
         self.assertIn("NONE of them has been sent by this command",
                       erro.getvalue())
         # E o que fazer a seguir, dito como tarefa e não como fato consumado.
-        self.assertIn("now send the 2 of them, one send_message each",
+        # A linha mudou de lugar de propósito: ela agora sai SEMPRE que algum
+        # clipe passou, inclusive num lote curto, porque clipe pronto que
+        # ninguém manda é clipe perdido. O que ela tem de continuar dizendo é
+        # quantos e com que ferramenta.
+        self.assertIn("send the 2 that cleared, one send_message each",
                       erro.getvalue())
         self._nunca_afirma_entrega(erro.getvalue() + saida.getvalue())
 
@@ -3529,8 +3533,15 @@ class AprovarUmaJanelaNaoAprovaOArquivo(unittest.TestCase):
                        f"1\n{self._tempo(3.2)} --> {self._tempo(5.0)}\n"
                        f"a janela que alguem leu mesmo\n")
         warden_style.write_approval(curto, start=3.0, end=6.0)
-        r = rules(video={"duration_max_s": 5, "width": 1080, "height": 1920,
-                         "audio": "forbidden"})
+        # `duration_min_s: None` é a correção de uma premissa errada deste
+        # teste, e ela só apareceu na imagem, onde a legenda queima de verdade.
+        # O helper `rules()` traz um mínimo de 10s por padrão: a campanha
+        # esticava o corte de 3s para 10s, a janela que ia queimar virava
+        # 3-13s, e o portão recusava com razão -- sete segundos de legenda que
+        # ninguém tinha lido. O teste culpava o código pelo que era o portão
+        # funcionando.
+        r = rules(video={"duration_min_s": None, "duration_max_s": 5,
+                         "width": 1080, "height": 1920, "audio": "forbidden"})
         saida = os.path.join(self.dir, "janela-a.mp4")
         result = warden_media.cut(preto, saida, r, start=3, end=6,
                                   sound="platform", crop="center",
@@ -3539,3 +3550,716 @@ class AprovarUmaJanelaNaoAprovaOArquivo(unittest.TestCase):
             result["style"]["caption"],
             f"a janela do corte estava aprovada e nada foi queimado: "
             f"{result['notes']}")
+
+
+class OFiscalValeNoCaminhoRapido(unittest.TestCase):
+    """O corte por seções não pode ser porta lateral do acervo.
+
+    O caminho de download é onde a autorização é aplicada: `archive()` só puxa
+    o que está em `sources.archive_urls`. Quando o P1 trocou esse caminho por
+    um que baixa só a janela escolhida, a pergunta que importava não era a
+    velocidade -- era se o fiscal continuava no meio. Um clipe rápido feito de
+    material não autorizado é pior que um clipe lento: ele é reprovado depois
+    das visualizações, e quem perde o trabalho é o clipador."""
+
+    def setUp(self):
+        import warden_media
+        self.M = warden_media
+        self.dir = _temp(self, prefix="warden-fiscal-")
+        self.chamadas = []
+        # Nada de rede. `authorize` ainda busca o TÍTULO do vídeo para poder
+        # nomeá-lo na recusa -- metadado, não conteúdo -- então o que este
+        # teste prova é que nenhum BYTE DE MÍDIA desce: nenhuma chamada com
+        # `--download-sections`, que é o comando que baixa.
+        self._run = warden_media.run
+        warden_media.run = lambda *a, **k: self.chamadas.append(a) or ""
+        self.addCleanup(setattr, warden_media, "run", self._run)
+
+    def _baixou(self):
+        return [c for c in self.chamadas
+                if any("--download-sections" == str(x) for x in (c[0] or []))]
+
+    def _regras(self, *autorizados):
+        return {"schema": 1, "id": "f",
+                "video": {"width": 1080, "height": 1920},
+                "sources": {"archive_urls": list(autorizados)},
+                "caption": {}, "posting": {}}
+
+    def test_fonte_fora_do_acervo_e_recusada_antes_de_baixar_um_byte(self):
+        regras = self._regras("https://www.youtube.com/watch?v=AUTORIZADO01")
+        with self.assertRaises(RuntimeError) as erro:
+            self.M.archive_window(
+                regras, self.dir,
+                "https://www.youtube.com/watch?v=NAOAUTORIZ9", 100.0, 120.0)
+        self.assertIn("refusing to pull a window", str(erro.exception))
+        self.assertEqual(self._baixou(), [],
+                         "baixou mídia apesar da recusa")
+
+    def test_campanha_sem_acervo_nao_autoriza_janela_nenhuma(self):
+        with self.assertRaises(RuntimeError) as erro:
+            self.M.archive_window(
+                self._regras(), self.dir,
+                "https://www.youtube.com/watch?v=QualquerUm1", 10.0, 30.0)
+        self.assertIn("publishes no archive", str(erro.exception))
+        self.assertEqual(self._baixou(), [])
+
+    def test_a_recusa_diz_que_baixar_um_pedaco_e_baixar(self):
+        """A mensagem tem de fechar a saída mental de 'é só um pedacinho'."""
+        with self.assertRaises(RuntimeError) as erro:
+            self.M.archive_window(
+                self._regras("https://www.youtube.com/watch?v=AUTORIZADO01"),
+                self.dir, "https://www.youtube.com/watch?v=NAOAUTORIZ9", 1, 2)
+        texto = str(erro.exception)
+        self.assertIn("Downloading a slice is still downloading", texto)
+        self.assertIn("unauthorised footage is", texto)
+
+    def test_carimbo_de_tempo_no_formato_que_o_ytdlp_entende(self):
+        self.assertEqual(self.M._carimbo(0), "00:00:00.000")
+        self.assertEqual(self.M._carimbo(3661.5), "01:01:01.500")
+        self.assertEqual(self.M._carimbo(-5), "00:00:00.000")
+
+
+# ═══════════════════════════════════════════════════ o lote, e o que ele espera
+#
+# Fase 3. O lote deixou de renderizar um de cada vez. Tudo abaixo guarda o que
+# essa troca põe em risco: a ordem da tela, o teto de memória, o clipe vizinho
+# de um que explodiu, e o silêncio enquanto se espera.
+
+class _LoteEmParalelo:
+    """Encanamento comum dos testes de lote: uma campanha, um `cut` de mentira
+    e uma `deliver` de mentira.
+
+    Nem ffmpeg nem disco, de propósito. O que estes testes medem é o LAÇO de
+    `cmd_cut_plan` -- quem renderiza junto com quem, e quem é impresso em que
+    ordem. Um render de verdade não acrescentaria nenhuma dessas respostas: só
+    acrescentaria dezenas de segundos e a chance de o teste ficar vermelho por
+    um codec da máquina. `BatchContract`, logo acima, já roda o caminho inteiro
+    com ffmpeg de verdade; estes ficam com o encanamento.
+    """
+
+    def montar(self, cut, paralelo=None):
+        import warden_media
+        self.dir = _temp(self, prefix="warden-lote-par-")
+        self.cid = "lote-paralelo"
+        r = rules(id=self.cid,
+                  video={"duration_min_s": 1, "duration_max_s": 5,
+                         "width": 1080, "height": 1920, "audio": "forbidden"},
+                  caption={"required_hashtags": [], "required_mentions": [],
+                           "banned_terms": []})
+        os.makedirs(os.path.dirname(warden.campaign_path(self.cid)), exist_ok=True)
+        with open(warden.campaign_path(self.cid), "w") as fh:
+            json.dump(r, fh)
+
+        anterior = warden_media.cut
+        warden_media.cut = cut
+        self.addCleanup(setattr, warden_media, "cut", anterior)
+
+        # `deliver` de mentira: imprime a única linha que estes testes leem e
+        # devolve 0. A entrega de verdade sonda o arquivo com ffprobe e escreve
+        # um contact sheet -- coisas que têm os seus próprios testes e que aqui
+        # só atrapalhariam.
+        def _deliver(result, regras, campanha, ledger):
+            print("MEDIA:" + result["out"])
+            return 0
+
+        entrega = warden.deliver
+        warden.deliver = _deliver
+        self.addCleanup(setattr, warden, "deliver", entrega)
+
+        if paralelo is not None:
+            antigo = os.environ.get("WARDEN_RENDER_PARALELO")
+            os.environ["WARDEN_RENDER_PARALELO"] = str(paralelo)
+
+            def _devolve():
+                if antigo is None:
+                    os.environ.pop("WARDEN_RENDER_PARALELO", None)
+                else:
+                    os.environ["WARDEN_RENDER_PARALELO"] = antigo
+            self.addCleanup(_devolve)
+
+    def rodar(self, clips):
+        """(código, stdout, stderr) de um `warden cut --plan` com estes clipes."""
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
+        plano = {"campaign": self.cid, "source": os.path.join(self.dir, "src.mp4"),
+                 "sound": "platform", "clips": clips}
+        caminho = os.path.join(self.dir, "plano.json")
+        with open(caminho, "w") as fh:
+            json.dump(plano, fh)
+        saida, erro = io.StringIO(), io.StringIO()
+        with redirect_stdout(saida), redirect_stderr(erro):
+            code = warden.main(["cut", "--plan", caminho])
+        return code, saida.getvalue(), erro.getvalue()
+
+    @staticmethod
+    def _pronto(out):
+        return {"out": out, "notes": []}
+
+
+class OLoteEntregaEmOrdemMesmoRenderizandoForaDeOrdem(_LoteEmParalelo,
+                                                      unittest.TestCase):
+    """Guarda a tela contra a ordem em que o render TERMINA.
+
+    Renderizar em paralelo significa que o clipe 2 pode ficar pronto antes do
+    1 -- e quem lê esta saída é um modelo. Dois blocos intercalados na tela, o
+    cabeçalho `# clip 1 of 2` com o `MEDIA:` do outro clipe embaixo, são dois
+    clipes que ele confunde, e o arquivo errado é o que ele manda. A troca que
+    este teste pega é a mais natural do mundo de escrever: um `as_completed`
+    no lugar do laço na ordem do plano. Ela passa em todo o resto da suíte --
+    a quantidade continua dois, os dois arquivos existem -- e quebra só aqui.
+    """
+
+    def test_o_clipe_2_termina_primeiro_e_ainda_assim_sai_depois(self):
+        import threading
+        import time
+        terminou, trava = [], threading.Lock()
+
+        def cut(source, out, regras, start, end, **kw):
+            if "ordem-um" in out:
+                time.sleep(0.3)          # o primeiro do plano é o último a ficar pronto
+            with trava:
+                terminou.append(os.path.basename(out))
+            return self._pronto(out)
+
+        self.montar(cut, paralelo=2)
+        code, saida, erro = self.rodar([
+            {"out": "ordem-um.mp4", "start": 0, "end": 3, "_": "gancho"},
+            {"out": "ordem-dois.mp4", "start": 5, "end": 8, "_": "reacao"}])
+        self.assertEqual(code, 0, erro)
+        # A premissa do teste, verificada e não suposta: o render do 2 acabou
+        # antes do render do 1. Sem isto o resto abaixo não prova nada.
+        self.assertEqual(terminou, ["ordem-dois.mp4", "ordem-um.mp4"],
+                         "o render fora de ordem não aconteceu, então este "
+                         "teste não chegou a testar o que diz testar")
+        # E mesmo assim a tela saiu na ordem do plano.
+        self.assertLess(erro.index("# clip 1 of 2"), erro.index("# clip 2 of 2"),
+                        "os blocos saíram na ordem do render, não na do plano")
+        linhas = [l for l in saida.splitlines() if l.startswith("MEDIA:")]
+        self.assertEqual(len(linhas), 2, saida)
+        self.assertIn("ordem-um.mp4", linhas[0])
+        self.assertIn("ordem-dois.mp4", linhas[1])
+
+    def test_o_bloco_de_cada_clipe_carrega_o_porque_do_plano(self):
+        """O `_` do plano é a função narrativa do corte, e ela sai junto do
+        cabeçalho para que o bloco na tela diga de qual clipe é."""
+        self.montar(lambda source, out, r, s, e, **kw: self._pronto(out),
+                    paralelo=2)
+        code, saida, erro = self.rodar([
+            {"out": "porque-um.mp4", "start": 0, "end": 3, "_": "abre com a claim"},
+            {"out": "porque-dois.mp4", "start": 5, "end": 8, "_": "fecha com o numero"}])
+        self.assertEqual(code, 0, erro)
+        self.assertIn("# clip 1 of 2: porque-um.mp4  -- abre com a claim", erro)
+        self.assertIn("# clip 2 of 2: porque-dois.mp4  -- fecha com o numero", erro)
+
+
+class OsRendersCorremJuntosEDentroDoTeto(_LoteEmParalelo, unittest.TestCase):
+    """Guarda dois defeitos opostos, e o segundo é o que mata o container.
+
+    Um de cada vez é o defeito que o paralelo existe para corrigir: com o
+    download já reduzido à janela, o render é o que sobrou de lento, e serializar
+    dois renders é dobrar a espera de quem pediu. Todos de uma vez é o defeito
+    oposto e pior: o container tem 3 GB, um render com transcrição já mediu
+    1815 MiB de pico, e paralelismo que estoura a memória não é velocidade --
+    é o OOM killer levando o lote inteiro. Por isso quantos de cada vez é uma
+    decisão de quem roda, não do código: `WARDEN_RENDER_PARALELO` diz o número.
+
+    O que estes testes fixam é o RESPEITO a esse número nos dois sentidos, e
+    não o padrão: o valor do padrão é uma escolha sobre memória que ainda não
+    foi medida neste container, e um teste que o congelasse estaria guardando
+    um palpite em vez de um defeito.
+
+    A prova aqui NÃO é um cronômetro. "Menos de 0,8s para dois de 0,4s" é uma
+    afirmação sobre a máquina que roda a suíte, e num runner carregado ela fica
+    vermelha sem que haja um defeito no código -- um teste que mente às vezes é
+    pior que teste nenhum, porque ensina a ignorá-lo. O que se mede é quantos
+    renders estão EM VOO ao mesmo tempo, num contador protegido por lock: é a
+    mesma pergunta, respondida sem depender do relógio. No teto de dois a prova
+    é ainda mais dura: uma barreira de duas threads só destrava se os dois
+    renders estiverem em voo juntos. Em série ela estoura e o lote sai com 1.
+    """
+
+    @staticmethod
+    def _placar():
+        import threading
+        return {"voando": 0, "pico": 0}, threading.Lock()
+
+    def test_dois_clipes_estao_em_voo_ao_mesmo_tempo(self):
+        import threading
+        placar, trava = self._placar()
+        # Se os renders forem serializados, o primeiro espera aqui até estourar
+        # o tempo, a barreira quebra, os dois clipes falham e o lote sai com 1.
+        barreira = threading.Barrier(2, timeout=5.0)
+
+        def cut(source, out, regras, start, end, **kw):
+            with trava:
+                placar["voando"] += 1
+                placar["pico"] = max(placar["pico"], placar["voando"])
+            try:
+                barreira.wait()
+            finally:
+                with trava:
+                    placar["voando"] -= 1
+            return self._pronto(out)
+
+        self.montar(cut, paralelo=2)
+        code, saida, erro = self.rodar([
+            {"out": "junto-um.mp4", "start": 0, "end": 3},
+            {"out": "junto-dois.mp4", "start": 5, "end": 8}])
+        self.assertEqual(code, 0, "os dois renders não se encontraram: o lote "
+                                  "renderizou um de cada vez\n" + erro)
+        self.assertEqual(placar["pico"], 2)
+        self.assertEqual(saida.count("MEDIA:"), 2)
+
+    def test_o_teto_de_um_nunca_poe_dois_em_voo(self):
+        import time
+        placar, trava = self._placar()
+
+        def cut(source, out, regras, start, end, **kw):
+            with trava:
+                placar["voando"] += 1
+                placar["pico"] = max(placar["pico"], placar["voando"])
+            time.sleep(0.05)             # janela larga o bastante para um segundo entrar
+            with trava:
+                placar["voando"] -= 1
+            return self._pronto(out)
+
+        self.montar(cut, paralelo=1)
+        code, saida, erro = self.rodar([
+            {"out": "teto-um.mp4", "start": 0, "end": 3},
+            {"out": "teto-dois.mp4", "start": 3, "end": 6},
+            {"out": "teto-tres.mp4", "start": 6, "end": 9}])
+        self.assertEqual(code, 0, erro)
+        self.assertEqual(placar["pico"], 1,
+                         "WARDEN_RENDER_PARALELO=1 e mesmo assim houve "
+                         f"{placar['pico']} renders em voo juntos")
+        self.assertEqual(saida.count("MEDIA:"), 3)
+
+    def test_o_teto_de_tres_nao_poe_quatro_em_voo(self):
+        """O teto é o que o ambiente diz, não um número maior por conta própria."""
+        import time
+        placar, trava = self._placar()
+
+        def cut(source, out, regras, start, end, **kw):
+            with trava:
+                placar["voando"] += 1
+                placar["pico"] = max(placar["pico"], placar["voando"])
+            time.sleep(0.05)
+            with trava:
+                placar["voando"] -= 1
+            return self._pronto(out)
+
+        self.montar(cut, paralelo=3)
+        code, saida, erro = self.rodar(
+            [{"out": f"teto3-{n}.mp4", "start": n, "end": n + 2} for n in range(6)])
+        self.assertEqual(code, 0, erro)
+        self.assertLessEqual(placar["pico"], 3)
+
+    def test_o_lote_diz_quantos_de_cada_vez_antes_de_comecar(self):
+        """Quem lê a saída fica sabendo o teto sem ter de adivinhar pela espera."""
+        self.montar(lambda source, out, r, s, e, **kw: self._pronto(out),
+                    paralelo=2)
+        code, saida, erro = self.rodar([
+            {"out": "aviso-um.mp4", "start": 0, "end": 3},
+            {"out": "aviso-dois.mp4", "start": 5, "end": 8}])
+        self.assertEqual(code, 0, erro)
+        self.assertIn("rendering 2 clip(s), 2 at a time", erro)
+        self.assertIn("printed the moment it is ready", erro)
+
+
+class UmClipeQueFalhaNaoDerrubaOLote(_LoteEmParalelo, unittest.TestCase):
+    """Guarda o vizinho do clipe que explodiu.
+
+    `BatchContract` já prova o lote curto com ffmpeg de verdade, mas ali o
+    clipe ruim é um que não tem start/end: ele falha ANTES de qualquer render,
+    na validação. O caminho paralelo abriu um segundo lugar para falhar, que
+    aquele teste não alcança -- a exceção nasce DENTRO da thread de render,
+    enquanto outros clipes estão em voo ao lado. Uma exceção que escapasse do
+    laço ali mataria o lote inteiro por causa de um clipe, e o `with
+    ThreadPoolExecutor` ainda esperaria os outros renders terminarem para
+    jogá-los fora.
+    """
+
+    def test_o_do_meio_explode_e_os_dois_de_fora_saem(self):
+        def cut(source, out, regras, start, end, **kw):
+            if "explode" in out:
+                raise RuntimeError("codec gone")
+            return self._pronto(out)
+
+        self.montar(cut, paralelo=2)
+        code, saida, erro = self.rodar([
+            {"out": "vizinho-um.mp4", "start": 0, "end": 3},
+            {"out": "vizinho-explode.mp4", "start": 3, "end": 6},
+            {"out": "vizinho-tres.mp4", "start": 6, "end": 9}])
+        self.assertEqual(code, 1, "um clipe falhou e o lote saiu com 0")
+        linhas = [l for l in saida.splitlines() if l.startswith("MEDIA:")]
+        self.assertEqual(len(linhas), 2, saida)
+        self.assertIn("vizinho-um.mp4", linhas[0])
+        self.assertIn("vizinho-tres.mp4", linhas[1])
+        # o que falhou é nomeado, com o motivo, e não some na contagem
+        self.assertIn("missing: vizinho-explode.mp4", erro)
+        self.assertIn("RuntimeError: codec gone", erro)
+        self.assertIn("2 of 3 cleared for delivery", erro)
+        self.assertIn("this batch is NOT done", erro)
+        self.assertIn("1 of the 3 clips asked for did not even clear", erro)
+
+    def test_o_primeiro_explode_e_o_lote_continua_ate_o_fim(self):
+        """A falha no clipe 1 é a que mais convida a abortar: ela chega antes de
+        qualquer sucesso, e um `raise` ali levaria junto dois renders prontos."""
+        rodaram = []
+
+        def cut(source, out, regras, start, end, **kw):
+            rodaram.append(os.path.basename(out))
+            if "explode" in out:
+                raise RuntimeError("source went away")
+            return self._pronto(out)
+
+        self.montar(cut, paralelo=2)
+        code, saida, erro = self.rodar([
+            {"out": "cabeca-explode.mp4", "start": 0, "end": 3},
+            {"out": "cabeca-dois.mp4", "start": 3, "end": 6},
+            {"out": "cabeca-tres.mp4", "start": 6, "end": 9}])
+        self.assertEqual(code, 1)
+        self.assertEqual(len(rodaram), 3, "o lote parou no primeiro erro")
+        self.assertEqual(saida.count("MEDIA:"), 2)
+        self.assertIn("missing: cabeca-explode.mp4", erro)
+        self.assertIn("2 of 3 cleared for delivery", erro)
+        # E o lote NÃO manda mandar, mesmo com dois prontos: `BatchContract` já
+        # fixa isso para o lote curto, e é de propósito -- um lote incompleto
+        # declarado pronto é o defeito de 14/09. Os dois que saíram estão
+        # nomeados na tela; quem falta está na linha `missing:`.
+        self.assertNotIn("now send the", erro)
+
+
+class OPontoBatidoEnquantoORenderDemora(unittest.TestCase):
+    """Guarda o silêncio, que é o defeito que não parece um.
+
+    Um render de trinta segundos, vezes dois clipes, é um minuto com nada na
+    tela. Silêncio longo lê como agente morto: quem está do outro lado mata o
+    processo ou pede de novo, e as duas coisas custam o lote inteiro. `_batendo`
+    existe só para isso, e um `futuro.result()` pelado no lugar dela -- que é o
+    que qualquer um escreve por reflexo -- passa em tudo menos aqui.
+    """
+
+    def _espera(self, funcao, rotulo="clip 1 (corte-01.mp4)", cada=0.05):
+        import io
+        import concurrent.futures as cf
+        from contextlib import redirect_stderr
+        erro = io.StringIO()
+        with cf.ThreadPoolExecutor(max_workers=1) as piscina:
+            futuro = piscina.submit(funcao)
+            with redirect_stderr(erro):
+                try:
+                    valor = warden._batendo(futuro, rotulo, cada=cada)
+                except Exception as exc:
+                    return exc, erro.getvalue()
+        return valor, erro.getvalue()
+
+    def test_um_futuro_lento_bate_o_ponto_com_o_rotulo(self):
+        import time
+        valor, texto = self._espera(lambda: (time.sleep(0.3), "pronto")[1])
+        self.assertEqual(valor, "pronto")
+        self.assertIn("still rendering", texto)
+        self.assertIn("clip 1 (corte-01.mp4)", texto,
+                      "bateu o ponto sem dizer de qual clipe")
+        self.assertIn("so far", texto)
+        self.assertGreaterEqual(texto.count("still rendering"), 2,
+                                "bateu uma vez só numa espera de seis intervalos")
+
+    def test_um_futuro_pronto_na_hora_nao_enche_a_tela(self):
+        """Bater o ponto sem espera é ruído, e ruído esconde o que importa."""
+        valor, texto = self._espera(lambda: "instantaneo")
+        self.assertEqual(valor, "instantaneo")
+        self.assertNotIn("still rendering", texto)
+
+    def test_a_excecao_do_render_chega_a_quem_esperava(self):
+        """O ponto batido não pode engolir a falha: é dela que sai a linha
+        `missing:` do lote."""
+        def explode():
+            raise RuntimeError("codec gone")
+        valor, texto = self._espera(explode)
+        self.assertIsInstance(valor, RuntimeError)
+        self.assertIn("codec gone", str(valor))
+
+
+class AJanelaQueDesceSemVideoNaoSegueAdiante(unittest.TestCase):
+    """Guarda o mp4 mudo, que é o defeito que o caminho rápido traz de brinde.
+
+    `--download-sections` sobre um stream HLS entrega um arquivo sem FAIXA DE
+    VÍDEO e sem erro nenhum -- medido. Sem a sonda, esse arquivo segue para o
+    corte e vira um clipe só de áudio que passa por todo o resto da
+    verificação: a duração bate, o tamanho bate, o nome do arquivo bate. Ele só
+    é descoberto quando alguém abre o clipe entregue. E o arquivo tem de ser
+    APAGADO, não só recusado: deixá-lo no disco é deixar o próximo comando
+    encontrá-lo e usá-lo.
+
+    Sem rede e sem ffprobe de verdade: o download é um `run` de mentira que
+    escreve o arquivo, e a sonda é um `subprocess` de mentira que responde o que
+    cada teste escolheu. É a única forma de reproduzir de propósito um mp4 sem
+    faixa de vídeo sem depender do HLS de um vídeo lá fora.
+    """
+
+    URL = "https://www.youtube.com/watch?v=AUTORIZADO01"
+
+    def setUp(self):
+        import subprocess as _sub
+        import warden_media
+        self.M = warden_media
+        self.dir = _temp(self, prefix="warden-janela-")
+        self.chamadas, self.sondas = [], []
+        self.resposta = _sub.CompletedProcess([], 0, "h264\n", "")
+
+        def _run(args, timeout, label):
+            args = list(args)
+            self.chamadas.append(args)
+            if "--download-sections" in args:
+                alvo = args[args.index("-o") + 1]
+                with open(alvo.replace("%(ext)s", "mp4"), "wb") as fh:
+                    fh.write(b"isto nao e um video")
+            return ""
+
+        anterior = warden_media.run
+        warden_media.run = _run
+        self.addCleanup(setattr, warden_media, "run", anterior)
+
+        teste = self
+
+        class _Sub:
+            """Encaminha tudo para o `subprocess` de verdade menos o `run`."""
+            def __getattr__(self, nome):
+                return getattr(_sub, nome)
+
+            def run(self, args, **kw):
+                teste.sondas.append(list(args))
+                return teste.resposta
+
+        velho = warden_media.subprocess
+        warden_media.subprocess = _Sub()
+        self.addCleanup(setattr, warden_media, "subprocess", velho)
+
+    def _regras(self):
+        return {"schema": 1, "id": "j", "video": {"width": 1080, "height": 1920},
+                "sources": {"archive_urls": [self.URL]},
+                "caption": {}, "posting": {}}
+
+    def _sobrou(self):
+        return sorted(os.listdir(self.dir))
+
+    def test_sem_faixa_de_video_levanta_erro_e_apaga_o_arquivo(self):
+        import subprocess as _sub
+        self.resposta = _sub.CompletedProcess([], 0, "", "")   # ffprobe: nada
+        with self.assertRaises(RuntimeError) as erro:
+            self.M.archive_window(self._regras(), self.dir, self.URL, 100.0, 120.0)
+        self.assertIn("no video track", str(erro.exception))
+        self.assertEqual(self._sobrou(), [],
+                         "o arquivo sem vídeo ficou no disco para o próximo "
+                         "comando encontrar")
+
+    def test_a_recusa_diz_de_onde_vem_o_mp4_mudo(self):
+        """Quem lê a falha tem de saber que é o HLS, senão tenta de novo igual."""
+        import subprocess as _sub
+        self.resposta = _sub.CompletedProcess([], 0, "", "")
+        with self.assertRaises(RuntimeError) as erro:
+            self.M.archive_window(self._regras(), self.dir, self.URL, 10.0, 20.0)
+        texto = str(erro.exception)
+        self.assertIn("--download-sections", texto)
+        self.assertIn("HLS", texto)
+        self.assertIn("deleted", texto)
+
+    def test_ffprobe_que_falha_tambem_apaga_o_arquivo(self):
+        """Uma sonda que não roda não é uma sonda que aprovou."""
+        import subprocess as _sub
+        self.resposta = _sub.CompletedProcess([], 1, "", "moov atom not found")
+        with self.assertRaises(RuntimeError):
+            self.M.archive_window(self._regras(), self.dir, self.URL, 100.0, 120.0)
+        self.assertEqual(self._sobrou(), [])
+
+    def test_a_sonda_pergunta_pela_faixa_de_video_do_arquivo_que_desceu(self):
+        caminho, _ = self.M.archive_window(self._regras(), self.dir,
+                                           self.URL, 100.0, 120.0)
+        self.assertTrue(self.sondas, "nada foi sondado: o arquivo passou sem exame")
+        sonda = self.sondas[-1]
+        self.assertEqual(sonda[0], "ffprobe")
+        self.assertIn("v:0", sonda)
+        self.assertIn(caminho, sonda)
+
+    def test_com_faixa_de_video_o_arquivo_fica_e_o_caminho_volta(self):
+        caminho, dentro = self.M.archive_window(self._regras(), self.dir,
+                                                self.URL, 100.0, 120.0)
+        self.assertTrue(os.path.isfile(caminho), "a janela aprovada sumiu")
+        self.assertEqual(os.path.basename(os.path.dirname(caminho)),
+                         os.path.basename(self.dir))
+        self.assertEqual(dentro, 2.0)
+
+
+class OInPointBateComAFolgaDeKeyframe(unittest.TestCase):
+    """Guarda o tempo que o arquivo baixado já não tem.
+
+    `--download-sections` corta em keyframe, então a janela é pedida com folga
+    dos dois lados para que a janela ESCOLHIDA esteja inteira lá dentro. O
+    preço é que o arquivo começa antes do que se pediu, e cortar dentro dele
+    com o tempo da FONTE dá um corte deslocado -- pelo tamanho exato da folga,
+    em todo clipe, calado. `in_point` é a correção; um `return caminho` sozinho,
+    ou uma folga aplicada só de um lado, é o defeito.
+    """
+
+    URL = "https://www.youtube.com/watch?v=AUTORIZADO01"
+
+    def setUp(self):
+        import subprocess as _sub
+        import warden_media
+        self.M = warden_media
+        self.dir = _temp(self, prefix="warden-inpoint-")
+        self.chamadas = []
+
+        def _run(args, timeout, label):
+            args = list(args)
+            self.chamadas.append(args)
+            if "--download-sections" in args:
+                alvo = args[args.index("-o") + 1]
+                with open(alvo.replace("%(ext)s", "mp4"), "wb") as fh:
+                    fh.write(b"x")
+            return ""
+
+        anterior = warden_media.run
+        warden_media.run = _run
+        self.addCleanup(setattr, warden_media, "run", anterior)
+
+        class _Sub:
+            def __getattr__(self, nome):
+                return getattr(_sub, nome)
+
+            def run(self, args, **kw):
+                return _sub.CompletedProcess(list(args), 0, "h264\n", "")
+
+        velho = warden_media.subprocess
+        warden_media.subprocess = _Sub()
+        self.addCleanup(setattr, warden_media, "subprocess", velho)
+
+    def _regras(self):
+        return {"schema": 1, "id": "j", "video": {"width": 1080, "height": 1920},
+                "sources": {"archive_urls": [self.URL]},
+                "caption": {}, "posting": {}}
+
+    def _secoes(self):
+        for args in self.chamadas:
+            if "--download-sections" in args:
+                return args[args.index("--download-sections") + 1]
+        return None
+
+    def test_a_janela_pedida_ao_ytdlp_tem_a_folga_dos_dois_lados(self):
+        caminho, dentro = self.M.archive_window(
+            self._regras(), self.dir, self.URL, 100.0, 120.0, folga=2.0)
+        # 100-120 pedidos viram 98-122 baixados: dois segundos de cada lado.
+        self.assertEqual(self._secoes(), "*00:01:38.000-00:02:02.000")
+        self.assertEqual(dentro, 2.0)
+
+    def test_o_in_point_acompanha_a_folga_escolhida(self):
+        caminho, dentro = self.M.archive_window(
+            self._regras(), self.dir, self.URL, 100.0, 120.0, folga=5.0)
+        self.assertEqual(self._secoes(), "*00:01:35.000-00:02:05.000")
+        self.assertEqual(dentro, 5.0)
+
+    def test_perto_do_zero_o_in_point_e_o_que_sobrou_e_nao_a_folga(self):
+        """Uma janela que começa em 1s não tem dois segundos de folga antes
+        dela. Devolver 2.0 aqui desloca o corte para dentro do que se queria."""
+        caminho, dentro = self.M.archive_window(
+            self._regras(), self.dir, self.URL, 1.0, 20.0, folga=2.0)
+        self.assertEqual(self._secoes(), "*00:00:00.000-00:00:22.000")
+        self.assertEqual(dentro, 1.0)
+
+    def test_o_download_evita_o_hls_que_entrega_mp4_sem_video(self):
+        """`[protocol^=http]` não é decoração: sem ele o yt-dlp escolhe o HLS,
+        e é daí que vem o arquivo mudo."""
+        self.M.archive_window(self._regras(), self.dir, self.URL, 100.0, 120.0)
+        args = [a for a in self.chamadas if "--download-sections" in a][0]
+        formato = args[args.index("-f") + 1]
+        self.assertIn("protocol^=http", formato)
+
+
+class JanelaMalFormadaEUmaInstrucaoNaoUmTraceback(unittest.TestCase):
+    """Guarda a recusa de `--window` contra o traceback.
+
+    Um `ValueError: too many values to unpack` na tela é uma falha que só quem
+    escreveu o código entende, e quem está do outro lado não fica sabendo qual
+    é a forma certa. A recusa tem de dizer a forma, com exemplo, e sair com
+    código de uso -- 2, não 1: não é a campanha que está errada, é a linha de
+    comando.
+    """
+
+    def setUp(self):
+        self.cid = "janela-cli"
+        r = rules(id=self.cid, sources={"archive_urls": [
+            "https://www.youtube.com/watch?v=AUTORIZADO01"]})
+        os.makedirs(os.path.dirname(warden.campaign_path(self.cid)), exist_ok=True)
+        with open(warden.campaign_path(self.cid), "w") as fh:
+            json.dump(r, fh)
+        self.dir = _temp(self, prefix="warden-janela-cli-")
+
+    def _archive(self, *extra):
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
+        saida, erro = io.StringIO(), io.StringIO()
+        # Sem `--out`: o padrão de `warden archive` já é um diretório que este
+        # agente pode escrever, e um caminho de teste fora dele bate no fiscal
+        # de escrita antes de o `--window` ser sequer lido.
+        argv = ["archive", "--campaign", self.cid, *extra]
+        with redirect_stdout(saida), redirect_stderr(erro):
+            try:
+                code = warden.main(argv)
+            except SystemExit as saiu:
+                code = saiu.code
+        return code, saida.getvalue(), erro.getvalue()
+
+    def test_uma_janela_sem_forma_de_janela_e_recusada_com_exemplo(self):
+        for ruim in ("181", "abc-def", "181a-201", "181-", "-", "181..201"):
+            with self.subTest(janela=ruim):
+                code, saida, erro = self._archive("--window", ruim)
+                self.assertEqual(code, 2, f"{ruim!r} não saiu com código de uso")
+                self.assertIn("--window is two seconds", erro)
+                self.assertIn("181-201.6", erro, "a recusa não mostra a forma certa")
+                self.assertNotIn("Traceback", erro)
+                self.assertEqual(saida, "", "imprimiu um caminho apesar da recusa")
+
+    def test_uma_janela_boa_imprime_o_caminho_e_o_in_point(self):
+        """A linha `IN_POINT:` é o que impede o corte seguinte de usar o tempo
+        da fonte num arquivo que já não tem esse tempo."""
+        import warden_media
+        pedidos = []
+
+        def _janela(regras, out, url, de, ate, **kw):
+            pedidos.append((url, de, ate))
+            caminho = os.path.join(self.dir, "janela.mp4")
+            with open(caminho, "wb") as fh:
+                fh.write(b"x")
+            return caminho, 2.0
+
+        anterior = warden_media.archive_window
+        warden_media.archive_window = _janela
+        self.addCleanup(setattr, warden_media, "archive_window", anterior)
+
+        code, saida, erro = self._archive("--window", "181-201.6")
+        self.assertEqual(code, 0, erro)
+        self.assertEqual(pedidos, [
+            ("https://www.youtube.com/watch?v=AUTORIZADO01", 181.0, 201.6)])
+        self.assertIn("janela.mp4", saida)
+        self.assertIn("IN_POINT:2.000", saida)
+        # e a instrução de como cortar dentro do arquivo, com os números prontos
+        self.assertIn("--start 2.000", erro)
+        self.assertIn("--end 22.600", erro)
+
+    def test_campanha_sem_acervo_nao_tem_janela_para_baixar(self):
+        cid = "janela-sem-acervo"
+        r = rules(id=cid)
+        with open(warden.campaign_path(cid), "w") as fh:
+            json.dump(r, fh)
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
+        saida, erro = io.StringIO(), io.StringIO()
+        with redirect_stdout(saida), redirect_stderr(erro):
+            try:
+                code = warden.main(["archive", "--campaign", cid,
+                                    "--window", "10-20"])
+            except SystemExit as saiu:
+                code = saiu.code
+        self.assertEqual(code, 1)
+        self.assertIn("publishes no archive", erro.getvalue())

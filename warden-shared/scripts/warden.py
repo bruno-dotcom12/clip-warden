@@ -594,8 +594,10 @@ def cmd_status(args):
     print("ffmpeg:  " + (shutil.which("ffmpeg") or "MISSING"))
     # Tudo que um corte precisa e que pode não estar aqui. Cada linha existe
     # porque a ausência dela já degradou um clipe em silêncio: sem o detector o
-    # enquadramento foi para o centro e entregou o rosto na borda, e sem Pillow
-    # não há hook nem legenda, porque todo texto deste renderizador é PNG do PIL.
+    # enquadramento foi para o centro e entregou o rosto na borda; sem Pillow não
+    # há hook, que é PNG do PIL; e sem libass não há legenda, que desde o Bloco B
+    # é ASS. Dizer "todo texto é PNG do PIL" deixou de ser verdade nesse dia e a
+    # linha continuou aqui -- relatório que envelhece é relatório falso.
     try:
         ok, why = _media().face_detection_status()
         print("face detection: " + (why if ok else f"MISSING -- {why}"))
@@ -603,10 +605,10 @@ def cmd_status(args):
         print(f"face detection: MISSING -- {type(exc).__name__}: {exc}")
     try:
         import PIL
-        print(f"pillow (all burned text): {PIL.__version__}")
+        print(f"pillow (the hook, drawn as a PNG): {PIL.__version__}")
     except ImportError:
-        print("pillow (all burned text): MISSING -- no hook and no caption "
-              "can be drawn without it")
+        print("pillow (the hook, drawn as a PNG): MISSING -- the hook cannot "
+              "be drawn without it")
     import warden_style as S
     print("style font: " + (S.FONT_PATH if S.font_available()
                             else f"MISSING at {S.FONT_PATH} -- text would fall "
@@ -779,6 +781,33 @@ def cmd_archive(args):
     rules = load_campaign(args.campaign)
     out = safe_out(args.out or os.path.join(state_dir(), "footage", safe_id(args.campaign)),
                    "footage directory")
+    janela = getattr(args, "window", None)
+    if janela:
+        # Baixa SÓ a janela escolhida, de cada link autorizado do acervo. O
+        # fiscal é o mesmo: `archive_window` recusa um link que não está em
+        # sources.archive_urls antes de qualquer byte descer.
+        try:
+            de, ate = [float(x) for x in str(janela).split("-", 1)]
+        except ValueError:
+            die("--window is two seconds, as 181-201.6", code=2)
+        urls = R.get(rules, "sources.archive_urls", []) or []
+        if not urls:
+            die("this campaign publishes no archive, so there is no authorised "
+                "link to take a window of", code=1)
+        alvo = args.url or urls[0]
+        try:
+            caminho, dentro = _media().archive_window(rules, out, alvo, de, ate)
+        except Exception as exc:
+            die(f"{type(exc).__name__}: {exc}", code=1)
+        print(caminho)
+        print(f"IN_POINT:{dentro:.3f}")
+        print(f"this file is ONLY the {de:.1f}-{ate:.1f}s window of the source, "
+              f"plus a couple of seconds of keyframe slack on each side. Inside "
+              f"it, the window you asked for starts at {dentro:.3f}s -- so cut "
+              f"it with `--start {dentro:.3f} --end {dentro + (ate - de):.3f}`, "
+              f"not with the source's own timestamps, which this file no longer "
+              f"has.", file=sys.stderr)
+        return 0
     modo = "text" if getattr(args, "text_first", False) else "video"
     try:
         got, failed = _media().archive(rules, out, limit=args.limit, mode=modo)
@@ -1265,6 +1294,25 @@ def cmd_captions(args):
     die(f"unknown captions action {args.action!r}")
 
 
+def _batendo(futuro, rotulo, cada=15.0):
+    """Espera o futuro, batendo o ponto enquanto espera.
+
+    Silêncio longo lê como agente morto -- está escrito na persona deste
+    projeto e é a razão de esta função existir. Um render de trinta segundos
+    com nada na tela, vezes dois clipes, é um minuto em que quem pediu não
+    sabe se alguma coisa está viva.
+    """
+    import concurrent.futures as _cf
+    esperou = 0.0
+    while True:
+        try:
+            return futuro.result(timeout=cada)
+        except _cf.TimeoutError:
+            esperou += cada
+            print(f"  … still rendering {rotulo}, {esperou:.0f}s so far",
+                  file=sys.stderr, flush=True)
+
+
 def cmd_cut_plan(args):
     """Um lote de N janelas, com ponto de controle por clipe e uma conta no fim.
 
@@ -1322,56 +1370,142 @@ def cmd_cut_plan(args):
           f"read the result.", file=sys.stderr)
     liberados, failed = [], []
     ledger = ledger_for(cid)
-    for i, spec in enumerate(clips, 1):
+
+    def _renderiza(spec, i):
+        """Só o render. A entrega fica na thread principal, em ordem."""
         if not isinstance(spec, dict):
-            failed.append((f"clip {i}", "not an object in the plan"))
-            continue
+            raise RuntimeError("not an object in the plan")
+        if spec.get("start") is None or spec.get("end") is None:
+            raise RuntimeError("the plan gives no start/end for this clip")
         name = spec.get("out") or f"clip-{i:02d}.mp4"
-        why = spec.get("_")
-        print(f"\n# clip {i} of {asked}: {name}"
-              + (f"  -- {why}" if why else ""), file=sys.stderr)
-        try:
-            if spec.get("start") is None or spec.get("end") is None:
-                raise RuntimeError("the plan gives no start/end for this clip")
-            result = _media().cut(
-                spec.get("source") or source, clip_out(name), rules,
-                float(spec["start"]), float(spec["end"]),
-                caption_srt=spec.get("subtitles", plan.get("subtitles")),
-                hook=spec.get("hook"),
-                track=spec.get("track", plan.get("track")),
-                track_start=spec.get("track_start", plan.get("track_start")),
-                sound=spec.get("sound", sound),
-                crop=spec.get("crop", plan.get("crop")),
-                shots=spec.get("shots"),
-                asked_s=spec.get("seconds", plan.get("seconds")),
-                language=spec.get("language", plan.get("language")),
-                motion=spec.get("motion", plan.get("motion", True)),
-                cover_footer=spec.get("cover_footer", plan.get("cover_footer")))
-            code = deliver(result, rules, cid, ledger)
-        except SystemExit:                     # `die` inside a clip is that clip's
-            raise
-        except Exception as exc:
-            failed.append((name, f"{type(exc).__name__}: {exc}"))
-            print(f"  this clip failed: {type(exc).__name__}: {exc}",
-                  file=sys.stderr)
-            continue
-        if code == 0:
-            liberados.append(name)
-        else:
-            failed.append((name, "rendered but did not clear delivery"))
+        return _media().cut(
+            spec.get("source") or source, clip_out(name), rules,
+            float(spec["start"]), float(spec["end"]),
+            caption_srt=spec.get("subtitles", plan.get("subtitles")),
+            hook=spec.get("hook"),
+            track=spec.get("track", plan.get("track")),
+            track_start=spec.get("track_start", plan.get("track_start")),
+            sound=spec.get("sound", sound),
+            crop=spec.get("crop", plan.get("crop")),
+            shots=spec.get("shots"),
+            asked_s=spec.get("seconds", plan.get("seconds")),
+            language=spec.get("language", plan.get("language")),
+            motion=spec.get("motion", plan.get("motion", True)),
+            cover_footer=spec.get("cover_footer", plan.get("cover_footer")))
+
+    # Renderiza em paralelo, ENTREGA em ordem.
+    #
+    # As duas coisas juntas de propósito. Em paralelo porque render é o que
+    # sobrou de lento depois que o download deixou de trazer o vídeo inteiro;
+    # em ordem porque quem lê esta saída é um modelo, e blocos de dois clipes
+    # intercalados na tela são dois clipes que ele confunde. Então o clipe 1
+    # é impresso assim que fica pronto -- e o 2 já está renderizando enquanto
+    # isso, em vez de começar depois.
+    #
+    # Quantos de cada vez, e o que se sabe de verdade sobre isso.
+    #
+    # O comentário anterior aqui dizia "dois cabem porque o pico medido foi
+    # 1815 MiB num container de 3 GB". Era uma afirmação minha e ela não estava
+    # medida -- e a própria aritmética dela dizia o contrário: 2 x 1815 = 3630,
+    # acima dos 3072 MiB do limite. O 1815 é o pico de um render COM
+    # transcrição junto, que é outra coisa; dois renders simultâneos nunca
+    # foram medidos.
+    #
+    # Então o padrão é UM, que é o comportamento de antes e não inventa nada, e
+    # o paralelismo fica atrás de uma variável de ambiente até alguém medir dois
+    # renders simultâneos neste container. `WARDEN_RENDER_PARALELO=2` liga.
+    # Velocidade que o OOM killer interrompe não é velocidade.
+    import concurrent.futures as _cf
+    try:
+        largura = int(os.environ.get("WARDEN_RENDER_PARALELO") or 1)
+    except ValueError:
+        die("WARDEN_RENDER_PARALELO must be a whole number of renders", code=2)
+    largura = max(1, min(largura, 4))
+    # Dois clipes com o mesmo `out` eram determinísticos no laço sequencial: o
+    # primeiro era sondado e entregue antes de o segundo o sobrescrever. Em
+    # paralelo são dois ffmpeg escrevendo o MESMO mp4, o mesmo .ass e o mesmo
+    # contact sheet ao mesmo tempo, e o que sai é lixo intercalado com um
+    # mosaico que pode ser do outro clipe. Nada detectava isso.
+    nomes = {}
+    for i, spec in enumerate(clips, 1):
+        nome = (spec.get("out") if isinstance(spec, dict) else None) or f"clip-{i:02d}.mp4"
+        nomes.setdefault(nome, []).append(i)
+    repetidos = {n: onde for n, onde in nomes.items() if len(onde) > 1}
+    if repetidos:
+        die("two clips in this plan write to the same file: "
+            + "; ".join(f"{n} (clips {', '.join(map(str, onde))})"
+                        for n, onde in sorted(repetidos.items()))
+            + ". Give each clip its own `out`: rendered at the same time they "
+              "would overwrite each other mid-write, and what you would get is "
+              "neither of them.", code=2)
+
+    print(f"# rendering {asked} clip(s), {largura} at a time. Each one is "
+          f"printed the moment it is ready -- do not wait for the batch.",
+          file=sys.stderr)
+    # Sem `with`, e isto é um conserto. Dentro de um `with`, um `raise` cai no
+    # `__exit__` -> `shutdown(wait=True)`, que ESPERA todos os renders já
+    # submetidos terminarem. Medido: um `die` no clipe 1 de um lote de 6
+    # deixava os outros cinco ffmpeg irem até o fim antes de o erro aparecer --
+    # nove segundos de trabalho que ninguém queria mais. No laço sequencial o
+    # lote parava na hora. Ctrl+C tinha o mesmo destino, e sem uma linha na
+    # tela explicando por que nada respondia.
+    piscina = _cf.ThreadPoolExecutor(max_workers=largura)
+    try:
+        futuros = [(i, spec, piscina.submit(_renderiza, spec, i))
+                   for i, spec in enumerate(clips, 1)]
+        for i, spec, futuro in futuros:
+            name = (spec.get("out") if isinstance(spec, dict) else None) \
+                or f"clip-{i:02d}.mp4"
+            why = spec.get("_") if isinstance(spec, dict) else None
+            print(f"\n# clip {i} of {asked}: {name}"
+                  + (f"  -- {why}" if why else ""), file=sys.stderr)
+            try:
+                result = _batendo(futuro, f"clip {i} ({name})")
+                code = deliver(result, rules, cid, ledger)
+            except SystemExit:                 # `die` inside a clip is that clip's
+                raise
+            except Exception as exc:
+                failed.append((name, f"{type(exc).__name__}: {exc}"))
+                print(f"  this clip failed: {type(exc).__name__}: {exc}",
+                      file=sys.stderr)
+                continue
+            if code == 0:
+                liberados.append(name)
+            else:
+                failed.append((name, "rendered but did not clear delivery"))
+    except (SystemExit, KeyboardInterrupt):
+        pendentes = sum(1 for _i, _s, f in futuros if f.cancel())
+        print(f"\n# stopping the batch: cancelled {pendentes} clip(s) that had "
+              f"not started. Any render already running finishes, because "
+              f"ffmpeg is a child process and killing it mid-write leaves a "
+              f"broken file.", file=sys.stderr)
+        piscina.shutdown(wait=False)
+        raise
+    finally:
+        piscina.shutdown(wait=True)
 
     print(f"\n# {len(liberados)} of {asked} cleared for delivery. NONE of them "
           f"has been sent by this command.", file=sys.stderr)
     for name, why in failed:
         print(f"#   missing: {name} -- {why}", file=sys.stderr)
+    if liberados:
+        # Esta linha sai SEMPRE que algo passou, inclusive num lote curto. Sem
+        # isso, um lote em que o clipe 1 explode e os clipes 2 e 3 ficam
+        # prontos não tinha uma linha mandando enviá-los: eles apareciam só
+        # numa contagem, e clipe pronto que ninguém manda é clipe perdido --
+        # que é o defeito de 14/09 chegando por outra porta.
+        print(f"# send the {len(liberados)} that cleared, one send_message "
+              f"each, and read every result: "
+              + ", ".join(liberados), file=sys.stderr)
     if len(liberados) < asked:
-        print(f"# this batch is NOT done: {asked - len(liberados)} of the {asked} "
-              "clips asked for did not even clear. Say which failed and why; do "
-              "not report the batch as finished.", file=sys.stderr)
+        print(f"# and then say this batch is NOT done: "
+              f"{asked - len(liberados)} of the {asked} clips asked for did not even "
+              f"clear. Name which failed and why. Do not report the batch as "
+              f"finished, and do not quietly deliver fewer than were asked for.",
+              file=sys.stderr)
         return 1
-    print(f"# now send the {len(liberados)} of them, one send_message each, and "
-          f"read every result. The batch is done when the sends came back, not "
-          f"when this line printed.", file=sys.stderr)
+    print("# the batch is done when those sends came back, not when this line "
+          "printed.", file=sys.stderr)
     return 0
 
 
@@ -1513,6 +1647,13 @@ def main(argv=None):
     p.add_argument("--campaign", required=True)
     p.add_argument("--out")
     p.add_argument("--limit", type=int)
+    p.add_argument("--window",
+                   help="pull ONLY this window of the source, as START-END in "
+                        "seconds (181-201.6). Goes through the same archive "
+                        "gate as a whole pull. Prints IN_POINT: where that "
+                        "window begins inside the file it wrote.")
+    p.add_argument("--url", help="which authorised archive link to take the "
+                                 "window of; defaults to the first one")
     p.add_argument("--text-first", action="store_true",
                    help="pull only what gives the words -- the published "
                         "subtitle, or the audio when there is none -- and no "

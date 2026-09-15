@@ -241,10 +241,16 @@ def video_id(url):
     except Exception:
         return None
     host = (parsed.netloc or "").lower()
-    if "youtu.be" in host:
+    # `"youtube" in host` era o teste, e ele dizia sim para
+    # `youtube.com.evil.example` e para `myyoutube.example`. Como `authorize`
+    # decide pelo ID, bastava ao atacante pôr um id autorizado numa URL do
+    # host dele para o agente baixar de lá e reportar "autorizado". O host é
+    # comparado inteiro agora, normalizado pela mesma função que o resto do
+    # arquivo já usava e que este caminho não usava.
+    if _norm_host(host) == "youtube.com" and "youtu.be" in host:
         cand = parsed.path.lstrip("/").split("/")[0]
         return cand if _YT_ID.match(cand) else None
-    if "youtube" in host:
+    if _norm_host(host) in ("youtube.com", "youtube-nocookie.com"):
         from urllib.parse import parse_qs
         v = parse_qs(parsed.query or "").get("v", [None])[0]
         if v and _YT_ID.match(v):
@@ -418,6 +424,86 @@ def archive(rules, out_dir, limit=None, mode="video"):
         except Exception as exc:                       # one bad link, not a dead run
             failed.append((url, str(exc).splitlines()[0]))
     return got, failed
+
+
+def _carimbo(segundos):
+    """HH:MM:SS.mmm, que é o formato que `--download-sections` entende."""
+    t = max(0.0, float(segundos))
+    h, resto = divmod(t, 3600)
+    m, seg = divmod(resto, 60)
+    return f"{int(h):02d}:{int(m):02d}:{seg:06.3f}"
+
+
+def archive_window(rules, out_dir, url, start, end, folga=2.0):
+    """Baixa SÓ a janela pedida de um link do acervo. (caminho, in_point).
+
+    O FISCAL VEM PRIMEIRO, e este parágrafo é o motivo de esta função existir
+    em vez de um `--download-sections` solto em algum lugar. O caminho de
+    download é onde a autorização de acervo é aplicada: `archive()` só puxa o
+    que está em `sources.archive_urls`. Um atalho novo que aceitasse uma URL e
+    baixasse um pedaço dela seria uma porta lateral por onde material não
+    autorizado entra -- e um clipe rápido feito de material não autorizado é
+    pior que um clipe lento, porque ele é reprovado DEPOIS das visualizações.
+    Então a mesma pergunta que `archive()` faz é feita aqui, antes de qualquer
+    byte descer.
+
+    `folga` existe porque `--download-sections` corta em keyframe: pedir com
+    dois segundos de sobra dos dois lados garante que a janela pedida está
+    inteira dentro do arquivo. Devolve junto o `in_point`, que é onde a janela
+    original começa DENTRO do arquivo baixado -- sem ele, quem cortar depois
+    usa o tempo da fonte num arquivo que já não tem esse tempo.
+    """
+    ok, porque, titulo = authorize(rules, url)
+    if not ok:
+        raise RuntimeError(
+            f"refusing to pull a window of {url}: {porque}. "
+            + (f"(the video is {titulo!r}) " if titulo else "")
+            + "Downloading a slice is still downloading: the archive gate is "
+              "the same one, and a fast clip made of unauthorised footage is "
+              "worse than a slow one.")
+    os.makedirs(out_dir, exist_ok=True)
+    de = max(0.0, float(start) - folga)
+    ate = float(end) + folga
+    # O nome carrega as DUAS pontas. Com só o início, `--window 181-201` e
+    # `--window 181-300` davam o mesmo arquivo -- e o yt-dlp não rebaixa um
+    # destino que já existe, então a segunda chamada devolvia o arquivo de 24s
+    # da primeira e o comando imprimia "corte com --end 121" sobre ele.
+    stem = "janela-%s-%d-%d" % (hashlib.sha256(url.encode()).hexdigest()[:10],
+                                int(de * 1000), int(ate * 1000))
+    template = os.path.join(out_dir, stem + ".%(ext)s")
+    # `[protocol^=http]` NÃO é decoração. Sem ele o yt-dlp escolhe o HLS deste
+    # vídeo, e `--download-sections` sobre m3u8 entrega um mp4 SEM FAIXA DE
+    # VÍDEO, sem erro nenhum -- medido. Era o defeito que este caminho traria
+    # de brinde, e ele seria descoberto num clipe entregue.
+    run(_ytdlp() + ["--no-playlist", "--restrict-filenames",
+                    "--download-sections", f"*{_carimbo(de)}-{_carimbo(ate)}",
+                    "-f", "bv*[height<=1080][protocol^=http]+ba[protocol^=http]/"
+                          "b[height<=1080][protocol^=http]/b[protocol^=http]",
+                    "--merge-output-format", "mp4", "-o", template, "--", url],
+        TIMEOUT_DOWNLOAD, "yt-dlp (window)")
+    saiu = sorted(f for f in os.listdir(out_dir)
+                  if f.startswith(stem)
+                  and os.path.splitext(f)[1].lower() in (".mp4", ".mkv", ".webm"))
+    if not saiu:
+        raise RuntimeError(f"yt-dlp returned no file for the {de:.0f}-{ate:.0f}s "
+                           f"window of that link")
+    caminho = os.path.join(out_dir, saiu[0])
+    # O arquivo tem faixa de vídeo mesmo? A pergunta existe porque a resposta
+    # já foi não, calada, e um clipe só de áudio passa por todo o resto.
+    sonda = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=codec_name", "-of", "csv=p=0", caminho],
+        capture_output=True, text=True)
+    if sonda.returncode != 0 or not sonda.stdout.strip():
+        try:
+            os.remove(caminho)
+        except OSError:
+            pass          # apagar é higiene; a mensagem abaixo é o que importa
+        raise RuntimeError(
+            f"the window that came down has no video track (ffprobe found none). "
+            f"That is what `--download-sections` does over an HLS stream, and it "
+            f"does it silently. The file was deleted rather than handed on.")
+    return caminho, max(0.0, float(start) - de)
 
 
 # As línguas de legenda que valem a pena pedir, e por que são só estas.

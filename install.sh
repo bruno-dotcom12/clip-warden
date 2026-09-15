@@ -143,8 +143,11 @@ printf '\n'
 ESTADO="$(docker compose exec -u 10000:10000 -T agent warden status 2>&1 || true)"
 printf '%s\n' "$ESTADO"
 
-# O que não pode faltar. Cada uma destas linhas já degradou um clipe em silêncio
-# -- a de detecção de rosto entregou um corte com o rosto na borda do quadro.
+# O que não pode faltar. Quase todas estas linhas já degradaram um clipe em
+# silêncio -- a de detecção de rosto entregou um corte com o rosto na borda do
+# quadro. libass é a exceção: sem o filtro `ass` o `cut` recusa queimar legenda
+# em voz alta, e é por isso que ele está aqui -- para a recusa acontecer nesta
+# tela, no install, e não no meio do primeiro corte de alguém.
 FALTA=0
 for CHAVE in "ffprobe" "ffmpeg" "face detection" "pillow" "style font" "measured style spec" "libass"; do
     if printf '%s\n' "$ESTADO" | grep -i "^$CHAVE" | grep -q "MISSING"; then

@@ -3,11 +3,26 @@ name: warden-check
 description: Decide whether a finished clip may be posted to a campaign. Use before any post, when the person asks if a clip is within the rules, after an edit, or when a submission was rejected and they want to know why.
 ---
 
-# The gate
+# The first of three gates
 
 `warden check <file> --campaign <id> --caption -` with the caption on stdin.
 
 Exit 0 means nothing mechanical blocks it. Exit 1 means do not post.
+
+**Exit 0 is not "this clip is good".** This command reads the container and the
+text: duration, resolution, aspect, audio policy, hashtags, the cap, the
+deadline. It never opens a frame. Two gates stand after it, and both look at
+things this one cannot see:
+
+- the `-estilo.json` the render wrote beside the clip, which carries what the
+  renderer measured of itself -- the hook's drawn width against the usable
+  width, lines per cue, the longest cue, how long the hook stayed on screen.
+  `warden style check` reads it.
+- the contact sheet, which is the only step in the whole path that looks at the
+  picture. `cut` writes one and refuses to print the `MEDIA:` line without it.
+
+A clip that passes here and was never looked at is how a file with ten visible
+defects got reported as passing.
 
 ## Reading the verdict out
 

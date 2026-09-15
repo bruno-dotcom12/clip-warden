@@ -60,11 +60,12 @@ The last thing `install.sh` does is run `warden status` inside the container and
 read it. These lines must all name something, never `MISSING`:
 
 ```
-ffprobe:             /usr/bin/ffprobe
-ffmpeg:              /usr/bin/ffmpeg
-face detection:      YuNet on OpenCV 5.0.0
+ffprobe: /usr/bin/ffprobe
+ffmpeg:  /usr/bin/ffmpeg
+face detection: YuNet on OpenCV 5.0.0
 pillow (all burned text): 12.3.0
-style font:          /opt/hermes/skills/warden-shared/assets/Anton-Regular.ttf
+style font: /opt/hermes/skills/warden-shared/assets/Anton-Regular.ttf
+libass (burned captions): yes, the `ass` filter is here
 measured style spec: /opt/hermes/skills/SPECS/estilo-aprovado-scenepack.json
 ```
 
@@ -77,7 +78,18 @@ happened. Now `warden cut` refuses to frame rather than guess: with no detector 
 unless you say where the subject is with `--crop left|right|center|<0-100>`, and
 then it honours that literally.
 
-`warden status` prints more than those six lines — where state lives, whether it
+`libass` is the exception on that list: it does not degrade anything, it refuses
+out loud. The caption is ASS burned by libass, with word-by-word highlight, and
+libass is an ffmpeg **compile** option — the image's ffmpeg is built with
+`--enable-libass`, a Homebrew ffmpeg on a Mac usually is not. Without the `ass`
+filter `warden cut` stops rather than hand back a podcast clip with no caption.
+The line is on this list so that refusal lands here, at install, instead of in
+the middle of someone's first cut.
+
+Read the `pillow` line as the label the tool prints rather than as the state of
+the renderer: since the caption became ASS, PIL draws the hook and nothing else.
+
+`warden status` prints more than those seven lines — where state lives, whether it
 is writable, which campaigns are stored, and how far along the transcription
 models are:
 

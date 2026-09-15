@@ -91,10 +91,33 @@ Não existe limite de caracteres por linha, nem de linhas por cue, nem de
 duração de cue.
 
 Correção, na ordem: reflow das cues antes de gerar o ASS (máximo 2 linhas,
-máximo ~26 caracteres por linha, máximo ~2,2s por cue, quebrando o segmento do
-Whisper por tempo proporcional às palavras), fonte embarcada no repo e passada
-por `fontsdir` ao filtro, e corpo por volta de `height // 26` com contorno de
-3px mais sombra de peso.
+máximo 26 caracteres por linha, alvo de 2,2s por cue, quebrando o segmento do
+Whisper por fronteira sintática e não só por tempo), fonte embarcada no repo e
+passada por `fontsdir` ao filtro, e corpo `height // 16` com contorno de 3px
+mais sombra de peso.
+
+Dois números deste parágrafo foram corrigidos depois de medidos, e seguir a
+versão antiga reintroduz o defeito:
+
+**O corpo é `height // 16`, não `height // 26`.** O `Fontsize` do ASS e o
+tamanho de fonte do PIL não valem a mesma coisa. Quando a legenda passou de PNG
+do PIL para ASS o número ficou igual e a LETRA encolheu 45% -- medido nos
+arquivos, 3,07%-4,06% da altura do quadro antes, 1,88% depois -- e nada acusou,
+porque nada media a altura da tinta, só o número da configuração, que não tinha
+mudado. O alvo passou a ser a altura da LETRA: 3,5% do quadro, que na tabela
+medida no próprio libass com a Anton em 14/09 é corpo 120 em 1920, ou seja
+`height // 16`. `CAPTION_SIZE_DIVISOR = 26` continua existindo em
+`warden_style`, mas serve à estimativa de linhas em `measure`, que olha pixels
+de um arquivo pronto -- não é o corpo da legenda.
+
+**O teto de duração de cue é 3,4s, com alvo em 2,2s.** A quebra por fronteira
+precisa poder ESTENDER meia palavra para alcançar uma vírgula: quando a cue
+inteira é palavra funcional ("é o meu", "que o", "e dá para") não há para onde
+recuar. Então `MAX_CUE_S = 2,2` é o alvo, `CUE_TOLERANCIA_S = 1,0` é o quanto
+uma cue pode passar dele para fechar numa fronteira, e o portão reprova em
+3,4s. Foi uma troca deliberada: um segundo a mais na tela ninguém percebe,
+"HATE THE" sozinho todo mundo percebe. O que não afrouxou, e é o que de fato
+protegia o quadro, é o orçamento de caracteres -- duas linhas de 26.
 
 ### 2.4 Legenda em inglês num clipe em português
 Não existe verificação de idioma em lugar nenhum. O hook vem do agente, a
@@ -225,8 +248,16 @@ que o primeiro plano é sempre gancho e traz a razão anotada.
 `fontsdir` ao libass, para nunca mais cair em fallback.
 
 O trabalho aqui é **portar isso para dentro do `warden cut`**, não reimplementar
-do zero. O que o PRIME faz com PNG do PIL pode ficar como PNG do PIL, inclusive:
-é mais previsível que `drawtext` e já está testado.
+do zero. O HOOK ficou como PNG do PIL, e por um motivo: ele é medido com a fonte
+real contra a largura útil ANTES de ser desenhado, e é essa medida que faz "o
+hook cabe inteiro" ser aritmética em vez de olhar.
+
+A LEGENDA não ficou. Ela saiu do PIL e virou ASS queimado pelo libass, por uma
+coisa que o PNG não resolve: destaque palavra a palavra. Um PNG por estado de
+palavra seriam cinquenta e cinco entradas de ffmpeg num clipe de vinte
+segundos; `{\k}` faz o mesmo dentro de uma linha de texto. O preço é uma
+dependência de compilação: sem `--enable-libass` o `cut` recusa queimar legenda,
+em voz alta.
 
 ---
 
@@ -249,8 +280,11 @@ O que construir:
 números: resolução, fps, corpo do texto em px, posição y do bloco, número de
 linhas por cue, duração média e mediana de cue, intervalo médio entre cortes,
 variação de escala ao longo do plano, e se há texto na faixa inferior. Rode
-sobre todos os aprovados e consolide num `SPECS/estilo-aprovado.json` com
-faixas, não valores únicos.
+sobre todos os aprovados e consolide num `SPECS/estilo-aprovado-scenepack.json`
+com faixas, não valores únicos. O nome diz de que formato ela é a medida, e isso
+não é cosmético: chamada `estilo-aprovado.json`, ela lia como "o estilo
+aprovado", ponto -- e o que ela mede são vinte scenepacks de animação, nenhum
+deles um corte de fala.
 
 **`warden style check <render.mp4>`**, que mede o render novo pelas mesmas
 métricas e reprova fora da faixa. É isso que transforma "ficou feio" em erro que
@@ -297,7 +331,8 @@ Um clipe só está pronto quando todas estas forem verdade, e a verificação di
 tem que ser automática onde der e visual onde não der:
 
 O hook aparece inteiro, sem corte lateral, em no máximo duas linhas.
-A legenda tem no máximo duas linhas e nenhuma cue passa de 2,5s.
+A legenda tem no máximo duas linhas, nenhuma cue passa de 3,4s, e nenhuma cue
+fecha em palavra pendurada.
 Não há duas legendas no mesmo frame.
 A legenda está no mesmo idioma do hook.
 Nenhuma palavra queimada foi para a tela sem aprovação humana.

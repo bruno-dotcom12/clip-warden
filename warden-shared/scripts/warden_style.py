@@ -1661,8 +1661,10 @@ def check_sidecar(side):
 
     Estes números não são estimados: vêm de quem desenhou o texto, medido com a
     fonte real contra a largura útil. É aqui que "o hook cabe inteiro" e "nenhuma
-    cue passa de 2,5s" deixam de ser coisas que alguém tem de olhar e viram
-    aritmética que quebra um teste.
+    cue passa do teto" deixam de ser coisas que alguém tem de olhar e viram
+    aritmética que quebra um teste. O teto são dois números e não um:
+    `MAX_CUE_S_TETO` (3,2s) é até onde o reflow estende para alcançar uma
+    fronteira, e este portão reprova acima de 3,4s.
     """
     out = []
     if not side:

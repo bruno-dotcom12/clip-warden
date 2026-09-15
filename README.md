@@ -100,14 +100,21 @@ it rather than from the model's reading.
 | `warden campaign save --json '<json>'` | store one, verified by reading it back |
 | `warden fetch <url>` | a brief as readable text |
 | `warden archive --campaign <id>` | pull the authorised footage, and only that |
+| `warden archive --campaign <id> --text-first` | pull only what gives the words — the published subtitle, or the audio — and no video. Choose the windows on that first |
+| `warden archive --campaign <id> --window <a>-<b>` | pull ONLY that window of the source, through the same archive gate |
 | `warden authorize <url> --campaign <id>` | is this link in the campaign's archive? exit 1 = no |
 | `warden trusted add\|check\|list <x>` | the owner's trusted channels and domains, for clipping without a campaign |
 | `warden transcribe <file>` | published subtitles when they exist, whisper when they do not |
+| `warden captions review <srt> --start --end [--approve]` | the words before they burn. Approval is per window: a cut outside it renders with no caption rather than a wrong one |
 | `warden digest <transcript>` | the transcript a model can afford to read |
 | `warden signals <transcript>` | the moments the words and sound point at, for viral cuts |
+| `warden tracks list\|add <file>` | the owner's own audio, kept by name. This agent ships none and downloads none |
 | `warden beat <track>` | tempo, grid and drop, so a cut can land on a bar |
 | `warden cut <src> --campaign <id> --start --end --out` | render inside the rules, then check the render (needs `--crop` when the image has no face detector) |
-| `warden check <clip> --campaign <id> --caption -` | the gate: exit 1 means do not post |
+| `warden cut … --seconds <n>` | the duration the PERSON asked for. The delivery gate rejects a file that misses it with no campaign rule to blame |
+| `warden cut … --track <file>` | cut to that audio; `--track-start` says where it enters, its drop by default |
+| `warden style extract\|check <clip>` | measure what already looked right, and reject a render outside the measured range |
+| `warden check <clip> --campaign <id> --caption -` | the first gate: exit 1 means do not post |
 | `warden package --campaign <id> --hook "..."` | the caption the campaign requires |
 | `warden log --campaign <id> ...` | this install's own count, which the cap reads |
 

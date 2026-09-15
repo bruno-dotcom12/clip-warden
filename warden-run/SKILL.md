@@ -9,8 +9,10 @@ Someone sends a link, or asks you to go find a campaign. What comes back is
 files they can upload, with the caption to paste. Everything between is yours.
 
 ```
-find or read the campaign  ->  ask what they like  ->  pull the archive
-   ->  choose on the text  ->  render  ->  check  ->  send
+find or read the campaign  ->  ask what they like  ->  pull the TEXT of the
+   archive (--text-first)  ->  choose the windows on the words  ->  pull the
+   video  ->  read and approve the captions, window by window  ->  render
+   ->  look at the contact sheet  ->  check  ->  send
 ```
 
 ## 1. The campaign
@@ -61,9 +63,12 @@ the rule set is the payment.
 
 ## 3. Footage, text, moments
 
-`warden archive --campaign <id>`, then `warden transcribe`, then
+`warden archive --campaign <id> --text-first`, then `warden transcribe`, then
 `warden digest`. The order is in `warden-clip` and it is not negotiable: the
-moments are chosen on the words, before any video is opened.
+moments are chosen on the words, before any video is opened. `--text-first`
+pulls the published subtitle, or the audio when there is none, and no video at
+all -- measured on the 18-minute source of 14/09: subtitles 4s / 73 KB against
+whole video 16s / 361 MB. Pull the video only once the windows are chosen.
 
 If their preference is `approval: yes`, send the chosen moments first, as
 timestamps with the line that carries each one, and wait. If it is `no`, render
@@ -73,6 +78,23 @@ and send.
 
 `warden cut` for each chosen window, honouring `delivery`, `captions`, `hook`
 and `target_s` from `warden prefs show`. Then `warden-package` for the caption.
+
+When THEY said a number of seconds, it goes on the command line as
+`--seconds <n>`. `target_s` is their standing taste; `--seconds` is this
+request, and with it the delivery gate rejects a file that misses the number
+unless a campaign rule is to blame.
+
+The captions are approved per WINDOW, never per file.
+`warden captions review <srt> --start <s> --end <s> --approve` signs the lines
+it just printed and nothing else; a cut outside that window renders WITHOUT
+captions rather than burn a word nobody read. Approving one window never
+approved the file -- that is how `jokovic jokovic` reached the screen.
+
+`cut` writes a contact sheet of its own render and prints it as `SHEET:`, and it
+does not print the `MEDIA:` line without one. Open that image and go through the
+checklist it names before you send: the sheet is the only step in this whole
+path that looks at the picture, and a file with ten visible defects was once
+reported as passing because nobody opened it.
 
 Send each clip as it finishes, never the batch at the end. A person watching a
 progress message for twenty minutes assumes you died.
