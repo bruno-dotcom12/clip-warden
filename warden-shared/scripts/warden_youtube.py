@@ -4,9 +4,13 @@
 
 Este módulo é o irmão de `warden_tiktok.py` e segue as mesmas convenções: uma
 única porta para a rede, exceção própria que limpa segredo na construção,
-escrita de token atômica com modo 600, `status_conta()` que nunca levanta e
-nunca toca a rede, `progresso=None` em tudo que demora, timeout em toda
-requisição.
+escrita de token atômica com modo 600, `status_conta()` que nunca levanta,
+`progresso=None` em tudo que demora, timeout em toda requisição.
+
+Uma convenção NÃO é seguida aqui, e de propósito: o `status_conta()` do TikTok
+não toca a rede, e este toca. Ele descrevia o arquivo e chamava isso de
+"conectado"; em 15/09/2026 disse "renovação automática armada" enquanto a
+renovação devolvia `deleted_client`. Verificar é o ponto do comando.
 
 A diferença que decide o desenho: aqui a autorização é OAuth 2.0 **Device
 Flow** — o mesmo fluxo que uma TV usa. O agente pede um código curto, mostra
@@ -17,13 +21,31 @@ log. É o contrário do que um "peça o login do usuário" faria.
 Três coisas que este arquivo repete em voz alta porque mentir sobre elas seria
 prometer o que a API não faz:
 
-1. O VÍDEO SOBE PRIVADO. A documentação do `videos.insert` diz, palavra por
-   palavra: "All videos uploaded via the videos.insert endpoint from unverified
-   API projects created after 28 July 2020 will be restricted to private
-   viewing mode." Este app está publicado **Em produção, não verificado**.
-   Então `privacidade` tem padrão `private`, e mesmo pedindo `public` o YouTube
-   pode devolver `private` — e o que esta função reporta é o que ELE devolveu,
-   não o que nós pedimos. A pessoa publica com um toque no YouTube Studio.
+1. O VÍDEO SOBE TRANCADO COMO PRIVADO, E NINGUÉM DESTRANCA NO STUDIO. A
+   documentação do `videos.insert` diz, palavra por palavra: "All videos
+   uploaded via the videos.insert endpoint from unverified API projects created
+   after 28 July 2020 will be restricted to private viewing mode." Este projeto
+   do Google Cloud nunca passou pela auditoria da YouTube API Services, então
+   `privacidade` tem padrão `private`, e mesmo pedindo `public` o YouTube pode
+   devolver `private` — e o que esta função reporta é o que ELE devolveu, não o
+   que nós pedimos.
+
+   O que ACONTECE com esse vídeo está na Ajuda do YouTube
+   (support.google.com/youtube/answer/7300965), literalmente: "For videos that
+   have been locked as private due to upload via an unverified API service, you
+   will not be able to appeal." E: "Unlike user-selected private videos, you
+   will not be able to change the video's state until after you have
+   successfully submitted the video for re-review." Ou seja: o dono NÃO muda a
+   visibilidade no Studio, e não cabe recurso. A mesma página dá as duas saídas
+   reais — "re-upload the video via a verified API service or via the YouTube
+   app/site": ou o projeto passa pela auditoria (a YouTube API Services Audit,
+   sem prazo publicado pelo Google), ou a pessoa sobe o MESMO arquivo pelo app
+   ou pelo site do YouTube, à mão. Prometer "um toque no Studio" foi o que este
+   arquivo dizia antes, e era falso.
+
+   Cuidado com a confusão que custa caro: a verificação da TELA DE CONSENTIMENTO
+   do OAuth (a que tira o aviso "app não verificado" e o teto de 100 usuários) é
+   OUTRO processo, e passar por ela não destranca vídeo nenhum.
 2. O CLIENTE OAUTH VEM DA IMAGEM, não do código-fonte. Ele é do tipo "TVs e
    dispositivos com entrada limitada", e a documentação do Google parte do
    princípio, literalmente, de que "it is assumed that the apps cannot keep
@@ -42,9 +64,9 @@ prometer o que a API não faz:
 
 O que continua NÃO medido, e por isso não é afirmado em lugar nenhum daqui:
 quanto tempo o YouTube leva para processar o vídeo depois do upload, se e
-quando ele aparece na aba Shorts, e o comportamento do app depois de uma
-verificação que nunca foi pedida. Este módulo devolve o `id` do vídeo e o que o
-YouTube disse sobre a privacidade dele. O resto é da pessoa.
+quando ele aparece na aba Shorts, quanto demora uma auditoria que nunca foi
+pedida, e o comportamento do app depois dela. Este módulo devolve o `id` do
+vídeo e o que o YouTube disse sobre a privacidade dele. O resto é da pessoa.
 
 A CLI não mora aqui. Este arquivo é só função pura: `conecta()`, `token()`,
 `status_conta()` e `publica()`.
@@ -116,6 +138,23 @@ GRANT_REFRESH = "refresh_token"
 # conexão poder dizer "conectado ao canal X" em vez de "conectado". Uma pessoa
 # com três contas Google no celular escolhe a errada com facilidade, e descobrir
 # isso só depois de publicar é caro. Sem o readonly não há como conferir.
+#
+# DIVERGÊNCIA NÃO RESOLVIDA, registrada aqui em vez de "consertada" no escuro:
+#
+#   - A doc do Device Flow
+#     (developers.google.com/identity/protocols/oauth2/limited-input-device)
+#     lista, entre os escopos permitidos NESSE fluxo, só `youtube` e
+#     `youtube.readonly`. `youtube.upload` NÃO está na lista dela.
+#   - A medição de 15/09/2026 (commit acb379e), numa conta Google real, diz o
+#     contrário: o device flow pediu estes dois escopos, a pessoa aprovou, e o
+#     Google concedeu OS DOIS — o `scope` que voltou no token trazia
+#     `youtube.upload`.
+#
+# Duas fontes, uma delas é o comportamento observado. O escopo FICA como está:
+# trocar por `youtube` (que é bem mais amplo e pede mais da pessoa na tela de
+# consentimento) por causa de uma lista de documentação seria alargar permissão
+# em cima de um papel, contra uma medição. Se um dia o Google recusar
+# `invalid_scope` no `device/code`, a resposta está aqui e a troca é uma linha.
 ESCOPOS = ("https://www.googleapis.com/auth/youtube.upload "
            "https://www.googleapis.com/auth/youtube.readonly")
 ESCOPO_UPLOAD = "https://www.googleapis.com/auth/youtube.upload"
@@ -183,22 +222,54 @@ SOBRE_SHORTS = (
     "vertical e tem até 3 minutos. O que esta esteira entrega já é 1080x1920 e "
     "curto, então ele cai em Shorts sozinho — não há campo para pedir isso.")
 
+# E por que este texto NÃO diz quantos toques. Ele já disse "é um toque, e
+# ninguém precisa reenviar nada", e isso foi publicado uma vez: era falso. A
+# Ajuda do YouTube (support.google.com/youtube/answer/7300965) diz que o vídeo
+# trancado por upload de API não auditada não aceita recurso e não muda de
+# estado até passar por re-review. A trava não é a visibilidade que a pessoa
+# escolhe; é outra coisa, com o mesmo nome. Trocar "um toque" por "três toques"
+# seria repetir o erro com outro número — então aqui não há número nenhum.
 AVISO_PRIVADO = (
-    "O vídeo subiu PRIVADO e só você o vê. Isto não é escolha nossa: a "
-    "documentação do YouTube diz que 'All videos uploaded via the videos.insert "
-    "endpoint from unverified API projects created after 28 July 2020 will be "
-    "restricted to private viewing mode', e este app está publicado em produção "
-    "SEM verificação. Para publicar, abra o vídeo no YouTube Studio e mude a "
-    "visibilidade para Público — é um toque, e ninguém precisa reenviar nada.")
+    "O vídeo subiu TRANCADO como privado e só você o vê. Isto não é escolha "
+    "nossa nem uma caixinha que ficou desmarcada: o YouTube tranca assim todo "
+    "vídeo enviado por um app que ainda não passou pela auditoria dele — a "
+    "documentação diz 'All videos uploaded via the videos.insert endpoint from "
+    "unverified API projects created after 28 July 2020 will be restricted to "
+    "private viewing mode'. Essa trava NÃO se desfaz no YouTube Studio e não "
+    "cabe recurso: a Ajuda do YouTube "
+    "(support.google.com/youtube/answer/7300965) diz, sobre vídeos trancados "
+    "por upload de API não verificada, 'you will not be able to appeal' e 'you "
+    "will not be able to change the video's state'. Para o clipe ficar público "
+    "agora, suba o MESMO arquivo pelo app ou pelo site do YouTube, pela sua "
+    "conta — é o caminho que a própria Ajuda indica ('re-upload the video via "
+    "a verified API service or via the YouTube app/site'). Na primeira vez o "
+    "YouTube pode pedir para criar o canal antes de aceitar o envio: uma conta "
+    "Google nova não vem com canal.")
+
+# A versão curta do AVISO_PRIVADO, para o fim de uma linha de `status`. Ela
+# repete a trava e a saída dela; o que não pode é repetir só "sobe privado", que
+# soa como caixinha desmarcada.
+# Começa com quebra de linha porque o que vem antes dele às vezes termina em
+# ponto final (a receita de um erro do Google) e às vezes no meio de uma frase.
+# Um "; " grudado num ponto final vira "no celular.; lembre que", que é o tipo
+# de costura que faz a linha parecer gerada em vez de escrita.
+_LEMBRETE_TRANCADO = (
+    "\nLembre que o vídeo sobe TRANCADO como privado enquanto este app não "
+    "passar pela auditoria do YouTube, e que essa "
+    "trava não se desfaz no Studio — para publicar agora, suba "
+    "o mesmo arquivo pelo app ou site do YouTube.")
 
 COMO_AUTORIZAR = (
     "Abra {url} no celular (ou em qualquer navegador já logado na conta do "
     "canal) e digite o código: {codigo}\n"
     "A senha do Google NÃO passa por aqui: quem pergunta é o Google, na tela "
     "dele. Este agente só recebe a autorização depois que você aprova.\n"
-    "O Google vai avisar que o app não é verificado — é este app mesmo, e é por "
-    "isso que o vídeo sobe privado. Toque em Avançado / Continuar para "
-    "autorizar.")
+    "O Google vai avisar que o app não é verificado — é este app mesmo. Toque "
+    "em Avançado / Continuar para autorizar.\n"
+    "Esse aviso da tela de consentimento é OUTRA coisa, e não é o motivo de o "
+    "vídeo subir trancado como privado: quem tranca é a auditoria da YouTube "
+    "API Services, que este projeto não fez. Passar pela verificação do "
+    "consentimento não destrancaria vídeo nenhum.")
 
 # Uma frase por motivo de recusa da API do YouTube, dizendo o que a PESSOA faz.
 # O texto do Google vai junto, verbatim, sempre: o diagnóstico é dele.
@@ -255,17 +326,24 @@ RECEITAS = {
 # da API do YouTube. Por isso tem tabela própria e função própria de leitura.
 RECEITAS_OAUTH = {
     "invalid_grant": (
-        "O refresh_token não vale mais. Num app publicado em produção ele não "
-        "vence por tempo, então isto quase sempre quer dizer que alguém revogou "
-        "o acesso em myaccount.google.com/permissions, ou que a senha da conta "
-        "mudou. Não há o que renovar: refaça a conexão do zero e regrave "
+        "O refresh_token não vale mais: o acesso foi revogado em "
+        "myaccount.google.com/permissions, ou a senha da conta mudou. Num app "
+        "publicado em produção ele não vence por tempo, então não é isso. Não "
+        "há o que renovar: rode `warden youtube connect` de novo e regrave "
         "{arquivo}."),
+    "deleted_client": (
+        "O cliente do Google que autorizou esta conta foi APAGADO (ou trocado). "
+        "O `refresh_token` em {arquivo} foi emitido por aquele cliente e não "
+        "vale mais para nenhum outro — não há o que renovar, e tentar de novo "
+        "vai dar exatamente isto. Rode `warden youtube connect` de novo, com a "
+        "credencial nova, e a pessoa autoriza uma vez no celular."),
     "invalid_client": (
-        "O Google não reconheceu este cliente OAuth. Confira "
-        "`WARDEN_YT_CLIENT_ID` e `WARDEN_YT_CLIENT_SECRET` (ou os valores "
-        "embutidos no módulo) contra o que está no console do Google Cloud. A "
-        "autorização da pessoa não tem nada a ver com isso e não precisa ser "
-        "refeita."),
+        "O Google não reconheceu este cliente OAuth: o par em "
+        "`WARDEN_YT_CLIENT_ID` / `WARDEN_YT_CLIENT_SECRET` não é o que emitiu o "
+        "token que está em {arquivo}. Ou o ambiente está com a credencial "
+        "errada — confira contra o console do Google Cloud — ou o cliente foi "
+        "trocado, e aí o token antigo morreu junto: rode `warden youtube "
+        "connect` de novo com a credencial nova."),
     "unauthorized_client": (
         "Este cliente OAuth não pode usar este fluxo. O cliente precisa ser do "
         "tipo 'TVs e dispositivos com entrada limitada'; um cliente Web ou "
@@ -287,6 +365,35 @@ RECEITAS_OAUTH = {
         "Use uma conta Google comum, ou peça ao administrador para liberar o "
         "cliente OAuth."),
 }
+
+# ROTAÇÃO DE CREDENCIAL MATA TODO refresh_token JÁ EMITIDO.
+#
+# Medido em 15/09/2026, 16:10 BRT, no container em execução. O dono rotacionou o
+# cliente OAuth (o antigo tinha vazado dentro da imagem pública) e apagou o
+# antigo. Com o `client_id` guardado em /var/lib/hermes/warden/youtube.json e o
+# secret novo do ambiente:
+#
+#     POST https://oauth2.googleapis.com/token  (grant_type=refresh_token)
+#     → HTTP 401
+#       {"error": "deleted_client",
+#        "error_description": "The OAuth client was deleted."}
+#
+# E o `warden youtube status` respondeu, no mesmo minuto:
+#
+#     connected -- conectado ao canal Pod Cortes, acesso vencido ou a menos de
+#     5 min de vencer — e renova sozinho no próximo envio, sem você; renovação
+#     automática armada
+#
+# Três afirmações, as três falsas, e nenhuma delas verificada: ele leu o disco e
+# descreveu o disco. É o mesmo defeito que `warden delivered` já corrigiu nesta
+# casa ("antes, este comando acreditava no modelo").
+#
+# O refresh_token é emitido POR um cliente e não vale para nenhum outro. Quem
+# rotaciona credencial precisa reconectar, e o comando tem que dizer isso
+# sozinho — por isso `status_conta` passou a EXERCITAR a credencial em vez de
+# descrever o arquivo, e por isso estes nomes têm tabela própria.
+CREDENCIAL_MORTA = ("deleted_client", "invalid_client", "invalid_grant",
+                    "unauthorized_client")
 
 # Segredos vistos neste processo, para nunca vazarem numa mensagem. São TRÊS:
 # o access_token (1 hora), o refresh_token (que não vence e por isso vaza pior)
@@ -339,13 +446,19 @@ def _http(metodo, url, *, corpo=None, cabecalhos=None, timeout=TIMEOUT_API):
     except urllib.error.HTTPError as exc:
         return (exc.code, exc.read(),
                 {k.lower(): v for k, v in (exc.headers or {}).items()})
+    # `codigo="sem_rede"` nos dois: quem chama precisa separar "o Google
+    # recusou" de "ninguém atendeu", e essas duas coisas mandam fazer coisas
+    # opostas. É o que deixa o `status` dizer "não consegui verificar" em vez de
+    # afirmar que a conexão quebrou — ou, pior, que ela está boa.
     except urllib.error.URLError as exc:
         raise YouTubeIndisponivel(
             f"não deu para falar com {url}: {exc.reason}. Isto é rede desta "
-            "máquina, não recusa do YouTube — confira a conexão e mande de novo.")
+            "máquina, não recusa do YouTube — confira a conexão e mande de novo.",
+            codigo="sem_rede")
     except OSError as exc:
         raise YouTubeIndisponivel(
-            f"não deu para falar com {url}: {type(exc).__name__}: {exc}")
+            f"não deu para falar com {url}: {type(exc).__name__}: {exc}",
+            codigo="sem_rede")
 
 
 # ──────────────────────────────────────────────────────────────── o segredo
@@ -983,10 +1096,11 @@ def conecta(*, progresso=None, espera=300):
         # não ganha canal do YouTube junto. O primeiro envio falharia com
         # `youtubeSignupRequired`, três passos e vários minutos depois.
         #
-        # Sem esta marca, `status_conta` (que nunca toca a rede, de propósito)
-        # dizia apenas "canal não registrado" -- a mesma frase para "a consulta
-        # não respondeu", que é cosmético, e para "não há canal", que impede
-        # publicar. Uma frase para dois estados, um deles bloqueante.
+        # Sem esta marca, `status_conta` dizia apenas "canal não registrado" --
+        # a mesma frase para "a consulta não respondeu", que é cosmético, e para
+        # "não há canal", que impede publicar. Uma frase para dois estados, um
+        # deles bloqueante. A marca fica no arquivo para o status responder isso
+        # sem depender de a rede estar de pé.
         dados["canal_ausente"] = True
         _grava_ou_explica(dados, "conexão")
     frouxo = _modo_frouxo(TOKEN_FILE)
@@ -1103,20 +1217,92 @@ def _renova(dados, progresso=None):
     return atualizado
 
 
-def status_conta():
+def _confere_credencial(dados):
+    """Exercita a credencial AGORA. -> (estado, frase). NUNCA levanta.
+
+    `estado` é um de:
+
+      "ok"        o Google aceitou. A frase diz O QUE foi exercitado, porque
+                  "aceitou" sem objeto é a mesma vagueza que se está corrigindo.
+      "morta"     o Google recusou de um jeito que só reconectar resolve. A
+                  frase é a dele, com a receita do que fazer.
+      "recusada"  o Google recusou por outro motivo. Também é dele a palavra.
+      "sem_rede"  ninguém atendeu. NADA foi verificado, e essa é a resposta.
+
+    Quando há `refresh_token`, o que se exercita é a RENOVAÇÃO, e não uma
+    consulta qualquer. Não é preciosismo: `status` afirmava "renovação
+    automática armada", e a única chamada no mundo que responde se ela está
+    armada é a própria renovação — foi ela que devolveu `deleted_client` na
+    medição de 15/09. Uma consulta de canal com um access_token ainda válido
+    teria dito "tudo bem" durante a hora inteira em que a conexão já estava
+    morta.
+
+    Isso custa um POST no endpoint de token (que NÃO consome cota da YouTube
+    Data API — cota é dos endpoints de dados) e reescreve o arquivo do token com
+    o acesso novo. Era essa a objeção antiga a tocar a rede aqui; ela vale menos
+    que um `status` que mente.
+
+    Sem `refresh_token` não há renovação para testar, e aí a pergunta possível é
+    outra — "este access_token ainda serve?" —, respondida pela consulta de
+    canal, que custa 1 unidade de cota.
+    """
+    pode = _pode_renovar(dados)
+    try:
+        if pode:
+            novo = _renova(dados)
+            _, falta = _validade(novo)
+            resto = f", e o acesso novo vale {int(falta // 60)} min" \
+                if falta is not None else ""
+            return "ok", ("renovação automática testada agora e aceita pelo "
+                          f"Google{resto}")
+        acesso = str(dados.get("access_token") or "").strip()
+        codigo, bruto, _cab = _http(
+            "GET", URL_CANAL, cabecalhos={"Authorization": f"Bearer {acesso}"},
+            timeout=TIMEOUT_API)
+        _resposta_api(codigo, bruto, "conferir o acesso")
+        return "ok", ("o Google aceitou este acesso agora (não há "
+                      "`refresh_token` para testar, então ele para quando "
+                      "vencer)")
+    except YouTubeIndisponivel as exc:
+        if exc.codigo == "sem_rede":
+            return "sem_rede", str(exc)
+        if exc.codigo in CREDENCIAL_MORTA:
+            return "morta", str(exc)
+        return "recusada", str(exc)
+    except Exception as exc:                                  # noqa: BLE001
+        # `status_conta` promete nunca levantar, e essa promessa só vale para o
+        # que ninguém previu. Um defeito aqui não pode sumir com o relatório
+        # inteiro do `warden status`.
+        return "sem_rede", _limpa(f"não deu para verificar: "
+                                  f"{type(exc).__name__}: {exc}")
+
+
+def status_conta(*, verificar=True):
     """(ok, motivo) para o `warden status`. NUNCA levanta, nem com lixo no disco.
 
-    Não toca a rede, de propósito — nem para renovar. `warden status` roda a
-    qualquer hora, e uma renovação de cortesia gastaria cota e escreveria no
-    arquivo do token sem ninguém ter pedido. Um token que vence em dez minutos e
-    TEM refresh_token não é um problema da pessoa, e esta função diz isso com
-    todas as letras em vez de pintar de vermelho algo que se resolve sozinho no
-    próximo envio.
+    TRÊS estados, com palavras diferentes, porque cada um manda fazer coisa
+    diferente:
 
-    Os estados que ela distingue, porque cada um manda fazer coisa diferente:
-    nunca conectou; conectado e válido; vencendo mas com renovação armada; e sem
-    refresh_token, que é a única situação que exige a pessoa sentar e refazer a
-    conexão.
+      NÃO CONECTADO         não há arquivo, ou o que há não serve (escopo
+                            errado, conta sem canal). Não há o que verificar.
+      CONECTADO E VERIFICADO a credencial foi exercitada AGORA e o Google
+                            aceitou. Só aqui `ok` é True.
+      PRESENTE, NÃO VERIFICADO o arquivo está lá e a verificação não confirmou
+                            nada — ou porque o Google recusou (e a palavra dele
+                            vem junto, com o que fazer), ou porque a rede não
+                            respondeu. Esses dois não são a mesma frase.
+
+    POR QUE ELA PASSOU A TOCAR A REDE, depois de uma vida inteira sem tocar: em
+    15/09/2026 ela respondeu "connected -- conectado ao canal Pod Cortes (...)
+    renovação automática armada" no mesmo minuto em que a renovação devolvia
+    `deleted_client`. Ela nunca tinha perguntado nada a ninguém: leu o disco e
+    descreveu o disco. "Conectado" é uma afirmação sobre o mundo, e um comando
+    que a faz sem ter verificado está adivinhando — a mesma coisa que este
+    projeto já tirou do `warden delivered`, e que a persona proíbe em voz alta.
+
+    `verificar=False` desliga a rede e devolve o que o arquivo diz, SEM chamar
+    isso de conectado: em modo offline a resposta honesta é "não verificado",
+    não um palpite otimista.
     """
     if not _cliente_configurado():
         return (False, "this build carries no Google OAuth client, so there is "
@@ -1156,28 +1342,58 @@ def status_conta():
                     "a conta autorizada não tem canal no YouTube, então nenhum "
                     "envio vai funcionar. Abra youtube.com nessa conta, crie o "
                     "canal, e rode a conexão de novo.")
-        recado = f"conectado ao canal {quem}" if quem else \
-            f"conectado (a consulta de canal não respondeu; o envio deve funcionar)"
+        # Daqui para baixo, TUDO que o arquivo diz é descrição de arquivo. Ela
+        # entra na frase depois do veredito, nunca como o veredito.
+        #
+        # O modo do arquivo é lido AGORA, antes de verificar, e não no fim: a
+        # verificação renova, a renovação reescreve o arquivo com modo 600, e aí
+        # um `status` lido depois juraria que nunca houve frouxidão. Houve — o
+        # refresh_token ficou legível para a máquina inteira até este segundo, e
+        # é isso que a pessoa precisa saber.
+        frouxo = _modo_frouxo(TOKEN_FILE)
+        rodape = _LEMBRETE_TRANCADO + (f"\nATENÇÃO: {frouxo}" if frouxo else "")
+        de_quem = f" ao canal {quem}" if quem else \
+            " (a consulta de canal não respondeu na conexão)"
         if falta is None:
-            recado += ", sem data de validade no arquivo (não dá para saber)"
+            prazo = "sem data de validade no arquivo"
         elif falta <= MARGEM_RENOVACAO:
-            recado += (f", acesso vencido ou a menos de {MARGEM_RENOVACAO // 60} "
-                       "min de vencer — e renova sozinho no próximo envio, sem "
-                       "você")
+            prazo = (f"o acesso gravado venceu ou vence em menos de "
+                     f"{MARGEM_RENOVACAO // 60} min")
         else:
-            recado += f", acesso vence em {int(falta // 60)} min"
-        if pode:
-            recado += "; renovação automática armada"
-        else:
+            prazo = f"o acesso gravado vence em {int(falta // 60)} min"
+
+        if not verificar:
+            # O modo offline NÃO diz conectado. Ele diz o que sabe (o arquivo) e
+            # diz o que não sabe (tudo o mais), e `ok=False` porque "conectado"
+            # é afirmação sobre o mundo e ninguém perguntou nada ao mundo.
+            return False, (
+                f"arquivo de conexão presente{de_quem}, {prazo} — mas NÃO "
+                "verificado: a verificação está desligada, então nada aqui foi "
+                "confirmado com o Google." + rodape)
+
+        estado, frase = _confere_credencial(dados)
+        if estado == "morta":
+            return False, (
+                f"o arquivo de conexão está lá{de_quem}, mas ele NÃO vale mais "
+                f"— verifiquei agora e o Google recusou. {frase}" + rodape)
+        if estado == "recusada":
+            return False, (
+                f"o arquivo de conexão está lá{de_quem}, e a verificação de "
+                f"agora não passou. {frase}" + rodape)
+        if estado == "sem_rede":
+            # Nem conectado nem quebrado: NÃO SEI. Dizer qualquer um dos dois
+            # aqui seria inventar, e inventar o otimista é o defeito de 15/09.
+            return False, (
+                f"arquivo de conexão presente{de_quem}, {prazo} — mas não "
+                f"consegui verificar, e por isso não afirmo que está conectado "
+                f"nem que quebrou. {frase}" + rodape)
+
+        recado = f"conectado e VERIFICADO agora{de_quem}: {frase}"
+        if not pode:
             # Ainda não dói, mas vai doer em uma hora. Melhor agora do que às 3h.
             recado += ("; SEM renovação automática (falta `refresh_token`), "
                        "então ele vai parar em até 1 hora")
-        recado += ("; lembre que o vídeo sobe PRIVADO enquanto o app não for "
-                   "verificado")
-        frouxo = _modo_frouxo(TOKEN_FILE)
-        if frouxo:
-            recado += " — ATENÇÃO: " + frouxo
-        return True, recado
+        return True, recado + rodape
     except Exception as exc:                                  # noqa: BLE001
         return False, _limpa(f"não deu para avaliar a conexão: "
                              f"{type(exc).__name__}: {exc}")
@@ -1195,13 +1411,21 @@ def publica(caminho, *, titulo, descricao="", tags=(), privacidade="private",
     pedimos. Prometer público quando a API entrega privado seria mentir sobre o
     resultado do trabalho.
 
+    E quando ele devolve `private`, o vídeo fica TRANCADO assim: a Ajuda do
+    YouTube (support.google.com/youtube/answer/7300965) diz que não cabe recurso
+    e que o estado não muda até um re-review. Ninguém destranca no Studio. A
+    saída imediata é subir o mesmo arquivo pelo app ou site do YouTube — é o que
+    o `aviso` explica, em português, para quem receber este dicionário.
+
     O dicionário devolvido:
 
       video_id          o id do vídeo, que é o que serve para tudo depois
       url               o link do vídeo
-      studio            o link para publicar/editar no YouTube Studio
+      studio            o link do vídeo no YouTube Studio — serve para ver e
+                        editar título, descrição e miniatura; NÃO serve para
+                        destrancar a privacidade de um upload não auditado
       titulo            o título que subiu
-      privacidade       o que o YouTube DISSE que ficou
+      privacidade       o que o YouTube DISSE que ficou (nunca o que pedimos)
       privacidade_pedida o que nós pedimos
       bytes             o tamanho enviado
       segundos          do início do envio até a resposta do PUT
@@ -1258,11 +1482,25 @@ def publica(caminho, *, titulo, descricao="", tags=(), privacidade="private",
         _fala(progresso, "AVISO: " + frouxo)
     if privacidade != "private":
         avisos.append(
-            f"você pediu `{privacidade}`, mas enquanto este app não for "
-            "verificado o YouTube restringe a privado todo vídeo enviado pela "
-            "API. O que vier de volta é o que vale.")
+            f"você pediu `{privacidade}`, mas enquanto este app não passar pela "
+            "auditoria do YouTube ele restringe a privado todo vídeo enviado "
+            "pela API — e tranca nesse estado, sem recurso e sem mudança pelo "
+            "Studio. O que vier de volta é o que vale.")
 
-    tok = token(progresso=progresso)
+    # A renovação acontece AQUI, antes de um byte sair da máquina. Quando ela
+    # falha por credencial morta, o que a pessoa precisa ler é o que fazer e que
+    # o arquivo NÃO foi enviado — não um `deleted_client` cru no meio de um
+    # traceback de OAuth. Medido em 15/09/2026: foi exatamente essa a recusa
+    # depois de o dono rotacionar o cliente do Google.
+    try:
+        tok = token(progresso=progresso)
+    except YouTubeIndisponivel as exc:
+        if exc.codigo in CREDENCIAL_MORTA:
+            raise YouTubeIndisponivel(
+                f"nada foi enviado: a conexão com o YouTube não vale mais, e o "
+                f"envio parou antes de subir qualquer byte de {caminho}.\n"
+                f"{exc}", codigo=exc.codigo, http=exc.http)
+        raise
 
     # O corpo de metadados. NÃO tem `categoryId`: nós não sabemos a categoria do
     # clipe e chutar uma seria inventar informação sobre o canal de outra
@@ -1326,12 +1564,33 @@ def publica(caminho, *, titulo, descricao="", tags=(), privacidade="private",
             http=codigo)
 
     status = dados.get("status") if isinstance(dados.get("status"), dict) else {}
-    ficou = status.get("privacyStatus") or privacidade
+    # `ficou` é o `privacyStatus` que o YouTube DEVOLVEU. Nunca `privacidade`,
+    # que é só o que pedimos. O fallback existe para a resposta que vem sem o
+    # bloco `status` -- e mesmo aí a frase abaixo diz qual dos dois está falando,
+    # porque "privacidade: public" sem dono é a mentira que este arquivo já
+    # contou uma vez.
+    devolvido = status.get("privacyStatus")
+    ficou = devolvido or privacidade
     if ficou != privacidade:
-        avisos.append(
-            f"você pediu `{privacidade}` e o YouTube gravou `{ficou}`. Quem "
-            "manda na privacidade é ele, não nós.")
-    _fala(progresso, f"vídeo {video_id} no ar, privacidade `{ficou}`")
+        aviso = (f"você pediu `{privacidade}` e o YouTube gravou `{ficou}`. "
+                 "Quem manda na privacidade é ele, não nós.")
+        if ficou == "private":
+            # O caso real: pediram público, veio privado. Dizer só "ele gravou
+            # privado" deixa a pessoa procurando o botão que não existe.
+            aviso += (" Ele tranca assim todo vídeo enviado por app que ainda "
+                      "não passou pela auditoria dele, e essa trava não se "
+                      "desfaz no Studio nem por recurso "
+                      "(support.google.com/youtube/answer/7300965). Para o "
+                      "clipe ficar público agora, suba o MESMO arquivo pelo "
+                      "app ou pelo site do YouTube.")
+        avisos.append(aviso)
+    if devolvido:
+        _fala(progresso, f"vídeo {video_id} no ar; o YouTube devolveu "
+                         f"privacidade `{ficou}` (pedimos `{privacidade}`)")
+    else:
+        _fala(progresso, f"vídeo {video_id} no ar; o YouTube respondeu sem "
+                         f"`privacyStatus`, então o que consta é o que pedimos: "
+                         f"`{ficou}`")
     if ficou == "private":
         _fala(progresso, AVISO_PRIVADO)
     return {"video_id": video_id,

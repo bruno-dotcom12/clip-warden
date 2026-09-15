@@ -10,8 +10,11 @@ ninguém trava nelas:
    caminho normal e continua; `slow_down` aumenta o intervalo; `access_denied` e
    `expired_token` param na hora; e, acima de tudo, o teto de espera existe e é
    respeitado. Um agente preso perguntando para sempre é um agente morto.
-2. O VÍDEO SOBE PRIVADO, e quem diz quanto ele ficou é o YouTube. O que a
-   função reporta é a resposta DELE, não o que pedimos.
+2. O VÍDEO SOBE TRANCADO COMO PRIVADO, e quem diz como ele ficou é o YouTube: o
+   que a função reporta é a resposta DELE, nunca o que pedimos. E o texto que
+   sai junto não pode voltar a prometer que o dono destranca isso no Studio —
+   ele não destranca, e a classe `NaoPrometePublicar` existe só para travar
+   essa frase.
 3. OS TRÊS SEGREDOS NUNCA SAEM: access_token, refresh_token e client_secret.
    Nem numa exceção, nem numa linha de progresso, nem quando o próprio Google
    ecoa o segredo de volta dentro de um `error_description`.
@@ -315,10 +318,10 @@ class DeviceFlow(Base):
         # uma cópia de um segredo não resolve nada
         self.assertNotIn("client_secret", json.dumps(disco))
 
-        # 5. o resultado diz de quem é o canal e avisa do privado
+        # 5. o resultado diz de quem é o canal e avisa da trava do privado
         self.assertEqual(saida["canal"], CANAL)
         self.assertEqual(saida["canal_id"], CANAL_ID)
-        self.assertIn("PRIVADO", saida["aviso"])
+        self.assertIn("TRANCADO", saida["aviso"])
         self.assertEqual(saida["avisos"], [])
 
     def test_a_senha_do_google_nunca_e_pedida_por_aqui(self):
@@ -784,14 +787,22 @@ class Upload(Base):
         Y.publica(self.clipe(), titulo="ok")
         self.assertEqual(len(rede.pedidos(SESSAO)), 1)
 
-    def test_o_video_sobe_privado_e_o_aviso_diz_como_publicar(self):
+    def test_o_video_sobe_trancado_e_o_aviso_manda_reenviar_pelo_app(self):
+        """A saída real, não a que este arquivo prometia.
+
+        Ele dizia "abra no Studio e mude a visibilidade — é um toque". É falso:
+        a Ajuda do YouTube (support.google.com/youtube/answer/7300965) diz, de
+        um vídeo trancado por upload de API não verificada, "you will not be
+        able to appeal" e "you will not be able to change the video's state".
+        O que existe é reenviar pelo app/site.
+        """
         self.rede()
         falas = []
         saida = Y.publica(self.clipe(), titulo="ok", progresso=falas.append)
         self.assertEqual(saida["privacidade"], "private")
-        self.assertIn("PRIVADO", saida["aviso"])
-        self.assertIn("Studio", saida["aviso"])
-        self.assertIn("PRIVADO", "\n".join(falas))
+        self.assertIn("TRANCADO", saida["aviso"])
+        self.assertIn("app ou pelo site do YouTube", saida["aviso"])
+        self.assertIn("TRANCADO", "\n".join(falas))
 
     def test_quem_manda_na_privacidade_e_o_youtube_e_nao_o_pedido(self):
         """Pedimos público, ele gravou privado. Reportar o pedido seria mentir."""
@@ -801,11 +812,83 @@ class Upload(Base):
         self.assertEqual(saida["privacidade"], "private")
         self.assertTrue(any("gravou `private`" in a for a in saida["avisos"]))
 
+    def test_pedido_public_negado_diz_por_que_e_o_que_fazer(self):
+        """Não basta dizer "gravou privado": sozinho isso manda a pessoa
+        procurar no Studio um botão que não existe."""
+        self.rede()
+        saida = Y.publica(self.clipe(), titulo="ok", privacidade="public")
+        texto = "\n".join(saida["avisos"])
+        self.assertIn("auditoria", texto)
+        self.assertIn("app ou pelo site do YouTube", texto)
+        self.assertIn("answer/7300965", texto)
+
+    def test_quando_o_youtube_devolve_public_e_isso_que_o_relatorio_diz(self):
+        """O outro lado da mesma trava: se um dia a auditoria passar e ele
+        devolver `public`, o relatório precisa refletir ISSO — sem aviso de
+        trancado e sem divergência inventada."""
+        self.rede(put=resposta_video(privacyStatus="public"))
+        saida = Y.publica(self.clipe(), titulo="ok", privacidade="public")
+        self.assertEqual(saida["privacidade"], "public")
+        self.assertEqual(saida["privacidade_pedida"], "public")
+        self.assertEqual(saida["aviso"], "")
+        self.assertFalse([a for a in saida["avisos"] if "gravou" in a])
+
+    def test_o_relatorio_le_o_privacy_status_devolvido_e_nao_o_pedido(self):
+        """A mutação que este teste pega: trocar `status["privacyStatus"]` por
+        `privacidade` no retorno. Pedimos `private`, ele devolveu `unlisted` —
+        se a saída disser `private`, alguém reportou o pedido."""
+        self.rede(put=resposta_video(privacyStatus="unlisted"))
+        saida = Y.publica(self.clipe(), titulo="ok", privacidade="private")
+        self.assertEqual(saida["privacidade"], "unlisted")
+        self.assertEqual(saida["privacidade_pedida"], "private")
+        self.assertEqual(saida["aviso"], "")
+
+    def test_a_fala_do_progresso_diz_de_quem_e_a_privacidade(self):
+        """"privacidade `private`" não tem dono. Quem lê precisa saber se
+        aquilo é a resposta do YouTube ou o nosso pedido."""
+        self.rede()
+        falas = []
+        Y.publica(self.clipe(), titulo="ok", privacidade="public",
+                  progresso=falas.append)
+        linha = [f for f in falas if VIDEO_ID in f and "privacidade" in f]
+        self.assertTrue(linha, "o progresso não disse como o vídeo ficou")
+        self.assertIn("o YouTube devolveu", linha[0])
+
     def test_o_resultado_explica_o_que_faz_um_short(self):
         self.rede()
         saida = Y.publica(self.clipe(), titulo="ok")
         self.assertIn("vertical", saida["shorts"])
         self.assertIn("3 minutos", saida["shorts"])
+
+    def test_cliente_apagado_no_envio_diz_o_que_fazer_e_que_nada_subiu(self):
+        """A recusa de 15/09 no caminho do envio, não no do status.
+
+        Se a renovação morre na hora de publicar, o que a pessoa precisa ler é
+        (a) que o arquivo NÃO foi enviado e (b) que o conserto é reconectar —
+        não um `deleted_client` cru saindo de um traceback de OAuth.
+        """
+        self.grava_token(expires_at=Y._iso(self.relogio.parede - 10))
+        rede = self.rede(refresh=[erro_oauth(
+            "deleted_client", "The OAuth client was deleted.", 401)])
+        with self.assertRaises(Y.YouTubeIndisponivel) as caixa:
+            Y.publica(self.clipe(), titulo="ok")
+        msg = str(caixa.exception)
+        self.assertIn("nada foi enviado", msg)
+        self.assertIn("warden youtube connect", msg)
+        self.assertIn("The OAuth client was deleted.", msg)
+        self.assertEqual(caixa.exception.codigo, "deleted_client")
+        # e o arquivo não chegou a sair da máquina
+        self.assertEqual(rede.pedidos(Y.URL_UPLOAD), [])
+        self.assertEqual(rede.pedidos(SESSAO), [])
+
+    def test_o_segredo_nao_vaza_quando_a_renovacao_morre_no_envio(self):
+        self.grava_token(expires_at=Y._iso(self.relogio.parede - 10))
+        self.rede(refresh=[erro_oauth(
+            "invalid_client", f"client {SEGREDO_APP} is unknown", 401)])
+        with self.assertRaises(Y.YouTubeIndisponivel) as caixa:
+            Y.publica(self.clipe(), titulo="ok")
+        for segredo in (ACESSO, REFRESH, SEGREDO_APP):
+            self.assertNotIn(segredo, str(caixa.exception))
 
     def test_http_308_nao_vira_sucesso(self):
         """308 é 'recebi parte'. Não há retomada aqui, e fingir que subiu é pior."""
@@ -1000,24 +1083,159 @@ class OSegredo(Base):
 # ─────────────────────────────────────────────────────────────── o status
 
 class StatusConta(Base):
+    """`status` afirma sobre o MUNDO, então ele pergunta ao mundo.
 
-    def test_nao_toca_a_rede(self):
-        """`warden status` roda a qualquer hora; renovar de cortesia gasta cota."""
+    Até 15/09/2026 esta função lia o disco e descrevia o disco, e chamava isso
+    de "connected". No dia em que o dono rotacionou o cliente OAuth, ela disse
+    "conectado ao canal Pod Cortes (...) renovação automática armada" no mesmo
+    minuto em que a renovação devolvia `deleted_client`. Três afirmações, as
+    três falsas, nenhuma verificada.
+
+    A suíte continua sem tocar a rede: `_http` é trocado, como no resto do
+    arquivo. O que mudou é que agora ELA PRECISA ser trocada — um `status` que
+    não chama ninguém é um `status` que não sabe de nada, e é isso que os testes
+    abaixo travam.
+    """
+
+    def rede_morta(self, erro="deleted_client",
+                   descricao="The OAuth client was deleted.", http=401):
+        """A rede do dia 15/09: o refresh volta recusado."""
+        return self.rede(refresh=[erro_oauth(erro, descricao, http)])
+
+    def rede_muda(self):
+        """Ninguém atende. `_http` levanta com `codigo='sem_rede'`, que é como
+        o módulo separa "o Google recusou" de "não deu para perguntar"."""
+        def muda(*_a, **_kw):
+            raise Y.YouTubeIndisponivel(
+                "não deu para falar com o Google: [Errno 8] nodename nor "
+                "servname provided, or not known", codigo="sem_rede")
+        self._restaura("_http", muda)
+        return muda
+
+    # ─────────────────────────────────────────── o defeito medido em 15/09
+
+    def test_cliente_apagado_nao_e_connected(self):
+        """A medição, virada teste.
+
+        POST oauth2.googleapis.com/token → 401 {"error": "deleted_client"}.
+        O que NÃO pode sair daqui: "connected", "renovação automática armada",
+        "renova sozinho". O que precisa sair: reconectar.
+        """
         self.grava_token(expires_at=Y._iso(self.relogio.parede - 10))
+        self.rede_morta()
+        ok, motivo = Y.status_conta()
+        self.assertFalse(ok, "um token que não renova não está conectado")
+        self.assertNotIn("renovação automática armada", motivo)
+        self.assertNotIn("renova sozinho", motivo)
+        self.assertIn("deleted_client", motivo)
+        self.assertIn("warden youtube connect", motivo)
+
+    def test_cliente_apagado_repete_a_palavra_do_google(self):
+        """O diagnóstico é dele, verbatim, antes da nossa receita."""
+        self.grava_token(expires_at=Y._iso(self.relogio.parede - 10))
+        self.rede_morta()
+        _ok, motivo = Y.status_conta()
+        self.assertIn("The OAuth client was deleted.", motivo)
+
+    def test_invalid_grant_e_invalid_client_tambem_reprovam(self):
+        """Os outros dois jeitos de a credencial morrer. Nenhum é 'connected'."""
+        for erro in ("invalid_grant", "invalid_client", "unauthorized_client"):
+            with self.subTest(erro=erro):
+                self.grava_token()
+                self.rede_morta(erro, "seja lá o que for", 400)
+                ok, motivo = Y.status_conta()
+                self.assertFalse(ok, motivo)
+                self.assertIn(erro, motivo)
+                self.assertNotIn("renovação automática armada", motivo)
+
+    def test_renovacao_ok_e_conectado_e_verificado(self):
+        """O verde de verdade: a renovação foi TENTADA e o Google aceitou."""
+        self.grava_token()
         rede = self.rede()
         ok, motivo = Y.status_conta()
-        self.assertEqual(rede.chamadas, [])
         self.assertTrue(ok, motivo)
-        self.assertIn("renova sozinho", motivo)
+        self.assertIn("VERIFICADO", motivo)
+        self.assertIn(CANAL, motivo)
+        self.assertIn("testada agora", motivo)
+        # e a prova de que não foi conversa: o POST de refresh aconteceu
+        refresh = [c for c in rede.pedidos(Y.URL_TOKEN)
+                   if b"refresh_token" in (c["corpo"] or b"")]
+        self.assertTrue(refresh, "disse 'verificado' sem verificar nada")
 
-    def test_conectado_diz_o_canal_e_o_prazo(self):
+    def test_sem_rede_nao_afirma_nem_uma_coisa_nem_outra(self):
+        """Nem conectado nem quebrado: NÃO SEI, e é isso que ele diz."""
         self.grava_token()
+        self.rede_muda()
+        ok, motivo = Y.status_conta()
+        self.assertFalse(ok, "não verificado não é conectado")
+        self.assertIn("não consegui verificar", motivo)
+        self.assertNotIn("VERIFICADO agora", motivo)
+        self.assertNotIn("renovação automática armada", motivo)
+        # e não pode acusar a conexão de quebrada, que é o erro oposto
+        self.assertNotIn("não vale mais", motivo)
+
+    def test_verificar_false_desliga_a_rede_e_nao_diz_conectado(self):
+        """O modo offline: descreve o arquivo, e chama isso de NÃO verificado."""
+        self.grava_token()
+        rede = self.rede()
+        ok, motivo = Y.status_conta(verificar=False)
+        self.assertEqual(rede.chamadas, [], "verificar=False tocou a rede")
+        self.assertFalse(ok, "sem verificar, 'conectado' é palpite")
+        self.assertIn("NÃO verificado", motivo)
+        self.assertIn(CANAL, motivo)
+
+    def test_afirmar_renovacao_armada_exige_ter_renovado(self):
+        """A trava da regressão, e ela não olha um caso: olha TODOS.
+
+        Se a frase voltar a prometer renovação — "armada", "renova sozinho" —
+        sem que um POST de refresh tenha saído, este teste fica vermelho. É o
+        defeito de 15/09 escrito como invariante, e não como exemplo.
+        """
+        cenarios = {
+            "vencido, refresh ok": (dict(expires_at=Y._iso(
+                self.relogio.parede - 10)), self.rede),
+            "válido, refresh ok": ({}, self.rede),
+            "vencido, cliente apagado": (dict(expires_at=Y._iso(
+                self.relogio.parede - 10)), self.rede_morta),
+            "válido, cliente apagado": ({}, self.rede_morta),
+            "sem data de validade": (dict(expires_at="ontem à tarde"),
+                                     self.rede),
+        }
+        promessas = ("armada", "renova sozinho", "renovação automática")
+        for nome, (campos, fabrica) in cenarios.items():
+            with self.subTest(cenario=nome):
+                self.grava_token(**campos)
+                rede = fabrica()
+                _ok, motivo = Y.status_conta()
+                renovou = [c for c in rede.pedidos(Y.URL_TOKEN)
+                           if b"grant_type=refresh_token" in (c["corpo"] or b"")]
+                if any(p in motivo for p in promessas) and "SEM renovação" \
+                        not in motivo:
+                    self.assertTrue(
+                        renovou,
+                        f"[{nome}] a frase promete renovação e nenhum POST de "
+                        f"refresh saiu: {motivo}")
+
+    def test_offline_tambem_nao_promete_renovacao(self):
+        """O mesmo invariante no caminho que NUNCA chama ninguém."""
+        self.grava_token()
+        self.rede()
+        _ok, motivo = Y.status_conta(verificar=False)
+        self.assertNotIn("renovação automática armada", motivo)
+        self.assertNotIn("renova sozinho", motivo)
+
+    # ──────────────────────────────────────────────── o que já era travado
+
+    def test_conectado_diz_o_canal_e_a_trava_do_privado(self):
+        self.grava_token()
+        self.rede()
         ok, motivo = Y.status_conta()
         self.assertTrue(ok)
         self.assertIn(CANAL, motivo)
-        self.assertIn("60 min", motivo)
-        self.assertIn("renovação automática armada", motivo)
-        self.assertIn("PRIVADO", motivo)
+        # O status lembra a trava, e lembra a saída dela: só "PRIVADO" fazia a
+        # pessoa achar que era uma caixinha desmarcada.
+        self.assertIn("TRANCADO", motivo)
+        self.assertIn("app ou site do YouTube", motivo)
 
     def test_sem_arquivo_diz_o_que_fazer(self):
         ok, motivo = Y.status_conta()
@@ -1025,36 +1243,64 @@ class StatusConta(Base):
         self.assertIn(self.token_file, motivo)
         self.assertIn("código", motivo)
 
+    def test_sem_arquivo_nao_pergunta_nada_a_ninguem(self):
+        """Não há o que verificar quando não há credencial. Poupa a rede e,
+        principalmente, não inventa um estado para descrever."""
+        rede = self.rede()
+        ok, _motivo = Y.status_conta()
+        self.assertFalse(ok)
+        self.assertEqual(rede.chamadas, [])
+
     def test_sem_refresh_token_e_vencido_e_vermelho(self):
         self.grava_token(expires_at=Y._iso(self.relogio.parede - 10),
                          refresh_token=None)
+        rede = self.rede()
         ok, motivo = Y.status_conta()
         self.assertFalse(ok)
         self.assertIn("refresh_token", motivo)
+        self.assertEqual(rede.chamadas, [], "isto se decide sem perguntar")
 
-    def test_sem_refresh_token_mas_valido_e_amarelo_dentro_do_ok(self):
-        """Ainda não dói, mas vai doer em uma hora. Melhor saber agora."""
+    def test_sem_refresh_token_mas_valido_confere_o_acesso_e_avisa(self):
+        """Ainda não dói, mas vai doer em uma hora. Melhor saber agora.
+
+        Sem `refresh_token` não há renovação para testar, então o que dá para
+        perguntar é se este access_token ainda serve — e é isso que ele pergunta,
+        em vez de afirmar a partir do `expires_at` gravado.
+        """
         self.grava_token(refresh_token=None)
+        rede = self.rede()
         ok, motivo = Y.status_conta()
-        self.assertTrue(ok)
+        self.assertTrue(ok, motivo)
         self.assertIn("SEM renovação automática", motivo)
+        self.assertEqual(len(rede.pedidos(Y.URL_CANAL)), 1)
+
+    def test_sem_refresh_token_com_acesso_recusado_reprova(self):
+        self.grava_token(refresh_token=None)
+        self.rede(canal=erro_api("authError", "Invalid Credentials", 401))
+        ok, motivo = Y.status_conta()
+        self.assertFalse(ok, motivo)
+        self.assertIn("authError", motivo)
 
     def test_escopo_errado_e_motivo_diferente_de_vencido(self):
         self.grava_token(scope="https://www.googleapis.com/auth/youtube.readonly")
+        rede = self.rede()
         ok, motivo = Y.status_conta()
         self.assertFalse(ok)
         self.assertIn("youtube.upload", motivo)
+        self.assertEqual(rede.chamadas, [], "isto se decide sem perguntar")
 
     def test_modo_frouxo_e_aviso_dentro_de_um_ok(self):
         self.grava_token()
         os.chmod(self.token_file, 0o644)
+        self.rede()
         ok, motivo = Y.status_conta()
-        self.assertTrue(ok)
+        self.assertTrue(ok, motivo)
         self.assertIn("chmod 600", motivo)
 
     def test_nunca_levanta_nem_com_o_impossivel(self):
         """Um status que explode some com TODO o relatório, não só com o YouTube."""
         casos = []
+        self.rede()
 
         with open(self.token_file, "w") as fh:
             fh.write("isto não é json {{{")
@@ -1090,10 +1336,18 @@ class StatusConta(Base):
         for ok, motivo in casos[:4] + casos[5:]:
             self.assertFalse(ok, motivo)
             self.assertTrue(motivo.strip())
-        # data ilegível não é motivo para vermelho: é motivo para dizer que não
-        # dá para saber
+        # Data ilegível não é motivo para vermelho — e agora menos ainda: sem
+        # saber quando vence, a renovação é TENTADA, e foi ela que respondeu.
         self.assertTrue(casos[4][0], casos[4][1])
-        self.assertIn("não dá para saber", casos[4][1])
+        self.assertIn("VERIFICADO", casos[4][1])
+
+    def test_verificacao_que_explode_nao_derruba_o_status(self):
+        """O verificador tem `except Exception` por isto, e não por elegância."""
+        self.grava_token()
+        self._restaura("_renova", self.impossivel)
+        ok, motivo = Y.status_conta()
+        self.assertFalse(ok, motivo)
+        self.assertTrue(motivo.strip())
 
     @staticmethod
     def impossivel(*_args, **_kw):
@@ -1101,13 +1355,19 @@ class StatusConta(Base):
 
     def test_o_segredo_nao_vaza_nem_no_status(self):
         self.grava_token()
+        self.rede()
         _ok, motivo = Y.status_conta()
         for segredo in (ACESSO, REFRESH, SEGREDO_APP):
             self.assertNotIn(segredo, motivo)
 
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_o_segredo_nao_vaza_quando_o_google_recusa(self):
+        """O endpoint de token ecoa o `client_id` dentro do error_description,
+        e um dia vai ecoar outra coisa. A censura vale também no caminho ruim."""
+        self.grava_token()
+        self.rede_morta("invalid_client", f"client {SEGREDO_APP} is unknown", 401)
+        _ok, motivo = Y.status_conta()
+        for segredo in (ACESSO, REFRESH, SEGREDO_APP):
+            self.assertNotIn(segredo, motivo)
 
 
 class ContaSemCanal(Base):
@@ -1135,6 +1395,150 @@ class ContaSemCanal(Base):
         """O outro estado: a consulta falhou, mas o canal existe. Isso é
         cosmético e NÃO pode reprovar."""
         self.grava_token()
+        self.rede()
         ok, porque = Y.status_conta()
         self.assertTrue(ok, "consulta falha não é conta sem canal")
         self.assertNotIn("não tem canal", porque)
+
+
+# ───────────────────────────────────────── a promessa que não pode voltar
+
+class NaoPrometePublicar(unittest.TestCase):
+    """O vídeo trancado como privado NÃO é destrancado pelo dono.
+
+    Este arquivo já prometeu o contrário, com estas palavras: "abra o vídeo no
+    YouTube Studio e mude a visibilidade para Público — é um toque, e ninguém
+    precisa reenviar nada." Foi publicado assim. É falso.
+
+    A Ajuda do YouTube (support.google.com/youtube/answer/7300965) diz, sobre
+    vídeo trancado por upload de API não verificada: "you will not be able to
+    appeal", "Unlike user-selected private videos, you will not be able to
+    change the video's state until after you have successfully submitted the
+    video for re-review", e dá a saída — "re-upload the video via a verified
+    API service or via the YouTube app/site".
+
+    Os testes desta classe não olham comportamento: olham o TEXTO. Uma promessa
+    volta por edição de texto, não por regressão de lógica, e o teste que só
+    exercita `publica()` não a pega. Nada aqui toca a rede.
+    """
+
+    # Cada uma destas frases mediu um número de toques que ninguém mediu. A
+    # primeira já foi publicada; as outras são o mesmo erro com outro número.
+    CONTAGENS_DE_TOQUE = ("um toque", "1 toque", "dois toques", "três toques",
+                          "3 toques", "one tap", "a tap", "three taps")
+
+    def fonte(self):
+        with open(Y.__file__, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_o_aviso_nao_conta_toques(self):
+        baixo = Y.AVISO_PRIVADO.lower()
+        for frase in self.CONTAGENS_DE_TOQUE:
+            self.assertNotIn(frase, baixo,
+                             f"o aviso voltou a prometer '{frase}' — o dono não "
+                             "destranca este vídeo em toque nenhum")
+
+    def test_o_aviso_nao_manda_mudar_a_visibilidade_no_studio(self):
+        baixo = Y.AVISO_PRIVADO.lower()
+        for frase in ("mude a visibilidade", "mudar a visibilidade",
+                      "altere a visibilidade", "abra o vídeo no youtube studio"):
+            self.assertNotIn(frase, baixo,
+                             f"o aviso voltou a mandar '{frase}' — a Ajuda do "
+                             "YouTube diz que esse estado não muda")
+
+    def test_o_aviso_nao_diz_que_ninguem_precisa_reenviar(self):
+        """Era a metade mais cara da mentira: reenviar é EXATAMENTE a saída."""
+        self.assertNotIn("ninguém precisa reenviar", Y.AVISO_PRIVADO.lower())
+
+    def test_o_aviso_manda_reenviar_pelo_app_ou_site(self):
+        baixo = Y.AVISO_PRIVADO.lower()
+        self.assertIn("mesmo arquivo", baixo)
+        self.assertIn("app ou pelo site do youtube", baixo)
+
+    def test_o_aviso_diz_que_nao_cabe_recurso_e_cita_a_fonte(self):
+        baixo = Y.AVISO_PRIVADO.lower()
+        self.assertIn("não cabe recurso", baixo)
+        self.assertIn("support.google.com/youtube/answer/7300965", baixo)
+
+    def test_o_aviso_avisa_que_pode_faltar_canal(self):
+        """Medido em 15/09/2026: a conta Google nova do dono tinha ZERO canais.
+
+        Mandar reenviar pelo app sem dizer isso é mandar a pessoa para uma tela
+        que ela não esperava, no fim de uma entrega.
+        """
+        self.assertIn("criar o canal", Y.AVISO_PRIVADO.lower())
+
+    # Palavras que, ao lado de "Studio", descrevem tornar o vídeo público.
+    PROMESSA = ("públic", "publicar", "publique", "visibilidade")
+    # E o que precisa estar NA MESMA FRASE para a menção ser honesta.
+    NEGACAO = ("não", "nunca", "nem ", "falso", "not be able")
+
+    def test_nenhuma_linha_junta_studio_com_tornar_publico(self):
+        """Varre o ARQUIVO INTEIRO: 'Studio' só aparece negado ou como link.
+
+        O link do Studio continua no resultado, e serve — para ver e editar
+        título, descrição, miniatura. O que não pode voltar é uma linha que
+        junte Studio com tornar o vídeo público sem dizer, ali mesmo, que isso
+        não funciona.
+
+        A unidade é a LINHA, e isso é de propósito. Duas alternativas foram
+        medidas e recusadas:
+
+          - janela de N caracteres em volta da palavra: o arquivo é cheio de
+            "não" sobre outros assuntos, e a janela absolve a promessa com a
+            negação do vizinho. Um comentário dizendo "basta abrir o YouTube
+            Studio e deixar o clipe público" passou batido com 220 caracteres.
+          - frase (corte em `.`): código quase não tem ponto final, então
+            dezenas de linhas de `return {...}` viram uma frase só, do tamanho
+            de meia função, e aí volta o problema da janela — com falso
+            POSITIVO junto.
+
+        O preço da linha é que a negação precisa caber ao lado de "Studio" na
+        mesma linha. Isso aperta quem escreve, e aperta na direção certa.
+        """
+        culpadas = []
+        for numero, linha in enumerate(self.fonte().splitlines(), 1):
+            baixo = linha.lower()
+            if "studio" not in baixo:
+                continue
+            if not any(p in baixo for p in self.PROMESSA):
+                continue
+            if not any(n in baixo for n in self.NEGACAO):
+                culpadas.append(f"{numero}: {linha.strip()}")
+        self.assertEqual(culpadas, [],
+                         "alguma linha junta 'Studio' com tornar o vídeo "
+                         "público sem negar que isso funciona; o dono NÃO "
+                         "destranca este vídeo no Studio")
+
+    def test_o_modulo_nao_conta_toques_em_nenhum_texto_entregue(self):
+        """Os textos que a pessoa LÊ, todos, sem contagem de toque.
+
+        `COMO_AUTORIZAR` pode dizer "toque em Avançado" — ali o toque existe e
+        é na tela do Google. O que não pode é um NÚMERO de toques prometendo
+        publicação.
+        """
+        textos = [Y.AVISO_PRIVADO, Y.COMO_AUTORIZAR, Y.SOBRE_SHORTS]
+        textos += [v for v in Y.RECEITAS.values() if isinstance(v, str)]
+        for texto in textos:
+            baixo = texto.lower()
+            for frase in self.CONTAGENS_DE_TOQUE:
+                self.assertNotIn(frase, baixo,
+                                 f"'{frase}' voltou a um texto entregue")
+
+    def test_o_escopo_do_device_flow_tem_a_divergencia_registrada(self):
+        """A doc do Device Flow não lista `youtube.upload`; a medição diz que
+        ele foi concedido. As duas fontes ficam no arquivo, ao lado do escopo,
+        para ninguém "consertar" isso no escuro e alargar a permissão."""
+        fonte = self.fonte()
+        self.assertIn("limited-input-device", fonte)
+        self.assertIn("acb379e", fonte)
+        self.assertIn("youtube.upload", Y.ESCOPOS)
+
+
+# O guarda de execução direta fica no FIM, e não no meio, que era onde estava:
+# tudo declarado depois dele não rodava em `python3 tests/test_youtube.py`.
+# `unittest discover` importa o módulo inteiro e nunca sentiu falta, então o
+# buraco era silencioso -- e as classes de baixo são justamente as que travam
+# uma promessa que já foi publicada errada uma vez.
+if __name__ == "__main__":
+    unittest.main()
