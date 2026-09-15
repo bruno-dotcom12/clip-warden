@@ -187,6 +187,20 @@ Two things about this path, both measured:
   unauthorised footage is worse than a slow one — it is rejected *after* the
   views, and the clipper is the one who loses the work.
 
+**The window file has its own clock, and that is the trap this path carries.**
+What was 179s of the source is 0s in that file; the SRT is still on the
+source's clock. The two do not line up on their own, and when they did not,
+two clips went out with the OPENING of the video as their caption — hook about
+one thing, caption about another, in both — while every gate said fine: hook
+fitting, karaoke on, no hanging cue, letter in range, duration as asked, 273
+tests green. The contact sheet caught it, because a person looked.
+
+So the window carries a `.origem.json` beside it, and `cut` **requires** it:
+given a window-derived file without that file, it REFUSES to burn captions
+rather than burn the wrong ones. If you ever build another path that produces a
+cut-out of a video, it has to write the same origin file. That refusal is the
+feature.
+
 The format selector on this path pins `[protocol^=http]` on purpose. Without it
 yt-dlp picks the HLS stream, and `--download-sections` over HLS writes an mp4
 **with no video track, silently**. The tool probes the file and deletes it

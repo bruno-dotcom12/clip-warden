@@ -437,6 +437,28 @@ def _carimbo(segundos):
 def archive_window(rules, out_dir, url, start, end, folga=2.0):
     """Baixa SÓ a janela pedida de um link do acervo. (caminho, in_point).
 
+    LEIA ISTO ANTES DE MEXER NO DOWNLOAD. Esta função é as duas coisas ao mesmo
+    tempo: ela derrubou o tempo até o primeiro clipe de 12min26s para 62s, e ela
+    criou o pior defeito que este projeto entregou.
+
+    O ganho: baixar 5 MB de uma janela em vez de 361 MB de um vídeo de 18
+    minutos, e pular os 195s de transcrição usando a legenda publicada.
+
+    O defeito: o arquivo que ela escreve tem RELÓGIO PRÓPRIO. O que era 179s da
+    fonte virou 0s aqui. O SRT continua no relógio da fonte, e o `cut` filtrava
+    as cues pelo tempo do arquivo -- então dois cortes do minuto três saíram com
+    a legenda da ABERTURA do vídeo. Hook de um assunto, legenda de outro, nos
+    dois. E cada portão disse que estava certo: hook cabendo, karaoke ligado,
+    nenhuma cue pendurada, letra na faixa, duração igual à pedida, 273 testes
+    verdes. Só o contact sheet pegou, porque uma pessoa olhou.
+
+    Por isso a ficha `.origem.json` é escrita ao lado do arquivo e `cut` a
+    EXIGE: um arquivo com relógio implícito não circula neste sistema. Se você
+    criar outro caminho que produza recorte de vídeo -- outro formato, outra
+    fonte, um cache -- ele tem de escrever a mesma ficha, ou `cut` vai recusar
+    queimar legenda nele. Essa recusa é o recurso, não o obstáculo.
+    
+
     O FISCAL VEM PRIMEIRO, e este parágrafo é o motivo de esta função existir
     em vez de um `--download-sections` solto em algum lugar. O caminho de
     download é onde a autorização de acervo é aplicada: `archive()` só puxa o
@@ -503,7 +525,56 @@ def archive_window(rules, out_dir, url, start, end, folga=2.0):
             f"the window that came down has no video track (ffprobe found none). "
             f"That is what `--download-sections` does over an HLS stream, and it "
             f"does it silently. The file was deleted rather than handed on.")
+    # A ORIGEM VIAJA COM O ARQUIVO, e este é o conserto de um defeito que
+    # chegou a dois clipes entregues.
+    #
+    # O arquivo de janela tem relógio PRÓPRIO: o que era 179s da fonte virou 0s
+    # aqui. O SRT continua no relógio da fonte. Nada casava os dois, e o `cut`
+    # filtrava as cues pelo tempo do ARQUIVO -- então um corte do minuto três
+    # saiu com a legenda da abertura do vídeo, nos dois clipes, e cada portão
+    # que existe disse que estava tudo certo: hook cabendo, karaoke ligado,
+    # nenhuma cue pendurada, letra na faixa, duração igual à pedida.
+    #
+    # Um arquivo com relógio implícito não pode circular neste sistema. Então
+    # ele passa a carregar de onde veio, ao lado dele, e quem consome exige
+    # isso: `cut` que receba um arquivo de janela SEM esta ficha recusa queimar
+    # legenda, em vez de queimar a legenda errada.
+    ficha = caminho + ".origem.json"
+    with open(ficha, "w", encoding="utf-8") as fh:
+        json.dump({"url": url,
+                   "source_start": round(de, 3),
+                   "source_end": round(ate, 3),
+                   "in_point": round(max(0.0, float(start) - de), 3),
+                   "asked_start": round(float(start), 3),
+                   "asked_end": round(float(end), 3)}, fh, indent=1)
     return caminho, max(0.0, float(start) - de)
+
+
+def origem_da_janela(source):
+    """(ficha, motivo). A origem de um arquivo que é recorte de outro.
+
+    `None, None` para um arquivo comum. `None, motivo` quando o arquivo PARECE
+    ser uma janela e a ficha não está lá ou não dá para ler -- que é o caso em
+    que quem consome tem de parar, não adivinhar.
+    """
+    caminho = str(source or "")
+    ficha = caminho + ".origem.json"
+    if os.path.isfile(ficha):
+        try:
+            with open(ficha, encoding="utf-8") as fh:
+                dados = json.load(fh)
+            if "source_start" in dados:
+                return dados, None
+            return None, f"{os.path.basename(ficha)} has no source_start"
+        except Exception as exc:
+            return None, (f"{os.path.basename(ficha)} is not readable "
+                          f"({type(exc).__name__})")
+    if os.path.basename(caminho).startswith("janela-"):
+        return None, (f"{os.path.basename(caminho)} was cut out of a longer "
+                      f"source -- its clock starts at that window, not at the "
+                      f"source's zero -- and the .origem.json that says where "
+                      f"it came from is missing")
+    return None, None
 
 
 # As línguas de legenda que valem a pena pedir, e por que são só estas.
@@ -1811,8 +1882,13 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                     f"no face detection on this machine ({why}) -- pass --crop "
                     f"left|right|center|<0-100> to say where the subject is, or "
                     f"rebuild the image, which ships the detector.")
-            notes.append(f"framed by crop {crop} as given: no face detector on "
-                         f"this machine to refine it ({why})")
+            # Um lado nomeado é o dono dizendo onde o sujeito está, e isso é
+            # honrado. Mas continua sendo um lado, não uma medição: a nota diz
+            # isso em vez de deixar parecer que alguém conferiu.
+            notes.append(f"framed by crop {crop} as given, NOT measured: there "
+                         f"is no face detector on this machine ({why}), so "
+                         f"nothing checked that the subject is on that side. "
+                         f"The contact sheet is the only check this clip got.")
         else:
             faces = _face_centers(source, start, length)
             face_fx = _face_crop_fraction(faces, crop, kept)
@@ -1962,10 +2038,46 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     # roda depois dos portões, onde `cues`/`ass_path` dizem o que de fato foi
     # queimado. A ordem das CAMADAS não muda com isso: a montagem lá embaixo
     # separa o degradê por identidade (`o[0] == footer`) e não por posição.
+    if source_text.get("top") and hook:
+        # Era um pedido para olhar o mosaico, e o mosaico é justamente o portão
+        # que falha quando ninguém olha. Com texto do acervo no topo E hook
+        # nosso, são dois textos no mesmo lugar: não é gosto, é ilegível.
+        raise RuntimeError(
+            f"this footage already carries burned text along the TOP "
+            f"({source_text['evidence']}), and this cut puts a hook there too. "
+            f"Two texts in the same band is not a judgement call, it is "
+            f"unreadable. Cut without --hook, or choose a window whose top is "
+            f"clean.")
     if source_text.get("top"):
-        notes.append("this footage carries burned text along the TOP as well "
-                     f"({source_text['evidence']}) -- the hook will land on it. "
-                     "Check the contact sheet before you send this one.")
+        notes.append("this footage carries burned text along the TOP "
+                     f"({source_text['evidence']}). No hook was asked for, so "
+                     "nothing of ours lands on it.")
+
+    # ------------------------------------------------- de que relógio é este arquivo
+    #
+    # Se a fonte é uma janela recortada de um vídeo maior, o zero dela não é o
+    # zero da fonte, e TODA conta que envolve a legenda tem de ser feita no
+    # relógio da FONTE: o SRT está nele, a aprovação foi dada nele, e a janela
+    # que o espectador vai ver está nele. Sem isso a legenda sai de outro
+    # trecho -- aconteceu, nos dois clipes de uma medição, e nenhum portão viu.
+    ficha, porque_ficha = origem_da_janela(source)
+    fonte_zero = float((ficha or {}).get("source_start") or 0.0)
+    if porque_ficha and caption_srt:
+        raise RuntimeError(
+            f"refusing to burn captions onto {os.path.basename(source)}: "
+            f"{porque_ficha}. Without it there is no way to line the subtitle's "
+            f"timestamps up with this file, and a caption from the wrong part "
+            f"of the video looks finished and says things the person never said "
+            f"at that moment. Cut it without --subtitles, or pull the window "
+            f"again with `warden archive --window`, which writes the origin "
+            f"beside the file.")
+    if ficha:
+        notes.append(
+            f"this source is the {ficha['source_start']:.1f}-"
+            f"{ficha['source_end']:.1f}s window of a longer file, so the caption "
+            f"is lined up on the SOURCE clock: this cut burns "
+            f"{fonte_zero + float(start):.1f}-"
+            f"{fonte_zero + float(start) + length:.1f}s of it.")
 
     burn_reason = None
     cues = []
@@ -1981,8 +2093,10 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         else:
             # A janela QUE VAI QUEIMAR, no tempo da fonte -- não o arquivo.
             # Perguntar pelo arquivo era a porta por onde `aromasas` passou.
+            queima_de = fonte_zero + float(start)
+            queima_ate = queima_de + length
             approved, why = S.approval_state(
-                caption_srt, start=float(start), end=float(start) + length)
+                caption_srt, start=queima_de, end=queima_ate)
             if not approved:
                 # O portão do defeito 2.5. Sem aprovação o clipe sai SEM legenda,
                 # em vez de sair com a palavra errada queimada: um clipe mudo se
@@ -1991,7 +2105,7 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
             else:
                 rows = _read_srt(caption_srt)
                 window = [r for r in rows
-                          if r["end"] > start and r["start"] < start + length]
+                          if r["end"] > queima_de and r["start"] < queima_ate]
                 clash = S.language_clash(
                     hook, " ".join(r["text"] for r in window),
                     declared=language or R.get(rules, "caption.language"))
@@ -2003,7 +2117,7 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                     # A fala continua depois do fim do corte? Só quem tem o
                     # SRT inteiro sabe, e é isso que decide se a ÚLTIMA cue está
                     # pendurada ou só é a última. Ver `finais_pendurados`.
-                    fim_janela = float(start) + float(length)
+                    fim_janela = queima_ate
                     fala_apos_o_corte = any(r["end"] > fim_janela + 0.05
                                             for r in rows)
                     descartes = []
@@ -2019,7 +2133,11 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                     # entregue, a mediana era +0,543s. O detector de começo de
                     # fala reproduz essa régua: 8 de 8, com 0,01s de diferença
                     # num único valor.
+                    # O detector ouve o ARQUIVO e devolve no relógio dele;
+                    # os onsets são levados para o da fonte, que é o relógio em
+                    # que as cues estão.
                     falas, porque_fala = S.fala_comeca(source, start, length)
+                    falas = [f + fonte_zero for f in falas]
                     if falas:
                         cues, sincronia = S.encaixa_na_fala(cues, falas)
                     else:
@@ -2028,11 +2146,18 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                             f"não consegui achar os começos de fala deste trecho "
                             f"({porque_fala}), então o destaque ficou no tempo "
                             f"cru da legenda de origem, que costuma chegar atrasado.")
-                    for descarte in descartes:
-                        notes.append(
-                            f"ATENÇÃO: uma linha da legenda não entrou porque "
-                            f"{descarte}. Ela existe no SRT e não vai para a "
-                            f"tela -- confira antes de entregar.")
+                    if descartes:
+                        # Era nota, e nota não protege: fala que existe no SRT
+                        # e não vai para a tela não aparece no mosaico -- o que
+                        # falta é invisível por definição. Quem olha conta as
+                        # cues que estão lá, não as que deveriam estar.
+                        raise RuntimeError(
+                            f"{len(descartes)} subtitle line(s) could not be "
+                            f"used and would silently not reach the screen: "
+                            + "; ".join(descartes[:3])
+                            + ". Speech that exists in the SRT and is missing "
+                              "from the picture is invisible on the contact "
+                              "sheet. Fix the srt, or cut without --subtitles.")
                     if not cues:
                         burn_reason = ("the subtitle file had no usable lines in "
                                        "this window, so nothing was burned")
@@ -2060,7 +2185,7 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                 "Rode o corte na imagem, ou corte sem --subtitles.")
         perdas = []
         texto_ass = ass_from_cues(cues, width, height, safe=safe,
-                                  offset=float(start), length=float(length),
+                                  offset=queima_de, length=float(length),
                                   perdas=perdas)
         if not texto_ass.strip():
             burn_reason = ("o ASS saiu vazio: nenhuma cue sobrou dentro da "
@@ -2077,6 +2202,29 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
             # reflow produzia cues até 30,66s, e três delas sumiam sem uma
             # linha em lugar nenhum.
             fora = len(cues) - escritas
+            if ficha and cues:
+                # O portão do desencontro de relógios, e ele mede a coisa certa.
+                #
+                # A primeira versão deste portão contava quantas cues caíam
+                # fora do clipe, e isso era falso positivo: numa janela que
+                # termina no meio da fala, duas cues sobrando é rotina. O sinal
+                # de verdade não é QUANTAS sobram -- é a legenda estar em OUTRO
+                # LUGAR DO VÍDEO. No defeito medido, o clipe cobria 181-201s da
+                # fonte e as cues vinham de 2-22s: nenhuma sobreposição, e cada
+                # outro portão dizia que estava tudo bem.
+                cue_de = min(float(c["start"]) for c in cues)
+                cue_ate = max(float(c["end"]) for c in cues)
+                overlap = min(cue_ate, queima_ate) - max(cue_de, queima_de)
+                if overlap < length * 0.5:
+                    raise RuntimeError(
+                        f"the caption for this cut sits at {cue_de:.1f}-"
+                        f"{cue_ate:.1f}s of the source and the cut shows "
+                        f"{queima_de:.1f}-{queima_ate:.1f}s: they overlap by "
+                        f"{max(0.0, overlap):.1f}s of {length:.1f}s. The "
+                        f"subtitle and this file are on different clocks. That "
+                        f"is how two clips went out carrying the opening of the "
+                        f"video as their caption, with every other gate green. "
+                        f"Refusing rather than burning.")
             if fora > 0:
                 notes.append(
                     f"{fora} cue(s) da legenda caem fora da janela deste corte "
@@ -2435,6 +2583,7 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         if level == "REJECT":
             notes.append(f"STYLE REJECT: {message}")
     return {"out": out, "duration_s": measured, "asked_s": round(length, 2),
+            "asked_for_captions": bool(caption_srt),
             "notes": notes, "grid": grid, "sheet": sheet,
             "style": style_facts, "style_path": style_path,
             "style_breaches": [m for lv, m in breaches if lv == "REJECT"]}

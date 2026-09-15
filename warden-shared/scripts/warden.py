@@ -976,7 +976,21 @@ def deliver(result, rules, campaign, ledger):
     # útil, linhas por cue, duração da cue mais longa. São exatos -- medidos por
     # quem desenhou -- então uma falha aqui é a definição de pronto quebrada, e
     # não uma estimativa discutível.
-    breaches = result.get("style_breaches") or []
+    # Legenda pedida e nenhuma legenda queimada é uma entrega muda, e isso
+    # saía como UMA nota no meio de doze. O motivo já existe e é bom -- SRT não
+    # aprovado, idioma conflitante, nenhuma linha na janela -- mas ele avisava
+    # e não parava nada, e um lote de podcast inteiro pode sair sem legenda com
+    # a explicação enterrada.
+    breaches = list(result.get("style_breaches") or [])
+    if result.get("asked_for_captions") and not (result.get("style") or {}).get("caption"):
+        porques = [n for n in result.get("notes") or []
+                   if "not burning captions" in n or "nothing was burned" in n]
+        breaches.append(
+            "captions were asked for and none were burned"
+            + (": " + porques[0] if porques else "")
+            + ". A podcast cut with no speech on screen is not the clip that "
+              "was asked for -- fix what the note says, or cut without "
+              "--subtitles on purpose.")
     if breaches:
         print("this render breaks the style rules, so it is not delivered:",
               file=sys.stderr)
