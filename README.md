@@ -112,7 +112,7 @@ it rather than from the model's reading.
 | `warden captions review <srt> --start --end [--approve]` | the words before they burn. Approval is per window: a cut outside it renders with no caption rather than a wrong one |
 | `warden digest <transcript>` | the transcript a model can afford to read |
 | `warden signals <transcript>` | the moments the words and sound point at, for viral cuts |
-| `warden tracks list\|add <file>` | the owner's own audio, kept by name. This agent ships none and downloads none |
+| `warden tracks list\|add <file\|url>` | the owner's own audio, kept by name and measured once. None is shipped in this repo |
 | `warden beat <track>` | tempo, grid and drop, so a cut can land on a bar |
 | `warden cut <src> --campaign <id> --start --end --out` | render inside the rules, then check the render (needs `--crop` when the image has no face detector) |
 | `warden cut … --seconds <n>` | the duration the PERSON asked for. The delivery gate rejects a file that misses it with no campaign rule to blame |

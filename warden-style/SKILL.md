@@ -117,19 +117,28 @@ live in one constant each.
 
 ## The track, when someone asks for an edit on the beat
 
-This agent **ships no music and downloads none**. Say that in one sentence when
-it comes up, point at **studio.youtube.com > Áudio**, whose library is free to
-use and is downloaded under the person's own account, and keep whatever they
-send:
+**No track is shipped inside this repository**, and a link the owner hands you
+goes in without an argument:
 
 ```
-warden tracks add <file>        keeps it
-warden tracks list              what is already kept
-warden cut … --track <name>     finds it by name
+warden tracks add <file|url>    keeps it, and measures it once
+warden tracks list              what is already kept, with its tempo
+warden cut … --track <name>     finds it by a short name, extension optional
 ```
 
 Keeping it is the point: asking for the same file on every clip is the agent
-forgetting what it was already given.
+forgetting what it was already given. On 15/09 the owner's NCS link was refused
+twice, with a copyright lecture, and he had to argue for a track NCS publishes
+for exactly this use.
+
+**The source decides the risk, and the owner already paid for that lesson.** A
+track he downloaded from Pixabay as royalty-free was claimed on Content ID as
+someone else's, and the video was **blocked worldwide and demonetised**. The
+free library's licence does not stop the automatic claim -- it gives grounds to
+contest it afterwards. The one source with no risk by construction, for YouTube,
+is **studio.youtube.com > Áudio**, because YouTube does not claim its own
+catalogue. `tracks add` writes down where each track came from and what that
+means; it does not refuse anything.
 
 ## The footage
 

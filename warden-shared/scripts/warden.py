@@ -90,52 +90,219 @@ def tracks_dir():
     return path
 
 
+AUDIO_EXT = (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus")
+
+
+def tracks_guardadas():
+    """[(nome, caminho)] das faixas na pasta do dono, em ordem."""
+    alvo = tracks_dir()
+    if not os.path.isdir(alvo):
+        return []
+    return [(f, os.path.join(alvo, f)) for f in sorted(os.listdir(alvo))
+            if os.path.splitext(f)[1].lower() in AUDIO_EXT]
+
+
+def ficha_da_trilha(caminho):
+    """O que já foi medido desta faixa: BPM, barra, drop, de onde veio.
+
+    Medir custa segundos e o resultado não muda, então ele é escrito uma vez, no
+    momento em que a faixa é guardada. Pedir a mesma medição a cada edit é a
+    mesma falha que pedir a mesma faixa a cada clipe.
+    """
+    ficha = os.path.splitext(caminho)[0] + ".ficha.json"
+    if not os.path.isfile(ficha):
+        return {}
+    try:
+        with open(ficha, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (ValueError, OSError):
+        return {}
+
+
 def resolve_track(nome):
-    """Um nome curto vira o caminho da trilha guardada; um caminho fica como está."""
+    """Um nome curto vira o caminho da trilha guardada; um caminho fica como está.
+
+    O nome pode vir SEM extensão. Medido em 15/09: o agente pediu
+    `--track disfigure-blank` para uma faixa guardada como
+    `disfigure-blank.mp3`, e o comando disse que ela não existia, com ela na
+    pasta e listada na própria mensagem de erro. Uma faixa que o dono já mandou
+    e que o comando recusa por causa de três letras é a faixa sendo pedida de
+    novo.
+    """
     if not nome:
         return nome
     aberto = os.path.expanduser(str(nome))
     if os.path.isfile(aberto):
         return aberto
-    guardada = os.path.join(tracks_dir(), os.path.basename(aberto))
+    base = os.path.basename(aberto)
+    guardada = os.path.join(tracks_dir(), base)
     if os.path.isfile(guardada):
         return guardada
-    # Nem caminho nem trilha guardada. Dizer as duas coisas que faltam, em vez
-    # de deixar o ffmpeg falhar falando de um arquivo que a pessoa não nomeou.
-    tem = sorted(os.listdir(tracks_dir()))
+    # Sem extensão, e sem diferença de maiúsculas: o dono deu um nome, não um
+    # nome de arquivo.
+    sem_ext = os.path.splitext(base)[0].lower()
+    for arquivo, caminho in tracks_guardadas():
+        if os.path.splitext(arquivo)[0].lower() == sem_ext:
+            return caminho
+    # E por pedaço do nome, quando ele identifica uma só.
+    parciais = [c for a, c in tracks_guardadas() if sem_ext in a.lower()]
+    if len(parciais) == 1:
+        return parciais[0]
+    tem = [a for a, _c in tracks_guardadas()]
     die(f"there is no track called {nome!r}: not a path on disk, and not in "
         f"{tracks_dir()}" + (f" (which holds: {', '.join(tem)})" if tem else
-                             " (which is empty)") + ". Send the audio file and "
-        f"`warden tracks add <file>` keeps it.", code=1)
+                             " (which is empty)")
+        + (". More than one track matches that name, so say which."
+           if len(parciais) > 1 else
+           ". Send the audio file, or the link to it, and "
+           "`warden tracks add <file|url>` keeps it."), code=1)
+
+
+# O risco de cada fonte de trilha, medido no mundo real e não no texto da
+# licença. Isto está aqui porque o dono já perdeu um vídeo por causa disso.
+#
+# `~/clipagem/PRIME/TRILHAS/BLOQUEADA/LEIA-ME.txt`, do dono, palavra por
+# palavra: uma faixa baixada do Pixabay como royalty-free foi reivindicada no
+# Content ID como "Aggressive Phonk Drift" de "Birthday PAPA", e o resultado foi
+# **vídeo bloqueado no mundo todo e sem monetização**. A licença do Pixabay não
+# impede o bloqueio automático: ela só dá base para CONTESTAR, depois.
+#
+# A única fonte com risco zero POR CONSTRUÇÃO para o YouTube é a Biblioteca de
+# Áudio do próprio YouTube, porque o YouTube não reivindica o próprio catálogo.
+# O NCS libera para uso em vídeo e pede crédito ao artista, e é o que o dono usa.
+RISCO_DA_FONTE = {
+    "youtube.com/audiolibrary": ("none by construction",
+                                 "YouTube does not claim its own catalogue"),
+    "studio.youtube.com": ("none by construction",
+                           "YouTube does not claim its own catalogue"),
+    "ncs.io": ("low", "NCS licenses for video use and asks for artist credit"),
+    "nocopyrightsounds": ("low", "NCS licenses for video use and asks for "
+                                 "artist credit"),
+    "ncs": ("low", "NCS licenses for video use and asks for artist credit"),
+    "pixabay.com": ("KNOWN TO HAVE BEEN CLAIMED",
+                    "a Pixabay track the owner used was claimed on Content ID "
+                    "and the video was blocked worldwide"),
+    "uppbeat.io": ("unknown", "free libraries have been claimed before"),
+}
+
+
+def _risco_da_origem(origem, nome=""):
+    """O risco da fonte, lido do link E do nome com que a faixa desceu.
+
+    O nome conta porque o link quase nunca é `ncs.io`: o dono manda o vídeo do
+    canal do NoCopyrightSounds no YouTube, e é o TÍTULO que diz de quem é a
+    faixa ("NCS", "copyright free music"). Olhar só o domínio classificaria como
+    desconhecida uma faixa cuja procedência está escrita no nome do arquivo.
+    """
+    baixo = (str(origem or "") + " " + str(nome or "")).lower()
+    for chave, (risco, porque) in RISCO_DA_FONTE.items():
+        if chave in baixo:
+            return risco, porque
+    if "copyright" in baixo and "free" in baixo:
+        return "low", "the track names itself copyright-free"
+    return "unknown", "nothing here knows this source"
+
+
+def _guarda_trilha(destino, origem):
+    """Mede a faixa UMA vez e escreve a ficha ao lado dela.
+
+    O BPM não muda, então medir a cada edit é desperdício -- e foi o que
+    aconteceu em 15/09: `warden beat` rodado no meio da conversa, e o número
+    (92,3 BPM, barra de 2,6s, drop em 28,75s) virou mensagem para uma pessoa
+    que não tinha o que fazer com ele.
+    """
+    ficha = {"name": os.path.basename(destino), "from": origem}
+    risco, porque = _risco_da_origem(origem, os.path.basename(destino))
+    ficha["claim_risk"] = risco
+    ficha["claim_risk_why"] = porque
+    try:
+        import warden_beat
+        grade = warden_beat.analyse(destino)
+        ficha.update({k: grade[k] for k in
+                      ("bpm", "beat_s", "bar_s", "drop_s", "duration_s")
+                      if k in grade})
+    except Exception as exc:
+        # Uma faixa sem batida detectável continua sendo uma faixa. O que não
+        # pode é a ficha dizer que mediu.
+        ficha["beat_error"] = f"{type(exc).__name__}: {exc}"
+    try:
+        with open(os.path.splitext(destino)[0] + ".ficha.json", "w",
+                  encoding="utf-8") as fh:
+            json.dump(ficha, fh, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
+    return ficha
 
 
 def cmd_tracks(args):
     alvo = tracks_dir()
     if args.action == "add":
-        origem = os.path.expanduser(args.file or "")
-        if not os.path.isfile(origem):
-            die(f"there is no file at {origem}", code=1)
-        if os.path.splitext(origem)[1].lower() not in (
-                ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus"):
-            die(f"{os.path.basename(origem)} is not an audio file", code=1)
-        destino = os.path.join(alvo, os.path.basename(origem))
-        shutil.copy2(origem, destino)
+        pedido = (args.file or "").strip()
+        if not pedido:
+            die("tracks add needs a file or a link: "
+                "`warden tracks add <file|url>`", code=2)
+        os.makedirs(alvo, exist_ok=True)
+        if pedido.lower().startswith(("http://", "https://")):
+            # O LINK QUE O DONO MANDA ENTRA. Medido em 15/09: o dono mandou o
+            # canal oficial do NoCopyrightSounds e foi recusado duas vezes, com
+            # uma aula de direitos autorais, e teve de escrever "esse video do
+            # YouTube pode usar, nao tem copyright" para conseguir uma faixa que
+            # o NCS publica exatamente para isso. A escolha é dele e o risco é
+            # dele; o que este comando faz é guardar e ANOTAR o risco da fonte,
+            # não discutir.
+            try:
+                destino = _media().baixa_trilha(pedido, alvo)
+            except Exception as exc:
+                die(f"{type(exc).__name__}: {exc}", code=1)
+            origem = pedido
+        else:
+            origem_arquivo = os.path.expanduser(pedido)
+            if not os.path.isfile(origem_arquivo):
+                die(f"there is no file at {origem_arquivo}", code=1)
+            if os.path.splitext(origem_arquivo)[1].lower() not in AUDIO_EXT:
+                die(f"{os.path.basename(origem_arquivo)} is not an audio file",
+                    code=1)
+            destino = os.path.join(alvo, os.path.basename(origem_arquivo))
+            if os.path.abspath(origem_arquivo) != os.path.abspath(destino):
+                shutil.copy2(origem_arquivo, destino)
+            # Uma faixa que já está na pasta e é "guardada" de novo não é erro:
+            # é o pedido de medir uma que entrou antes de existir ficha. Copiar
+            # sobre si mesma é que seria.
+            origem = origem_arquivo
+        ficha = _guarda_trilha(destino, origem)
         print(destino)
-        print(f"kept. `warden cut --track {os.path.basename(destino)}` finds it "
-              f"by name from now on -- do not ask for this file again.",
-              file=sys.stderr)
+        curto = os.path.splitext(os.path.basename(destino))[0]
+        if ficha.get("bpm"):
+            print(f"kept: {curto}, {ficha['bpm']} BPM, "
+                  f"{ficha['bar_s']}s a bar, gains body at "
+                  f"{ficha['drop_s']}s.", file=sys.stderr)
+        else:
+            print(f"kept: {curto}. No beat could be measured "
+                  f"({ficha.get('beat_error', 'no reason given')}), so an edit "
+                  f"on it will not snap to a grid.", file=sys.stderr)
+        print(f"`warden cut --track {curto}` finds it by name from now on -- "
+              f"do not ask for this file again.", file=sys.stderr)
+        if ficha.get("claim_risk") not in ("none by construction", "low"):
+            print(f"source risk: {ficha['claim_risk']} -- "
+                  f"{ficha['claim_risk_why']}.", file=sys.stderr)
         return 0
-    nomes = sorted(f for f in os.listdir(alvo)
-                   if os.path.splitext(f)[1].lower() in
-                   (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus"))
-    for nome in nomes:
-        print(os.path.join(alvo, nome))
-    if not nomes:
-        print("no track has been kept yet. This agent ships none and downloads "
-              "none: ask the owner for a file, or point them at "
-              "studio.youtube.com > Áudio, whose library is free to use in "
-              "videos and is downloaded under their own account.",
-              file=sys.stderr)
+
+    guardadas = tracks_guardadas()
+    for nome, caminho in guardadas:
+        ficha = ficha_da_trilha(caminho)
+        curto = os.path.splitext(nome)[0]
+        if ficha.get("bpm"):
+            print(f"{curto}\t{ficha['bpm']} BPM\t{ficha['bar_s']}s a bar\t"
+                  f"drop {ficha['drop_s']}s\t{caminho}")
+        else:
+            print(f"{curto}\t(not measured)\t{caminho}")
+    if not guardadas:
+        print("no track has been kept yet. A file the owner sends, or a link "
+              "from a free source -- the YouTube Audio Library "
+              "(studio.youtube.com > Áudio) or NCS -- goes in with "
+              "`warden tracks add <file|url>`, and it is measured once and "
+              "never asked for again.", file=sys.stderr)
+        return 1
     return 0
 
 

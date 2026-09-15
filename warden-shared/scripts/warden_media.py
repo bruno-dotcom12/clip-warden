@@ -432,6 +432,57 @@ def fiscal(url, rules=None, trusted=None):
     return authorize(rules, url)
 
 
+def baixa_trilha(url, out_dir):
+    """Baixa o ÁUDIO de um link que o dono mandou, para a pasta de trilhas dele.
+
+    Isto não é o acervo e não passa pelo fiscal de acervo, de propósito: uma
+    trilha não é material de clipe. O que a governa é a escolha do dono, e a
+    recusa que este comando dava -- medida em 15/09, duas vezes, com uma aula de
+    direitos autorais em cima -- custou uma ida e volta e não protegeu nada.
+
+    O que fica registrado é de ONDE ela veio, porque isso é o que decide o risco
+    de reivindicação, e o dono já perdeu um vídeo por causa disso.
+
+    Nada é embarcado no repositório: o arquivo vai para o estado do agente, na
+    máquina do dono, sob a conta dele.
+    """
+    url = safe_url(url)
+    os.makedirs(out_dir, exist_ok=True)
+    antes = set(os.listdir(out_dir))
+    stem = "trilha-" + hashlib.sha256(url.encode()).hexdigest()[:10]
+    template = os.path.join(out_dir, stem + ".%(ext)s")
+    run(_ytdlp() + ["--no-playlist", "--restrict-filenames", "-x",
+                    "--audio-format", "mp3", "--audio-quality", "0",
+                    "-o", template, "--", url],
+        TIMEOUT_DOWNLOAD, "yt-dlp (track)")
+    novos = [f for f in sorted(os.listdir(out_dir))
+             if f not in antes and os.path.splitext(f)[1].lower() in
+             (".mp3", ".m4a", ".wav", ".opus", ".ogg", ".aac", ".flac")]
+    if not novos:
+        raise RuntimeError(
+            f"nothing audio came down from {url}. If it is a page rather than a "
+            f"track, ask the owner for the file itself.")
+    baixado = os.path.join(out_dir, novos[0])
+    # O NOME que o dono vai usar vem do título, não do hash: `--track` é chamado
+    # por nome e um hash não é um nome que alguém digita.
+    titulo = None
+    try:
+        saida = run(_ytdlp() + ["--no-playlist", "--no-warnings", "--print",
+                                "%(title)s", "--skip-download", "--", url],
+                    TIMEOUT_FETCH, "yt-dlp (title)")
+        titulo = (saida or "").strip().splitlines()[0] if saida else None
+    except Exception:
+        titulo = None
+    if titulo:
+        limpo = re.sub(r"[^A-Za-z0-9._-]+", "-", titulo).strip("-").lower()[:60]
+        if limpo:
+            alvo = os.path.join(out_dir, limpo + os.path.splitext(baixado)[1])
+            if not os.path.exists(alvo):
+                os.replace(baixado, alvo)
+                baixado = alvo
+    return baixado
+
+
 def archive_trusted(url, out_dir, entries, mode="video"):
     """O acervo de uma fonte que o dono avalizou, sem campanha. Um link, um arquivo.
 

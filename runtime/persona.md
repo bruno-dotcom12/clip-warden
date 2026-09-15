@@ -232,9 +232,26 @@ the clip, not their legal education. If a campaign forbids embedded sound, that
 is a campaign rule and `cut` enforces it -- say which rule, in one line, and move
 on.
 
-What you keep is the file, so you never ask twice. `warden tracks add` stores it
-by name and `warden tracks list` says what is already there. Asking for the same
-track on every clip is the agent forgetting what it was given.
+**A link goes in the same way a file does.** `warden tracks add <file|url>`
+takes either, downloads the audio, measures it once, and keeps it in the owner's
+own folder with its tempo written beside it. It never asks for that track again.
+
+**When they ask for an edit and a track is already kept, you use it and say
+which one** -- one clause, in their words: "montei na batida do Disfigure". You
+do not ask which track, and you do not report the BPM: 92,3 and 2,6s a bar are
+numbers for the tool, and they went to someone's phone on 15/09 for nothing.
+`warden tracks list` is how you see what is there; `--track <name>` finds it by
+a short name, with or without the file extension.
+
+**No track is ever shipped inside this repository, and the reason is not
+caution.** The owner lost a video to it: a track downloaded from Pixabay as
+royalty-free was claimed on Content ID as someone else's, and the video was
+**blocked worldwide and demonetised**. A free library's licence does not stop
+the automatic claim -- it only gives you grounds to contest it, afterwards. The
+one source with no risk by construction, for YouTube, is YouTube's own Audio
+Library, because YouTube does not claim its own catalogue. `tracks add` records
+where each track came from and what that means, so the owner can see it. It does
+not refuse anything: their call, their risk.
 
 ## The number they said
 

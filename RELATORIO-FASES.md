@@ -628,3 +628,102 @@ uma linha escrita, sem `--subtitles`.
 **A suíte: 368 testes, todos passando.** Seis novos medem o encaixe na batida, e
 um deles é a própria referência: os dez cortes medidos no seu short passam pelo
 mesmo teste de 80ms que o nosso edit tem de passar.
+
+---
+
+## FASE 6 — Trilha
+
+### O que acontecia
+
+Duas idas e voltas por causa de trilha, medidas em 15/09:
+
+- 02:56:05 — você manda o canal oficial do NoCopyrightSounds. O agente recusa:
+  *"não posso baixar música de lá pra usar num edit. É conteúdo protegido por
+  direitos autorais."*
+- 02:56:36 — você tem que escrever *"esse video do YouTube pode usar, nao tem
+  copyright"*.
+- 02:57:00 — só então ele aceita.
+
+E depois, no edit: `--track disfigure-blank` foi recusado porque o arquivo se
+chamava `disfigure-blank.mp3`. A faixa estava na pasta e **estava listada na
+própria mensagem de erro**. Três letras a tornaram inalcançável.
+
+### O que mudou
+
+**O link entra igual a um arquivo.** `warden tracks add <arquivo|link>` aceita os
+dois, baixa o áudio, e nomeia pelo título — não por um hash, porque `--track` é
+chamado por nome e ninguém digita um hash. Medido: 10 segundos do link ao
+arquivo guardado.
+
+**A faixa é medida uma vez, na hora de guardar**, e a medição fica numa ficha ao
+lado dela:
+
+```
+$ warden tracks list
+disfigure-blank   92.3 BPM   2.6002s a bar   drop 28.753s   /var/lib/.../disfigure-blank.mp3
+```
+
+Isso resolve duas coisas: não se mede de novo a cada edit, e **o número não vira
+mensagem**. Em 15/09 o agente rodou `warden beat` no meio da conversa e mandou
+"Faixa analisada: 92.3 BPM, barra de 2.6s, drop em 28.75s" para alguém que não
+tem o que fazer com isso.
+
+**O nome funciona como nome.** `disfigure-blank`, `Disfigure-Blank`, `disfigure`
+e `blank.mp3` acham todos a mesma faixa. Um pedaço de nome que casa com duas
+pede para dizer qual, em vez de escolher sozinho.
+
+### O risco da fonte, escrito com o caso que custou um vídeo
+
+Li o `PRIME/TRILHAS/BLOQUEADA/LEIA-ME.txt` que você me apontou. O caso, nas suas
+palavras: uma faixa baixada do Pixabay **como royalty-free** foi reivindicada no
+Content ID como "Aggressive Phonk Drift" de "Birthday PAPA", e o vídeo ficou
+**bloqueado no mundo todo e sem monetização**. A licença do Pixabay não impede o
+bloqueio automático — ela dá base para contestar, depois.
+
+Isso virou dado na ferramenta, não texto num arquivo:
+
+| Fonte | Risco anotado |
+|---|---|
+| studio.youtube.com > Áudio | **nenhum por construção** — o YouTube não reivindica o próprio catálogo |
+| NCS | baixo — licencia para uso em vídeo, pede crédito ao artista |
+| Pixabay | **JÁ FOI REIVINDICADA** — com o caso do vídeo bloqueado escrito junto |
+| Uppbeat | desconhecido |
+
+O reconhecimento olha o link **e o nome do arquivo**, porque o link quase nunca é
+`ncs.io`: você manda o vídeo do canal no YouTube, e é o título que diz de quem é
+a faixa.
+
+**A ferramenta anota e não recusa.** A escolha é sua e o risco é seu.
+
+**Nenhuma faixa entra no repositório**, e agora um teste varre a árvore inteira e
+falha se alguém commitar um `.mp3`.
+
+### Auditoria da FASE 6
+
+**As quatro coisas que você pediu:**
+
+| Pedido | Onde está |
+|---|---|
+| Link de fonte livre entra direto, sem discussão | `tracks add <url>`, e a persona proíbe a lição não pedida |
+| Guardar na pasta dele, com nome e BPM medidos | A ficha ao lado de cada faixa; `tracks list` mostra |
+| Se já houver faixa, usa e diz qual, sem perguntar | Regra na persona, com a forma da frase ("montei na batida do Disfigure") e a proibição de reportar o BPM |
+| Nenhuma faixa no repositório | Teste que varre a árvore |
+
+**Onze testes novos.** Os quatro de resolução por nome (sem extensão, outra
+caixa, pedaço, pedaço ambíguo), os três de risco de fonte (Pixabay com o aviso
+do bloqueio, biblioteca do YouTube sem risco por construção, NCS reconhecido
+pelo nome e não só pelo domínio), o da lista vazia dizendo como guardar, o de
+guardar uma faixa que já está na pasta, o da ficha que **diz que não mediu**
+quando não conseguiu medir, e o que varre o repositório atrás de áudio
+embarcado.
+
+**Uma limpeza:** o link do NCS que baixei para testar criou uma faixa duplicada
+na sua pasta. Removi a que eu criei e deixei a que já estava lá.
+
+**O que ficou aberto:**
+
+- O nome que vem do título do YouTube é longo
+  (`disfigure---blank-melodic-dubstep-ncs---copyright-free-music`). Funciona,
+  porque um pedaço do nome resolve, mas não é bonito de digitar.
+- O risco da fonte é anotado na ficha e dito na hora de guardar. Ele **não**
+  aparece de novo na hora de usar a faixa num edit.

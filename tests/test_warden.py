@@ -5241,3 +5241,150 @@ class OEditEmendaPlanosEmVezDeIgnorarALista(unittest.TestCase):
         self.assertLess(mediano, 0.080,
                         f"a referência mediu {mediano * 1000:.0f}ms")
         self.assertGreaterEqual(sum(1 for e in errs if e < 0.080), 7)
+
+
+class ATrilhaEntraEFicaGuardadaComOBpmMedido(unittest.TestCase):
+    """O link que o dono manda entra. Pedir a mesma faixa duas vezes é esquecê-la.
+
+    Medido em 15/09: o dono mandou o canal oficial do NoCopyrightSounds e foi
+    recusado DUAS vezes, com uma aula de direitos autorais em cima, e teve de
+    escrever "esse video do YouTube pode usar, nao tem copyright" para conseguir
+    uma faixa que o NCS publica exatamente para isso. Duas idas e voltas.
+
+    E o `--track disfigure-blank` seguinte foi recusado porque o arquivo se
+    chamava `disfigure-blank.mp3`: a faixa estava na pasta, listada na própria
+    mensagem de erro, e três letras a tornaram inalcançável.
+
+    O que NÃO muda: nenhuma faixa é embarcada no repositório. O motivo está
+    escrito pelo dono em `PRIME/TRILHAS/BLOQUEADA/LEIA-ME.txt` -- uma faixa
+    baixada do Pixabay como royalty-free foi reivindicada no Content ID e o
+    vídeo foi bloqueado no mundo todo.
+    """
+
+    def setUp(self):
+        import warden as W
+        self.W = W
+        self.dir = _temp(self, prefix="warden-trilha-")
+        self._antigo = os.environ.get("WARDEN_DIR")
+        os.environ["WARDEN_DIR"] = self.dir
+        self.addCleanup(self._repoe)
+        os.makedirs(W.tracks_dir(), exist_ok=True)
+
+    def _repoe(self):
+        if self._antigo is None:
+            os.environ.pop("WARDEN_DIR", None)
+        else:
+            os.environ["WARDEN_DIR"] = self._antigo
+
+    def _faixa(self, nome):
+        caminho = os.path.join(self.W.tracks_dir(), nome)
+        with open(caminho, "wb") as fh:
+            fh.write(b"\0" * 64)
+        return caminho
+
+    def test_o_nome_sem_extensao_acha_a_faixa(self):
+        self._faixa("disfigure-blank.mp3")
+        self.assertTrue(self.W.resolve_track("disfigure-blank").endswith(
+            "disfigure-blank.mp3"))
+
+    def test_o_nome_com_outra_caixa_acha_a_faixa(self):
+        self._faixa("disfigure-blank.mp3")
+        self.assertTrue(self.W.resolve_track("Disfigure-Blank").endswith(
+            "disfigure-blank.mp3"))
+
+    def test_um_pedaco_do_nome_acha_quando_identifica_uma_so(self):
+        self._faixa("disfigure-blank.mp3")
+        self.assertTrue(self.W.resolve_track("disfigure").endswith(
+            "disfigure-blank.mp3"))
+
+    def test_um_pedaco_ambiguo_pede_para_dizer_qual(self):
+        self._faixa("phonk-um.mp3")
+        self._faixa("phonk-dois.mp3")
+        with self.assertRaises(SystemExit):
+            self.W.resolve_track("phonk")
+
+    def test_a_faixa_do_pixabay_carrega_o_aviso_do_bloqueio(self):
+        risco, porque = self.W._risco_da_origem(
+            "https://pixabay.com/music/phonk-x-123.mp3", "x.mp3")
+        self.assertIn("CLAIMED", risco)
+        self.assertIn("blocked worldwide", porque)
+
+    def test_a_biblioteca_do_youtube_e_a_unica_sem_risco_por_construcao(self):
+        risco, _ = self.W._risco_da_origem(
+            "https://studio.youtube.com/audiolibrary", "y.mp3")
+        self.assertEqual(risco, "none by construction")
+
+    def test_o_ncs_e_reconhecido_pelo_nome_e_nao_so_pelo_dominio(self):
+        # O link quase nunca é ncs.io: o dono manda o vídeo do canal no
+        # YouTube, e é o TÍTULO que diz de quem é a faixa.
+        risco, _ = self.W._risco_da_origem(
+            "https://www.youtube.com/watch?v=p7ZsBPK656s",
+            "disfigure-blank-ncs-copyright-free-music.mp3")
+        self.assertEqual(risco, "low")
+
+    def test_a_lista_vazia_diz_como_guardar_e_sai_um(self):
+        class _Args:
+            action = "list"
+            file = None
+        err = io.StringIO()
+        antigo = sys.stderr
+        sys.stderr = err
+        try:
+            code = self.W.cmd_tracks(_Args())
+        finally:
+            sys.stderr = antigo
+        self.assertEqual(code, 1)
+        self.assertIn("tracks add", err.getvalue())
+
+    def test_guardar_uma_faixa_que_ja_esta_na_pasta_nao_e_erro(self):
+        # É o pedido de MEDIR uma que entrou antes de existir ficha.
+        caminho = self._faixa("ja-estava.mp3")
+
+        class _Args:
+            action = "add"
+            file = caminho
+        out, err = io.StringIO(), io.StringIO()
+        a, b = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = out, err
+        try:
+            code = self.W.cmd_tracks(_Args())
+        finally:
+            sys.stdout, sys.stderr = a, b
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.W.tracks_dir(), "ja-estava.ficha.json")))
+
+    def test_a_ficha_de_uma_faixa_sem_batida_diz_que_nao_mediu(self):
+        # 64 bytes de zeros não têm batida. O que não pode é a ficha afirmar
+        # que mediu.
+        caminho = self._faixa("muda.mp3")
+
+        class _Args:
+            action = "add"
+            file = caminho
+        for fluxo in ("stdout", "stderr"):
+            pass
+        out, err = io.StringIO(), io.StringIO()
+        a, b = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = out, err
+        try:
+            self.W.cmd_tracks(_Args())
+        finally:
+            sys.stdout, sys.stderr = a, b
+        ficha = self.W.ficha_da_trilha(caminho)
+        self.assertNotIn("bpm", ficha)
+        self.assertIn("beat_error", ficha)
+        self.assertIn("No beat could be measured", err.getvalue())
+
+    def test_nenhuma_faixa_esta_embarcada_no_repositorio(self):
+        # A regra que custou um vídeo bloqueado no mundo todo.
+        raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        achadas = []
+        for base, _dirs, arquivos in os.walk(raiz):
+            if ".git" in base or "node_modules" in base:
+                continue
+            for f in arquivos:
+                if os.path.splitext(f)[1].lower() in (
+                        ".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac"):
+                    achadas.append(os.path.join(base, f))
+        self.assertEqual(achadas, [], f"faixa embarcada no repo: {achadas}")

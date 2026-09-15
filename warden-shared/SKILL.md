@@ -65,7 +65,7 @@ you did not get.
 | `warden package --campaign <id> --hook "..."` | the caption the campaign requires |
 | `warden log --campaign <id> ...` | this install's own count, which the cap reads |
 | `warden captions review <srt> --start --end` | the lines that would burn; `--approve` signs exactly that window |
-| `warden tracks add <file>` / `list` | the owner's own audio, kept by name so it is never asked for twice |
+| `warden tracks add <file\|url>` / `list` | the owner's own audio, kept by name, measured once. A link goes in like a file |
 | `warden style extract <clip>` / `check <render>` | the measured style of an approved clip, and whether a new one is inside it |
 | `warden voz [--since <ts>]` | how many messages each request actually cost the person; **exit 1 above four** |
 | `warden inbox --wait <s>` | the link the message promised but did not carry, when it arrives a second later. Exit 1 if none came |
