@@ -1032,13 +1032,22 @@ def _ajusta_fronteira(i, j, words, marco, proibido, pontuada, budget,
 #
 # O que sai: os símbolos musicais (U+2669..U+266C) e os rótulos de som entre
 # colchetes que a legenda automática do YouTube usa em inglês e em português.
+#
+# `risadas` e `[ __ ]` entraram depois, e a razão é medida: no primeiro teste
+# real pela linha da Plow, 15/09/2026, um vídeo em português trouxe `[risadas]`
+# e `[ __ ]` -- o marcador de palavrão censurado do YouTube. Os dois passaram
+# por esta limpeza (a lista só tinha `risos`, e `_` não estava em lugar nenhum),
+# caíram na checagem de linha suspeita, e travaram a legenda dos DOIS clipes do
+# pedido. O agente teve de passar `--keep` para cada um. Marcação que sobrevive
+# aqui vira trabalho lá na frente.
 # O que FICA: parêntese comum. "(Give you up)" é letra de verdade, e o trabalho
 # de 15/09 tornou parêntese uma unidade indivisível -- limpar o parêntese aqui
 # desfaria aquilo.
 _SIMBOLOS_MUSICAIS = "\u2669\u266a\u266b\u266c\u266d\u266e\u266f\u2192\u25ba"
 _RE_MARCACAO = re.compile(
-    r"\[\s*(?:m[uú]sic[ao]|music|applause|aplausos?|palmas|laughter|risos?|"
-    r"sound|som|silence|sil[êe]ncio|inaudible|ininteligível|ininteligivel|"
+    r"\[\s*(?:m[uú]sic[ao]|music|applause|aplausos?|palmas|laughter|"
+    r"ris[oa]s?|risadas?|gargalhadas?|sound|som|silence|sil[êe]ncio|"
+    r"inaudible|ininteligível|ininteligivel|_+|"
     r"[" + _SIMBOLOS_MUSICAIS + r"\s]+)\s*\]",
     re.IGNORECASE)
 

@@ -39,12 +39,13 @@ When the words point at a link that is not in the text -- "esse vídeo", "esse
 link", "abaixo", "essa música" -- do not answer "faltou o link". Run:
 
 ```
-warden inbox --wait 20
+warden inbox --wait 60
 ```
 
-Measured 15/09, three for three: the request came in, the agent answered "faltou
-o link" five seconds later, and the link arrived at seven seconds as its own
-message. The card the person sees is drawn by their app and never reaches you.
+Measured 15/09, four for four: the link comes as its OWN message, a moment
+after the one that asks for the clip -- the person's app sends it that way even
+when they typed it together. In the last run the wait was 20s, the question went
+out, and the link landed one second later. The card the person sees is drawn by their app and never reaches you.
 Exit 0 gives you the URL; exit 1 after the wait is when asking becomes fair.
 
 ## 1. The gate, and the rule set when there is one
@@ -482,7 +483,10 @@ things, and every one of them rejects the clip on its own:
       sheet is where you see it first
 
 **When a tile makes you suspicious, pull the frame.** A tile is 300px wide:
-enough to notice, never enough to conclude. `ffmpeg -ss <t> -i <clip>
+enough to notice, never enough to conclude. **Once per clip, and only for
+something you would REJECT the clip for** -- the persona's ceiling on looking is
+the rule, and it is there because five vision calls and three renders of one
+correct cut cost ten minutes on 15/09. `ffmpeg -ss <t> -i <clip>
 -frames:v 1 -update 1 /tmp/q.png` and look at that. Reading the `.ass` to
 settle a question about two captions is the one thing that cannot work -- only
 ours is in it.

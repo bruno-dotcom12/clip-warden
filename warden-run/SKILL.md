@@ -8,6 +8,17 @@ description: The whole path from one message to finished clips. Use when someone
 Someone sends a link, or asks you to go find a campaign. What comes back is
 files they can upload, with the caption to paste. Everything between is yours.
 
+**Before you run a single command: send `Em produção.`** Two words, on their own,
+the instant you have the link and know what they want. Then work without
+stopping. Measured 15/09: the owner waited ten minutes with no sign the request
+had been received, because the first line only went out after the work had
+already started.
+
+**And nothing you do after that is a message.** Not which window you picked, not
+that a clip was approved, not a second you adjusted. The owner's words about one
+of those: *"uma mensagem nada a ver que eu como usuário não quero ler, porque
+primeiro não entendo e não quero saber."*
+
 **The order of work is written in `warden-clip`, at the top of that file, and
 nowhere else.** Not here, not in the persona, not in the README. This skill is
 the front door -- what happens at each door -- and it does not carry a second copy
@@ -81,7 +92,14 @@ Who signs the captions -- the tool on the `lote` road, you on the `cut` road --
 is written in `warden-clip` 5, "Who signs the captions", and nowhere else. Read
 it there. It is never a question to the person.
 
-Open the contact sheet before you send. `cut` will not print a `MEDIA:` line
+**When a gate refuses, fix what it named. Never drop what was asked for.**
+Dropping `--hook`, swapping the srt for the approval signature, or trading
+`--seconds` for `--any-length` until nothing complains delivers a clip missing
+the product. That happened on 15/09 and both clips went out with no captions and
+no hook. If you cannot satisfy the gate with everything they asked for, say which
+one you could not do, in one line, and hand over what you have.
+
+Open the combined contact sheet ONCE, before you send. `cut` will not print a `MEDIA:` line
 without one. The checklist, and why it rejects a clip every check passed, is in
 `warden-clip` 6.
 
