@@ -73,16 +73,18 @@ docker compose version >/dev/null 2>&1 || pare "este Docker não tem 'docker com
 #
 # Desde 15/09/2026 o compose sobe um segundo container ao lado: o `pot`, que
 # emite o PO token que o YouTube exige de quem pede deslogado. São mais 512m de
-# teto, e a soma passou de 3g para 3,5g. Os 4 GiB que este aviso pedia deixavam
-# 1 GiB para o resto da VM; a mesma folga com o sidecar são 4,5 GiB -- por isso
-# a conta virou MiB, que "GiB inteiro" não expressa.
+# teto. E desde 16/09/2026 o agente renderiza DOIS clipes ao mesmo tempo
+# (`WARDEN_RENDER_PARALELO=2`, medido: 105s viram 54,7s), então o teto dele
+# subiu de 3g para 4g. Somando o sidecar são 4,5 GiB de teto, e a mesma folga
+# de 1 GiB para o resto da VM são 5,5 GiB -- por isso a conta é em MiB, que
+# "GiB inteiro" não expressa.
 MEM_BYTES="$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)"
 MEM_MIB=$(( MEM_BYTES / 1048576 ))
-if [ "$MEM_MIB" -lt 4608 ]; then
-    printf '  aviso: a VM do Docker tem %s MiB. O compose limita 3g no agente\n' "$MEM_MIB"
-    printf '         mais 512m no sidecar pot: 3,5 GiB de teto somado, e só o\n'
-    printf '         agente já precisa de ~2 GiB para transcrever e renderizar junto.\n'
-    printf '         Docker Desktop > Settings > Resources > Memory: suba para 4,5 GiB.\n'
+if [ "$MEM_MIB" -lt 5632 ]; then
+    printf '  aviso: a VM do Docker tem %s MiB. O compose limita 4g no agente\n' "$MEM_MIB"
+    printf '         mais 512m no sidecar pot: 4,5 GiB de teto somado, e o agente\n'
+    printf '         renderiza dois clipes ao mesmo tempo (pico medido 1584 MiB).\n'
+    printf '         Docker Desktop > Settings > Resources > Memory: suba para 5,5 GiB.\n'
     printf '         Seguindo assim mesmo -- o primeiro corte pode morrer por OOM.\n'
 fi
 printf '  ok: git, docker, compose, %s MiB de RAM na VM\n' "$MEM_MIB"

@@ -158,10 +158,11 @@ To build locally instead, for development: `WARDEN_BUILD=1 ./install.sh`. It pri
 runs and stops at the first thing it cannot do. `docs/INSTALL.md` has the same
 path typed out by hand, and the three ordering traps that bite when you do.
 
-Docker Desktop needs at least 4.5 GiB of RAM in its VM: the agent uses about
-2 GiB to transcribe and render at once, `compose.yml` caps it at 3 GiB, and
-since 15/09/2026 a second container sits beside it — the Proof-of-Origin token
-provider, capped at 512 MiB — so the ceilings add up to 3.5 GiB. A smaller VM
+Docker Desktop needs at least 5.5 GiB of RAM in its VM: `compose.yml` caps the
+agent at 4 GiB — it renders two clips at once since 16/09/2026, which halved a
+two-clip batch from 105s to 54.7s at a measured peak of 1584 MiB — and since
+15/09/2026 a second container sits beside it, the Proof-of-Origin token
+provider, capped at 512 MiB, so the ceilings add up to 4.5 GiB. A smaller VM
 turns the first clip into an out-of-memory kill. The script measures it and
 says so.
 

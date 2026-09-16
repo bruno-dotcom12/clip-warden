@@ -46,10 +46,11 @@ app. Both are covered in
 ## What you need
 
 - **Docker, running, with Docker Compose**, and its VM set to **at least
-  4.5 GiB of RAM**. `compose.yml` caps the agent at 3 GiB and the agent needs
-  about 2 GiB to transcribe and render at the same time; since 15/09/2026 it
-  also runs a second container, the Proof-of-Origin token provider, capped at
-  512 MiB — 3.5 GiB of ceiling between them. On a smaller VM the first clip
+  5.5 GiB of RAM**. `compose.yml` caps the agent at 4 GiB — it renders two
+  clips at the same time since 16/09/2026, which took a two-clip batch from
+  105s to 54.7s at a measured peak of 1584 MiB; since 15/09/2026 it also runs a
+  second container, the Proof-of-Origin token provider, capped at 512 MiB —
+  4.5 GiB of ceiling between them. On a smaller VM the first clip
   dies as an out-of-memory kill rather than an error. Docker Desktop →
   Settings → Resources → Memory. `install.sh` measures this and warns you.
 - **Git.**
