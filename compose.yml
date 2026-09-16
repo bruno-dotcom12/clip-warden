@@ -74,17 +74,64 @@ services:
       # YouTube devolveu `privacyStatus: public` e a página abre deslogada.
       # Isso é outra coisa de `warden youtube publish`, que usa o projeto de
       # API deste repositório, não auditado, e cujo envio fica TRANCADO como
-      # privado.
+      # privado. `warden post tiktok` e `warden post instagram` andam pela
+      # mesma chave e pelo mesmo envio -- mas SÓ O YOUTUBE foi medido ponta a
+      # ponta daqui, e o comando diz isso na saída de todo envio que inclui uma
+      # das outras duas.
       #
       # A chave é de UMA PESSOA -- é a conta dela no intermediário, com o
       # limite e a fatura dela. Mesma regra do `plow-credentials` e do cliente
       # do Google: entra da máquina, nunca da imagem.
       #
-      # SEM ELA O COMANDO FICA DESLIGADO, e esse é o estado padrão de quem
-      # instala: o agente entrega o arquivo na conversa e a pessoa sobe pelo
-      # app. Nada mais muda.
+      # ELA TEM DUAS ORIGENS, e o ambiente ganha do arquivo:
+      #
+      #   1. esta variável, que é como o DONO DO AGENTE põe a dele -- e aí
+      #      VÁRIAS máquinas podem estar usando a MESMA conta;
+      #   2. `echo "<chave>" | warden post setkey`, que lê a chave da entrada
+      #      padrão (nunca de um argumento, que ficaria no `ps` e no histórico
+      #      do shell) e grava em /var/lib/hermes/warden/post-api-key, 0600, do
+      #      uid 10000. Esse é O CAMINHO NA NUVEM DA PLOW, onde não existe
+      #      `.env` nem este arquivo: lá cada pessoa tem a própria máquina e o
+      #      ambiente traz só o que a Plow põe nele, então sem esse comando a
+      #      chave da PRÓPRIA PESSOA não teria por onde entrar. O arquivo mora
+      #      no volume desta instalação, que não é a imagem: ele é escrito
+      #      depois do pull e não viaja para quem puxa a mesma tag.
+      #
+      # A ordem não é arbitrária: a variável é a alavanca de quem está de pé
+      # agora e tem de ganhar de um arquivo escrito semanas atrás. E a
+      # PROCEDÊNCIA da chave decide outra coisa, logo abaixo.
+      #
+      # SEM NENHUMA DAS DUAS O COMANDO FICA DESLIGADO, e esse é o estado padrão
+      # de quem instala: o agente entrega o arquivo na conversa e a pessoa sobe
+      # pelo app. Nada mais muda.
       WARDEN_POST_API_KEY: ${WARDEN_POST_API_KEY:-}
       WARDEN_POST_PROVIDER: ${WARDEN_POST_PROVIDER:-upload-post}
+
+      # O PERFIL, que na prática é O CANAL. Um perfil no intermediário é um
+      # apelido para um conjunto de contas conectadas, e mandar para o perfil
+      # errado é publicar no canal de outra pessoa -- o que não volta atrás.
+      #
+      # O padrão ERA `clip-warden`, IGUAL EM TODA INSTALAÇÃO, e isso era um
+      # defeito com data marcada: com a chave do dono do agente no ambiente de
+      # várias máquinas, todas elas resolveriam para o mesmo perfil, logo para
+      # o mesmo canal. A primeira pessoa conectaria o canal dela e a segunda
+      # publicaria lá dentro sem que nenhuma das duas tivesse pedido.
+      #
+      # Desde 16/09/2026, sem esta variável, cada instalação gera
+      # `clip-warden-<8 hexadecimais>` na primeira vez que precisa de um nome,
+      # grava em /var/lib/hermes/warden/post-profile e reusa sempre -- está no
+      # volume porque um nome novo a cada boot seria um canal novo a cada boot.
+      # A exceção: quando a chave veio do ARQUIVO (alguém a digitou NESTA
+      # máquina, então a conta é dessa pessoa) e a conta tem exatamente UM
+      # perfil, esse perfil é adotado, para uma instalação que já tinha canal
+      # ligado não perder o canal.
+      #
+      # DECLARE-A SE VOCÊ JÁ TINHA UM CANAL CONECTADO ANTES DESSA MUDANÇA. Ela
+      # ganha do nome gerado e da adoção, e é o que mantém esta máquina no
+      # perfil de sempre; sem ela a máquina passa a usar um perfil novo, que
+      # não tem canal nenhum atrás, e o canal teria de ser reconectado em
+      # `warden post connect`. Na instalação local do dono o `.env` carrega
+      # `WARDEN_POST_PROFILE=Clip-Warden` por exatamente esse motivo.
       WARDEN_POST_PROFILE: ${WARDEN_POST_PROFILE:-}
 
       # Onde o arquivo de cookies do YouTube está, quando existe.

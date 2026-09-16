@@ -35,13 +35,18 @@ channel is `warden post youtube`, and the five steps that switch it on are here:
 > and inside it
 > **[Setting it up — five steps, about three minutes](#setting-it-up--five-steps-about-three-minutes)**.
 
+The same key and the same upload also reach TikTok and Instagram, as
+`warden post tiktok` and `warden post instagram`. They are in the same section,
+under a heading that says out loud what has **not** been measured about them:
+only the YouTube road has ever been driven end to end from here.
+
 The other two delivery commands do **not** publish, however you configure them,
 and it is worth knowing which is which before you spend time on one:
 `warden youtube` uploads to your channel but the upload lands **locked private
 with no appeal**, because this project's API project has not been audited by
 YouTube; `warden tiktok` leaves a **draft in your inbox** that you finish in the
 app. Both are covered in
-[Handing a clip to YouTube or TikTok](#handing-a-clip-to-youtube-or-tiktok).
+[Handing a clip to YouTube, TikTok or Instagram](#handing-a-clip-to-youtube-tiktok-or-instagram).
 
 ## What you need
 
@@ -308,13 +313,17 @@ deleting it is yours to do. The same goes for `.env`.
 empty by default: `WARDEN_YT_COOKIES`, the pair
 `WARDEN_YT_CLIENT_ID` / `WARDEN_YT_CLIENT_SECRET`, and the trio
 `WARDEN_POST_API_KEY` / `WARDEN_POST_PROVIDER` / `WARDEN_POST_PROFILE` — see
-"Handing a clip to YouTube or TikTok" for what the credentials are, and why
-none of them lives in the image. The others below have to be added to the
+"Handing a clip to YouTube, TikTok or Instagram" for what the credentials are,
+and why none of them lives in the image. The publishing key is the one knob with
+a second entrance that is not an environment variable at all: `warden post
+setkey` writes it into the agent's own volume, which is how it gets in where
+there is no `.env` to write. The others below have to be added to the
 `environment:` block there to reach the container — it does not inherit your
 shell, the same as `WARDEN_DIRECTORIES`.
 
 | | |
 | --- | --- |
+| `WARDEN_POST_DIR` | where `warden post` keeps the key it was given and this machine's profile name. Defaults to `/var/lib/hermes/warden`, the agent's own directory inside the volume, which is where you want it: it is `0700` and it survives a restart. Point it elsewhere only to run the command against a throwaway directory |
 | `WARDEN_POT_URL` | the address of a PO token server of **your own**, if you run one. Optional, and there is no default: leave it unset and the generator inside the image is used. It was set to `http://pot:4416` until 16/09/2026, when the second container it pointed at went away |
 | `WARDEN_YT_COOKIES` | the cookies path, when it is not the default below. It says which service the cookies are for; a YouTube `cookies.txt` is a whole signed-in session, so it is a file in a volume and never anything the image carries |
 | `WARDEN_COOKIES` | the older name for the same thing; `WARDEN_YT_COOKIES` wins when both are set |
@@ -506,7 +515,9 @@ reaches four more hosts, all pinned by digest or sha256 in the repository:
 Three more hosts exist, and they are reached **only** when you have supplied a
 credential for them yourself and you run the command that uses it:
 
-- **`api.upload-post.com`**, for `warden post youtube`.
+- **`api.upload-post.com`**, for every `warden post` command — `youtube`,
+  `tiktok`, `instagram`, `connect` and `status` all speak to that one host, and
+  a send to three networks is still one upload to it.
 - **`oauth2.googleapis.com` and `googleapis.com`**, for `warden youtube`.
 - **`open.tiktokapis.com`**, for `warden tiktok`.
 
@@ -514,7 +525,7 @@ None of those credentials is in the image, so on a fresh install none of those
 hosts is ever contacted. The next section is what they are and what they do
 not do.
 
-## Handing a clip to YouTube or TikTok
+## Handing a clip to YouTube, TikTok or Instagram
 
 The ordinary delivery is the chat: the agent sends you the MP4 and you post it
 from the app you already post from. That is the default, it needs nothing
@@ -523,8 +534,12 @@ configured, and everything below is optional on top of it.
 ### The rule that governs this whole section
 
 **What goes into the image is public, because this agent is published.** Every
-credential below therefore comes from your own machine, at run time, through
-the `environment:` block in `compose.yml` — never from the image.
+credential below therefore comes from your own machine, at run time — through
+the `environment:` block in `compose.yml`, or, for the publishing key, through
+a file that `warden post setkey` writes into this machine's own volume. Never
+from the image. A volume is not the image: it belongs to one install, it is
+written after the pull, and it does not travel to anybody who pulls the same
+tag.
 
 That is not a precaution copied out of a policy document. Until 15/09/2026 this
 project's own Google OAuth secret was baked into the published image as an
@@ -548,12 +563,13 @@ one.
 signed-out browser. That is the whole difference from the command in the next
 section.
 
-**This is optional and nothing is broken without it.** Without
-`WARDEN_POST_API_KEY` the command is simply off, and that is the normal state of
-a fresh install: the agent cuts, captions and delivers exactly the same, hands
-you the finished file with a title and a description ready to paste, and you
-post that from the YouTube app the way you already do. The key buys you one step
-fewer, not a feature you are missing.
+**This is optional and nothing is broken without it.** With no key on this
+install — none in `WARDEN_POST_API_KEY` and none in this machine's own file —
+the command is simply off, and that is the normal state of a fresh install: the
+agent cuts, captions and delivers exactly the same, hands you the finished file
+with a title and a description ready to paste, and you post that from the
+YouTube app the way you already do. The key buys you one step fewer, not a
+feature you are missing.
 
 The key is an account **you** hold with that intermediary — your quota, your
 bill, your connected channel. It is not something the image can carry on your
@@ -568,34 +584,22 @@ No programming, and nothing to install. You need the Google account that
    **10 uploads per month and does not ask for a card** — that is what their
    pricing page says.
 
-2. **Open the dashboard** at `https://app.upload-post.com/` and **create a
-   profile**. A profile is just a nickname for one set of connected accounts;
-   `clip-warden` is a fine name. Write down exactly what you typed — it is the
-   value of `WARDEN_POST_PROFILE` in step 5.
+2. **Generate the API key** at `https://app.upload-post.com/api-keys` and copy
+   it. It is shown **once**; if you lose it you generate another. It is a
+   password to your channel: never put it in an issue, a commit or a
+   screenshot.
 
-3. **Connect your YouTube account to that profile.** Inside the profile, press
-   **Connect** on YouTube. Google's own screen opens, you pick the account that
-   owns the channel, and you press **Allow**. Your Google password is typed on
-   Google's page and nowhere else.
+3. **Hand the key to this install.** There are two doors, and which one you use
+   depends on where the agent is running. They are read in this order —
+   **the environment wins over the file** — because the variable is the lever of
+   whoever is standing up the machine right now, and the file may have been
+   written weeks ago.
 
-   > **The mistake everybody makes, and how to spot it:** if any screen at this
-   > point asks you for a **Client ID** or a **Client Secret**, you are on the
-   > wrong road — that is the Google Cloud console, which belongs to the *other*
-   > command, the one that cannot publish. **Stop and go back.** Connecting here
-   > is three presses and never asks you for a string to paste.
-
-4. **Generate the API key** in the dashboard and copy it. It is shown **once**;
-   if you lose it you generate another. It is a password to your channel:
-   never paste it into a chat, an issue, or a screenshot — not even into the
-   conversation with this agent.
-
-5. **Write it into `.env`**, a plain text file in this folder, beside
-   `compose.yml`. Two lines, with your own values in place of the angle
-   brackets:
+   **Running it yourself with `docker compose`, from this folder:** write it into
+   `.env`, a plain text file beside `compose.yml`.
 
    ```
-   WARDEN_POST_API_KEY=<the key from step 4>
-   WARDEN_POST_PROFILE=<the profile name from step 2>
+   WARDEN_POST_API_KEY=<the key from step 2>
    ```
 
    Then, from a terminal in this folder:
@@ -610,16 +614,163 @@ No programming, and nothing to install. You need the Google account that
    environment — **a running container does not pick up a changed `.env` on its
    own**, which is the second most common way this ends in confusion. The file
    is already in `.gitignore` and `.dockerignore`, so it never reaches the
-   repository or the image.
+   repository or the image. This is the door that keeps the key out of the
+   conversation entirely, so prefer it when you have it.
 
-   `WARDEN_POST_PROFILE` is **only required when your account has more than one
-   profile**. With exactly one, the agent uses it. With several and no name
-   given, it refuses and lists them rather than guessing — a video posted to the
-   wrong channel does not come back.
+   **Running it in the Plow cloud:** there is no `.env` and no `compose.yml`
+   there — each person gets their own machine and the environment carries only
+   what Plow puts in it. So the key has no way in as a variable, and the command
+   that opens the other door is:
 
-There is a third knob you almost never touch:
+   ```sh
+   echo "<the key from step 2>" | warden post setkey
+   ```
+
+   It reads the key from **standard input**, never from an argument: an argument
+   is left behind in `ps`, in the shell history and in the runtime's command log,
+   and all three are read by people who should not read the key to somebody's
+   channel. It writes the key to `/var/lib/hermes/warden/post-api-key`, mode
+   `0600`, owned by the agent's own uid `10000`, and it prints back the path and
+   nothing else — the key is never printed, never logged and never repeated.
+   In that setting you do not open a terminal at all: you paste the key to the
+   agent in the chat and it runs that command for you. So the key does pass
+   through the conversation once, because that is the only entrance there is —
+   on your own machine, with an `.env`, it never has to.
+
+   The same command works locally if you would rather not keep the key in a
+   file on the host — `-T` because the key arrives on standard input and
+   `docker compose exec` allocates a terminal by default, and `-u 10000:10000`
+   for the reason under **By hand**:
+
+   ```sh
+   printf '%s\n' '<the key>' | docker compose exec -T -u 10000:10000 agent warden post setkey
+   ```
+
+4. **Connect the channel.** One command, and it prints **one address**:
+
+   ```sh
+   docker compose exec -u 10000:10000 agent warden post connect
+   ```
+
+   Open that address, pick the account that owns the channel on Google's own
+   screen, and press **Allow**. Your Google password is typed on Google's page
+   and nowhere else. Then run the same command again: it answers
+   `already connected`, with the channel name, when it worked. Generating that
+   address was measured against the real API on 16/09/2026.
+
+   > **The mistake everybody makes, and how to spot it:** if any screen at this
+   > point asks you for a **Client ID** or a **Client Secret**, you are on the
+   > wrong road — that is the Google Cloud console, which belongs to the *other*
+   > command, the one that cannot publish. **Stop and go back.** Connecting here
+   > is three presses and never asks you for a string to paste.
+
+5. **Publish one clip**, and then check it the way the next section says:
+
+   ```sh
+   docker compose exec -u 10000:10000 agent \
+     warden post youtube <clip> --title "..."
+   ```
+
+   `warden post status` with no argument answers the other question — whose
+   account this is, which profile it will use, where the key came from, and
+   which connected accounts will actually publish. It exits `3`, not `0`, when
+   the key is valid and **nothing** is connected, so a green exit code is never
+   the reason to promise a publication.
+
+There is a knob you almost never touch:
 `WARDEN_POST_PROVIDER=upload-post` is the default and naming anything else is
 an error, not a switch.
+
+#### The profile, and why it is now one per machine
+
+A profile at the intermediary is a nickname for one set of connected accounts —
+in practice, one YouTube channel. The name matters more than it looks like it
+should, because **the profile is the channel**: send to the wrong profile and
+the video lands on somebody else's channel, and that does not come back.
+
+Until 16/09/2026 the default name was `clip-warden`, **the same on every
+install**. That was a defect with a date on it. A key can arrive through the
+environment of a machine somebody else set up — that is how the owner of this
+agent supplies theirs, and then several machines share one account — and with a
+fixed name every one of those machines would resolve to the same profile, which
+is the same channel. The first person would connect their channel and the second
+would publish into it, without either of them asking for that.
+
+So the name is now decided **once per machine**: with no `WARDEN_POST_PROFILE`
+set, the install generates `clip-warden-<8 hex digits>` the first time it needs
+one, writes it to `/var/lib/hermes/warden/post-profile`, and reuses it from then
+on. It is in the volume, so it survives a restart; a new name on every boot
+would mean a new channel on every boot.
+
+There is one exception, and it exists to protect a channel you already
+connected: when the key came from **the file on this machine** — meaning
+somebody typed it here, so the account is theirs — and that account has exactly
+**one** profile, the install adopts that profile instead of inventing a name.
+When the key comes from the environment it never adopts, because that key may
+belong to the agent's owner and the profile in it to somebody else.
+
+**If you already had a channel connected on an earlier install, name the
+profile and keep it named.** In the owner's own local install the key is in
+`.env` and `.env` carries:
+
+```
+WARDEN_POST_PROFILE=Clip-Warden
+```
+
+Put the same line in yours, with the profile name **you** already use, if you
+connected a channel before this change. `WARDEN_POST_PROFILE` beats both the
+generated name and the adoption rule, so it is what keeps you on the profile
+you have. Without it, this machine generates a fresh `clip-warden-<hex>` name,
+that profile has no channel attached to it, and you would have to run
+`warden post connect` and approve on Google's screen again to get back to where
+you already were. Nothing is lost when that happens — the old profile is still
+in your dashboard — but it is a reconnection you did not need to do.
+
+#### `warden post tiktok` and `warden post instagram` — same road, no measurement behind them
+
+The same key, the same host and the same single upload also reach two more
+networks:
+
+```sh
+warden post tiktok <clip> --title "<caption>"        # --draft sends it to the drafts
+warden post instagram <clip> --title "<caption>"     # --stories posts a Story, not a Reel
+warden post youtube <clip> --title "..." --also tiktok,instagram
+```
+
+`--also` adds networks to the **same** send: the file is uploaded once and the
+intermediary fans it out, rather than the clip leaving this machine three times.
+
+**Only the YouTube road has ever been driven from here.** The field names for
+TikTok and Instagram come from the intermediary's official OpenAPI spec
+(`docs.upload-post.com/openapi.json`, read on 16/09/2026) and from nothing else:
+no real send to either network has been made by this code, and there is no
+measurement to quote. The command says so in its own output on every send that
+includes one of them, and this page is not going to say less. Read what the API
+returns; do not read a `200` from those two as the same kind of evidence as the
+YouTube one.
+
+Two things are the intermediary's own terms rather than ours, and you find out
+about them at the worst moment if you do not know them first: **posting to
+TikTok requires a paid plan there**, and **Instagram requires a Business or
+Creator account**. Both are from their official documentation.
+
+Three limits are enforced before anything is uploaded, and all three **refuse**
+rather than trim — a caption truncated in silence publishes a sentence nobody
+wrote:
+
+- the YouTube title is at most **100 characters**;
+- the TikTok and Instagram caption at most **2,200**, which is their documented
+  limit;
+- `--privacy unlisted` is **refused for TikTok**. TikTok has no "public to
+  anyone with the link"; its own values are `PUBLIC_TO_EVERYONE`,
+  `MUTUAL_FOLLOW_FRIENDS`, `FOLLOWER_OF_CREATOR` and `SELF_ONLY`, and picking
+  one of those on your behalf would be deciding who sees the video. Instagram
+  has no per-post privacy at all — the profile is public or private as a whole —
+  so anything but `--privacy public` is refused there too.
+
+`--draft` carries one more caveat, from TikTok's own documentation: in draft
+mode TikTok **ignores** the caption and the privacy sent through the API. The
+person writes the caption in the app.
 
 #### How you check that yours came out public
 
@@ -631,6 +782,20 @@ A `200 OK`, a green test, or the agent saying it worked are none of them proof:
 they say the request was accepted, not that anybody can watch the result. The
 measurement quoted above was made that way, on a real channel, on 15/09/2026 —
 and it is how yours should be confirmed too.
+
+**When the send goes into the intermediary's queue**, the command hands back a
+`request_id` instead of an address and stops waiting — the upload has already
+left this machine and waiting here does not make it finish sooner. The command
+that asks again is:
+
+```sh
+warden post status <request_id>
+```
+
+That is the same verb as the bare `warden post status`, which reports the
+account. Until 16/09/2026 the id was **ignored in silence**: the branch that
+reads the account came first and always returned, so asking about a send printed
+the account listing and no address at all. It reads the id now.
 
 ### `warden youtube` — it uploads, and the upload is locked private
 
@@ -721,6 +886,14 @@ It needs an access token for **that account**, written to
 token and never will — it belongs to a person, not to an image anyone can pull.
 The API also does not accept a caption on this endpoint, so the caption
 `warden package` prints is something you paste in the app.
+
+**This is not `warden post tiktok`, and the two do not share anything.** This
+one talks to TikTok directly with your own token and leaves a draft. The other
+goes through the publishing intermediary with the key from the section above,
+and can publish rather than only fill the inbox — with the warning that nothing
+of that road has been measured from here, and that the intermediary requires a
+paid plan for TikTok. Neither one makes the other unnecessary: this one needs no
+paid plan, and that one needs no TikTok developer token.
 
 ## Keeping a long conversation cheap
 

@@ -48,13 +48,23 @@ them publishes, two of them do not:
   you have switched it on.** It goes through a publishing intermediary whose
   app has already been audited by YouTube, so the video comes out **public** on
   your channel. Measured on 15/09/2026 with a real send: the YouTube API
-  reported `privacyStatus: public` and the page opens signed out. It needs
-  `WARDEN_POST_API_KEY`, which is an account **you** hold with that
-  intermediary — your quota, your bill. Their free plan is 10 uploads a month
-  and asks for no card. Without the key the command is off, which is the state
-  of every fresh install. Switching it on is five steps, no programming, about
-  three minutes: `docs/INSTALL.md`, "Handing a clip to YouTube or TikTok" →
+  reported `privacyStatus: public` and the page opens signed out. It needs a key
+  from an account **you** hold with that intermediary — your quota, your bill —
+  and there are two ways in: `WARDEN_POST_API_KEY` in the environment, which is
+  how you supply it when you run the container yourself, or
+  `echo "<key>" | warden post setkey`, which stores it in this machine's own
+  volume for the case where there is no `.env` to write, as in the Plow cloud.
+  Their free plan is 10 uploads a month and asks for no card. With neither the
+  variable nor the stored file the command is off, which is the state of every
+  fresh install. Switching it on is five steps, no programming, about three
+  minutes: `docs/INSTALL.md`, "Handing a clip to YouTube, TikTok or Instagram" →
   "Setting it up — five steps, about three minutes".
+  The same key and the same upload also reach **`warden post tiktok`** and
+  **`warden post instagram`**, and `--also tiktok,instagram` sends to all of
+  them in one go, with the file leaving this machine once. **Only the YouTube
+  road has been measured end to end from here**: the other two are built from
+  the intermediary's official API spec, read on 16/09/2026, with no real send
+  behind them — and the command says so on every send that includes one.
 - **`warden youtube connect` / `warden youtube publish`** — the direct YouTube
   Data API path, using this project's own API project, which Google has **not**
   audited. An upload from an unaudited project is **locked as private**, and
@@ -132,15 +142,21 @@ It reaches nowhere else **on its own**. Two more hosts become reachable only
 after you have supplied a credential for them yourself, and only while a
 delivery command is running:
 
-- **`api.upload-post.com`**, for `warden post youtube`. Off unless
-  `WARDEN_POST_API_KEY` is set.
+- **`api.upload-post.com`**, for every `warden post` command — YouTube, TikTok
+  and Instagram all go through that one host. Off unless
+  `WARDEN_POST_API_KEY` is set or a key was stored here with
+  `warden post setkey`.
 - **`googleapis.com` / `oauth2.googleapis.com`**, for `warden youtube`. Off
   unless `WARDEN_YT_CLIENT_ID` and `WARDEN_YT_CLIENT_SECRET` are set.
 - **`open.tiktokapis.com`**, for `warden tiktok`. Off unless your account's
   token file is there.
 
 All of them come from the `environment:` block of `compose.yml`, which reads
-your shell or your `.env`. **None of them is in the published image.** With no
+your shell or your `.env` — except the publishing key, which has a second
+entrance for the case where there is no `.env` to write: `warden post setkey`
+reads it from standard input and stores it in this install's own volume, mode
+`0600`. **None of them is in the published image**, and a volume is not the
+image: it is written after the pull and it belongs to one install. With no
 credential present, no command runs and no host is contacted.
 
 ## Install
@@ -261,7 +277,11 @@ it rather than from the model's reading.
 | `warden check <clip> --campaign <id> --caption -` | the first gate: exit 1 means do not post |
 | `warden package --campaign <id> --hook "..."` | the caption the campaign requires |
 | `warden log --campaign <id> ...` | this install's own count, which the cap reads |
-| `warden post youtube <clip>` | **the one that publishes — after you switch it on.** Through an intermediary whose app YouTube already audited, so the video comes out public — measured 15/09/2026, `privacyStatus: public`. Off on a fresh install: it needs `WARDEN_POST_API_KEY`, which is your own account with that intermediary, about three minutes to create |
+| `warden post setkey` | the key for the commands below, read from **standard input** so it never reaches `ps` or a shell history, stored in this install's volume at `0600`. The way in where there is no `.env`: in the Plow cloud each person has their own machine and the environment carries only what Plow puts there. `WARDEN_POST_API_KEY` still wins over it |
+| `warden post connect` | one address for the person to open, where they pick the channel on Google's own screen and press Allow. Run it again and it says `already connected` |
+| `warden post youtube <clip> --title "..."` | **the one that publishes — after you switch it on.** Through an intermediary whose app YouTube already audited, so the video comes out public — measured 15/09/2026, `privacyStatus: public`. Off on a fresh install: it needs a key from your own account with that intermediary, about three minutes to create. Title at most 100 characters, and it refuses a longer one rather than truncating it |
+| `warden post tiktok\|instagram <clip> --title "..."` | the same key, the same single upload, the other two networks; `--also tiktok,instagram` adds them to the YouTube send instead of a second upload. `--draft` puts the TikTok in the drafts, `--stories` makes the Instagram a Story. **No real send from here has ever gone to either**: the fields come from the intermediary's official API spec read on 16/09/2026, and every send that includes one says so. Their TikTok needs a paid plan there; Instagram needs a Business or Creator account |
+| `warden post status [<request_id>]` | with no id, whose account this is and which connected accounts will actually publish — exit 3 when the key is valid and nothing will. With an id, that one upload, once it went into the intermediary's queue |
 | `warden youtube connect\|status\|publish <clip>` | the direct API path, on this project's unaudited API project. **The upload lands locked as private**, and that lock takes no appeal: to publish, upload the file again from the YouTube app or site. Needs a client you supply |
 | `warden tiktok <clip>` | the file into your TikTok **inbox**, as a draft you finish in the app. Needs that account's token; the image has none |
 

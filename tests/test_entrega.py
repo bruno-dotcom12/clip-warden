@@ -570,6 +570,17 @@ class OComandoQueAPersonaMandaUsarPrecisaExistir(unittest.TestCase):
     """
 
     def _roda(self, argv, com_chave=False):
+        # A chave deixou de ter UM lugar só. Desde que `warden post setkey`
+        # existe, ela pode estar no ambiente ou num arquivo do volume desta
+        # máquina -- e "desligado" só é desligado quando nenhum dos dois tem
+        # nada. Sem apontar WARDEN_POST_DIR para um temporário, este teste
+        # leria o arquivo de quem está rodando a suíte: no Mac isso é
+        # ~/.clip-warden/post-api-key, a chave do PRÓPRIO dono. Aí o teste que
+        # prova a rota de fallback passaria a depender de o dono ter rodado
+        # `setkey` ou não, e a suíte ainda encostaria num diretório que não é
+        # dela -- o que já aconteceu uma vez e deu limpeza à mão.
+        antes_dir = os.environ.get("WARDEN_POST_DIR")
+        os.environ["WARDEN_POST_DIR"] = _temp(self, "warden-post-off-")
         antes = os.environ.get("WARDEN_POST_API_KEY")
         if com_chave:
             os.environ["WARDEN_POST_API_KEY"] = "chave-de-teste"
@@ -588,6 +599,10 @@ class OComandoQueAPersonaMandaUsarPrecisaExistir(unittest.TestCase):
                 os.environ.pop("WARDEN_POST_API_KEY", None)
             else:
                 os.environ["WARDEN_POST_API_KEY"] = antes
+            if antes_dir is None:
+                os.environ.pop("WARDEN_POST_DIR", None)
+            else:
+                os.environ["WARDEN_POST_DIR"] = antes_dir
 
     def test_o_subcomando_existe(self):
         """O que quebrava era o argparse, antes de qualquer lógica rodar."""
@@ -604,10 +619,27 @@ class OComandoQueAPersonaMandaUsarPrecisaExistir(unittest.TestCase):
                 code, texto = self._roda(argv)
                 self.assertEqual(code, 1, texto)
                 self.assertIn("intermediary is OFF", texto)
-                self.assertIn("nothing was sent and nothing was tried", texto)
+                # Maiúsculas novas porque a frase mudou de tamanho, não de
+                # sentido. A recusa antiga era uma oração só --
+                # "WARDEN_POST_API_KEY is not set in this environment, so
+                # nothing was sent" -- e ela só sabia de um lugar onde a chave
+                # podia estar. Agora que `warden post setkey` grava a chave num
+                # arquivo desta máquina, a recusa tem de dizer que os DOIS
+                # estão vazios, e "Nothing was sent" virou começo de frase. O
+                # que o teste continua exigindo é o mesmo: que a saída afirme
+                # que nada foi TENTADO, e não apenas que faltou uma variável.
+                self.assertIn("Nothing was sent and nothing was tried", texto)
+                self.assertIn("not in WARDEN_POST_API_KEY", texto)
+                self.assertIn("not in this machine's own file", texto)
                 # e diz o que fazer em vez disso, que é a rota de fallback
                 self.assertIn("final message", texto)
-                self.assertIn("do NOT claim anything was published", texto)
+                self.assertIn("Do NOT claim anything was published", texto)
+                # A segunda estrada, que na nuvem da Plow é a única que existe:
+                # lá não há `.env` nem `compose.yml` para exportar variável
+                # nenhuma, então mandar "configure o ambiente" seria mandar a
+                # pessoa a um endereço que não existe. A saída tem de nomear o
+                # comando que aceita a chave digitada na própria conversa.
+                self.assertIn("warden post setkey", texto)
 
     def test_sem_chave_nao_sobe_traceback(self):
         code, texto = self._roda(["post", "youtube", "/tmp/x.mp4", "--title", "t"])
@@ -764,9 +796,20 @@ class _PostFalso:
     def status(self):
         reauth = [f"Clip-Warden/{rede}" for rede, c in sorted(self._contas.items())
                   if c["conectada"] and c["reauth_required"]]
+        # `chave_origem` e `perfil_origem` são novas e o dublê as carrega
+        # porque o comando as IMPRIME: sem elas aqui, a listagem sairia
+        # dizendo "from the None", e um dublê que devolve menos que o módulo
+        # real transforma uma saída quebrada num teste verde.
+        #
+        # A história que este dublê conta é coerente e é a mais comum na nuvem
+        # da Plow: a chave foi digitada nesta máquina (`arquivo`), então a
+        # conta é de quem está usando -- e por isso o perfil que já existia lá
+        # dentro pôde ser ADOTADO em vez de um novo ter sido gerado.
         return {"provedor": "upload-post", "base": "https://x.invalid/",
-                "chave": "configurada", "email": "dono@example.com",
+                "chave": "configurada", "chave_origem": "arquivo",
+                "email": "dono@example.com",
                 "plano": "pro", "limite_perfis": 1, "perfil": "Clip-Warden",
+                "perfil_origem": "adotado",
                 "perfis": [{"nome": "Clip-Warden", "contas": self._contas}],
                 "reauth": reauth, "avisos": []}
 
@@ -797,7 +840,15 @@ class OCodigoDeSaidaDoPostSeparaTresEstados(unittest.TestCase):
         saida, erro = io.StringIO(), io.StringIO()
         with redirect_stdout(saida), redirect_stderr(erro):
             try:
-                code = warden.cmd_post(type("A", (), {"action": "status"})())
+                # `file=None` não é enfeite: o ramo que lê a CONTA passou a ser
+                # `action == "status" and not args.file`. Antes ele era só
+                # `action == "status"` e vinha antes do ramo que consulta um
+                # envio, então `warden post status <request_id>` caía aqui e
+                # ignorava o id em silêncio -- o agente pedia o endereço do
+                # vídeo que tinha prometido e recebia a listagem da conta. Com
+                # a condição nova, um dublê sem `file` nem chega a rodar.
+                code = warden.cmd_post(
+                    type("A", (), {"action": "status", "file": None})())
             except SystemExit as saiu:
                 code = saiu.code
         return code, saida.getvalue() + erro.getvalue()
@@ -806,6 +857,13 @@ class OCodigoDeSaidaDoPostSeparaTresEstados(unittest.TestCase):
         code, texto = self._roda(_PostFalso({"youtube": _conta()}))
         self.assertEqual(code, 0, texto)
         self.assertIn("@poddclipes", texto)
+        # A listagem passou a dizer DE ONDE veio a chave e DE ONDE veio o nome
+        # do perfil, e isso é o que a pessoa lê quando o canal listado não é o
+        # que ela esperava: uma chave do ambiente é a do dono do agente e pode
+        # estar em várias máquinas, uma do arquivo é a dela. Nunca o valor da
+        # chave -- só a procedência.
+        self.assertIn("from the arquivo", texto)
+        self.assertIn("(adotado)", texto)
 
     def test_sem_chave_sai_um(self):
         code, texto = self._roda(_PostFalso({}, configurado=False))

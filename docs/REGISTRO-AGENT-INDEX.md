@@ -36,18 +36,26 @@ acha os momentos, corta 9:16 com a legenda já queimada, confere contra as regra
 da campanha, entrega os arquivos na própria conversa — e **publica no canal do
 YouTube da pessoa quando ela liga a chave**.
 
-A última oração é condicional de propósito. Publicar de verdade depende de
-`WARDEN_POST_API_KEY`, que é a conta de quem instala num intermediário de
-publicação com app auditado pelo YouTube. **Sem a chave, o comando fica
-desligado** e o agente só entrega o arquivo na conversa. "with your publishing
-key" é o que impede o blurb de prometer para um estranho uma coisa que ele não
-tem. Não tire essa oração.
+A última oração é condicional de propósito. Publicar de verdade depende de uma
+chave de um intermediário de publicação com app auditado pelo YouTube, e a conta
+é de quem instala. **Sem a chave, o comando fica desligado** e o agente só
+entrega o arquivo na conversa. "with your publishing key" é o que impede o blurb
+de prometer para um estranho uma coisa que ele não tem. Não tire essa oração.
+
+A chave tem DUAS entradas desde 16/09/2026, e o texto acima diz "a chave" em vez
+de nomear a variável por isso: `WARDEN_POST_API_KEY` no ambiente, que é como o
+dono do agente põe a dele, e o arquivo desta máquina, escrito por
+`warden post setkey` a partir da chave que a própria pessoa cola na conversa. A
+segunda existe porque na nuvem da Plow não há `.env` nem `compose.yml` — sem ela,
+quem instala pela Plow não teria por onde pôr uma chave própria, e o blurb ficaria
+condicional a uma coisa que só o dono do agente pode ligar.
 
 > **Escrito em 15/09/2026.** O que este blurb afirma e que precisa continuar
 > verdadeiro: (1) a legenda é queimada no clipe, não é faixa opcional;
 > (2) o corte é 9:16; (3) existe conferência contra as regras da campanha;
 > (4) os arquivos voltam na conversa; (5) `warden post youtube` publica público
-> no canal da pessoa quando `WARDEN_POST_API_KEY` está configurada. O item (5)
+> no canal da pessoa quando há chave configurada, pelo ambiente ou pelo arquivo
+> desta máquina. O item (5)
 > foi **medido** em 15/09/2026 com um envio real: a API do YouTube devolveu
 > `privacyStatus: public` e a página abre deslogada
 > (`https://www.youtube.com/watch?v=lx9J_hD7nGA`, canal Pod Cortes). Se

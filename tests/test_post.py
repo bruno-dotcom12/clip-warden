@@ -32,6 +32,7 @@ import email.policy
 import json
 import os
 import shutil
+import stat
 import sys
 import tempfile
 import threading
@@ -190,10 +191,15 @@ class Base(unittest.TestCase):
         self.conteudo = b"\x00\x01\x02mp4-de-mentira\xff\xfe"
         with open(self.clipe, "wb") as fh:
             fh.write(self.conteudo)
+        # O ESTADO NO DISCO, num temporário. Sem esta linha a suíte grava o
+        # arquivo de perfil no `~/.clip-warden` de quem roda os testes — e um
+        # caso passaria por causa do id que o caso anterior deixou lá.
+        self.estado = _temp(self, prefix="warden-post-estado-")
         self.ambiente(WARDEN_POST_API_KEY=CHAVE,
                       WARDEN_POST_BASE_URL=self.servidor.base,
                       WARDEN_POST_PROVIDER=None,
-                      WARDEN_POST_PROFILE=None)
+                      WARDEN_POST_PROFILE=None,
+                      WARDEN_POST_DIR=self.estado)
         # A memória de pedidos é estado de módulo e vazaria de um teste para o
         # outro; a comparação de privacidade depende dela e passaria por sorte.
         P._PEDIDOS.clear()
@@ -272,7 +278,12 @@ class Status(Base):
         saida = P.status()
         self.assertEqual(saida["provedor"], "upload-post")
         self.assertEqual(saida["email"], "dono@example.com")
-        self.assertEqual(saida["perfil"], "Clip-Warden")   # um só, resolve sozinho
+        # A chave veio do AMBIENTE, então ela pode ser a do dono do agente e a
+        # conta pode ser compartilhada: esta máquina NÃO adota o perfil que
+        # estava lá, ela ganha um só dela. Ver `_perfil`.
+        self.assertEqual(saida["chave_origem"], "ambiente")
+        self.assertEqual(saida["perfil_origem"], "gerado")
+        self.assertTrue(saida["perfil"].startswith("clip-warden-"))
         contas = saida["perfis"][0]["contas"]
         self.assertTrue(contas["youtube"]["conectada"])
         self.assertEqual(contas["youtube"]["handle"], "@poddclipes")
@@ -292,15 +303,26 @@ class Status(Base):
         self.assertEqual(saida["reauth"], ["Clip-Warden/youtube"])
         self.assertTrue(any("REAUTENTICAÇÃO" in a for a in saida["avisos"]))
 
-    def test_dois_perfis_sem_escolha_viram_aviso_e_nao_escolha_sozinha(self):
+    def test_dois_perfis_na_conta_nao_fazem_esta_maquina_escolher_um_deles(self):
+        """A recusa antiga virou um perfil próprio, e é uma melhora.
+
+        Até 16/09/2026 dois perfis na conta e nenhum escolhido eram uma RECUSA:
+        "escolher sozinho aqui seria publicar no canal errado". O raciocínio
+        estava certo e a saída era ruim — a pessoa recebia um erro e tinha de
+        exportar uma variável de ambiente que, na nuvem da Plow, ela não tem
+        onde exportar.
+
+        Agora esta máquina não escolhe NENHUM dos dois: ela cria o seu. O canal
+        errado continua sendo impossível, porque o perfil novo não tem canal
+        nenhum ligado até alguém abrir o endereço do `connect` e aprovar.
+        """
         users = json.loads(json.dumps(USERS))
         users["profiles"].append({"username": "Outro-Canal", "social_accounts": {}})
         self.servidor.responde("/api/uploadposts/users", (200, users))
         saida = P.status()
-        # `status` continua respondendo — é o comando que a pessoa roda para
-        # descobrir que precisa escolher — mas não elege ninguém.
-        self.assertIsNone(saida["perfil"])
-        self.assertTrue(any("WARDEN_POST_PROFILE" in a for a in saida["avisos"]))
+        self.assertEqual(saida["perfil_origem"], "gerado")
+        self.assertNotIn(saida["perfil"], ("Clip-Warden", "Outro-Canal"))
+        self.assertTrue(saida["perfil"].startswith("clip-warden-"))
 
     def test_a_chave_nao_sai_na_saida_de_status(self):
         self.assertNotIn(CHAVE, json.dumps(P.status(), ensure_ascii=False))
@@ -325,7 +347,9 @@ class Publica(Base):
         self.assertEqual(pedido["metodo"], "POST")
         partes = partes_multipart(pedido)
         campos = {nome: bruto for nome, arquivo, bruto in partes if arquivo is None}
-        self.assertEqual(campos["user"], b"Clip-Warden")
+        # O `user` é o perfil DESTA MÁQUINA, gerado na primeira vez, e não mais
+        # o "clip-warden" fixo que todas as instalações compartilhavam.
+        self.assertTrue(campos["user"].decode().startswith("clip-warden-"))
         self.assertEqual(campos["platform[]"], b"youtube")
         self.assertEqual(campos["title"], "Clipe de teste".encode("utf-8"))
         self.assertEqual(campos["privacyStatus"], b"public")
@@ -578,6 +602,417 @@ class Espera(Base):
         saida = P.wait_for("req-42")
         self.assertIsNone(saida["post_url"])
         self.assertTrue(any("não devolveu endereço" in a for a in saida["avisos"]))
+
+
+# ─────────────────────────────────────────── a chave e o perfil, no disco
+
+class EstadoNoDisco(Base):
+    """`warden post setkey` e o arquivo que ele escreve.
+
+    Por que este bloco existe: na nuvem da Plow cada pessoa tem a própria
+    máquina, não há `.env` e não há `compose.yml`. A chave DELA — a conta dela,
+    o limite dela, a fatura dela — só entra por aqui. É o único lugar deste
+    projeto onde um segredo é ESCRITO, e cada teste abaixo é uma forma de essa
+    escrita dar errado em silêncio.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.ambiente(WARDEN_POST_API_KEY=None)
+
+    def test_a_chave_vai_para_um_arquivo_0600(self):
+        caminho = P.guardar_chave(CHAVE + "\n")
+        self.assertEqual(caminho, os.path.join(self.estado, "post-api-key"))
+        modo = stat.S_IMODE(os.stat(caminho).st_mode)
+        # 0600 e nada mais. Num container com mais de um processo, 0644 é a
+        # chave do canal do dono legível por qualquer um deles.
+        self.assertEqual(oct(modo), oct(0o600))
+        with open(caminho) as fh:
+            self.assertEqual(fh.read().strip(), CHAVE)
+
+    def test_a_chave_guardada_liga_o_modulo_e_e_usada_de_verdade(self):
+        self.assertFalse(P.esta_configurado())
+        P.guardar_chave(CHAVE)
+        self.assertTrue(P.esta_configurado())
+        P.status()
+        cabecalho = self.servidor.recebidos("/api/uploadposts/me")[0]["cabecalhos"]
+        self.assertEqual(cabecalho["Authorization"], "Apikey " + CHAVE)
+
+    def test_o_ambiente_GANHA_do_arquivo(self):
+        """A variável é a alavanca de agora; o arquivo pode ser de semanas atrás."""
+        outra = "upk_A_CHAVE_DO_AMBIENTE_E_ESTA_AQUI_0987654321"
+        P.guardar_chave(CHAVE)
+        self.ambiente(WARDEN_POST_API_KEY=outra)
+        chave, origem = P._chave_e_origem()
+        self.assertEqual(chave, outra)
+        self.assertEqual(origem, "ambiente")
+        P.status()
+        cabecalho = self.servidor.recebidos("/api/uploadposts/me")[0]["cabecalhos"]
+        self.assertEqual(cabecalho["Authorization"], "Apikey " + outra)
+
+    def test_sem_ambiente_a_origem_e_o_arquivo(self):
+        P.guardar_chave(CHAVE)
+        self.assertEqual(P._chave_e_origem(), (CHAVE, "arquivo"))
+
+    def test_a_chave_guardada_nao_aparece_em_saida_nenhuma(self):
+        """O teste inteiro é o `assertNotIn`, em cada superfície que sai daqui."""
+        caminho = P.guardar_chave(CHAVE)
+        # O retorno de `guardar_chave` é o CAMINHO. Devolver a chave seria
+        # entregá-la a quem for imprimir o retorno.
+        self.assertNotIn(CHAVE, caminho)
+        self.assertNotIn(CHAVE, json.dumps(P.status(), ensure_ascii=False))
+        saida = P.publish_youtube(self.clipe, "Título")
+        self.assertNotIn(CHAVE, json.dumps(saida, ensure_ascii=False))
+        # E no erro, que é onde um segredo vaza de verdade: o 401 de um
+        # servidor real devolve a credencial recusada dentro do corpo.
+        self.servidor.responde("/api/uploadposts/me",
+                               (401, {"message": "invalid key: " + CHAVE}))
+        with self.assertRaises(P.PostIndisponivel) as erro:
+            P.status()
+        self.assertNotIn(CHAVE, str(erro.exception))
+
+    def test_entrada_vazia_nao_apaga_a_chave_que_ja_estava_la(self):
+        P.guardar_chave(CHAVE)
+        with self.assertRaises(P.PostIndisponivel) as erro:
+            P.guardar_chave("   \n  ")
+        self.assertIn("entrada padrão", str(erro.exception))
+        # A antiga continua lá. Um Ctrl-D sem querer não pode desligar o módulo.
+        self.assertEqual(P._chave_do_arquivo(), CHAVE)
+
+    def test_duas_linhas_sao_recusadas_em_vez_de_guardadas_pela_metade(self):
+        with self.assertRaises(P.PostIndisponivel) as erro:
+            P.guardar_chave(CHAVE + "\nmais coisa")
+        self.assertIn("uma linha só", str(erro.exception))
+        self.assertIsNone(P._chave_do_arquivo())
+
+    def test_a_pasta_e_a_mesma_que_o_resto_do_agente_usa(self):
+        """A cópia de `warden.state_dir()` dentro de `warden_post` não pode divergir.
+
+        `warden_post` resolve a pasta sozinho, sem importar `warden`, porque
+        `warden` importa `warden_post` e a volta seria um ciclo. Este teste é o
+        que torna a duplicação segura: no dia em que uma das duas mudar, ele
+        falha em vez de a chave ir parar numa pasta que ninguém lê.
+        """
+        import warden
+        for valor in (self.estado, None):
+            with self.subTest(WARDEN_DIR=valor):
+                self.ambiente(WARDEN_POST_DIR=None, WARDEN_DIR=valor)
+                self.assertEqual(os.path.realpath(P._dir_estado()),
+                                 os.path.realpath(warden.state_dir()))
+
+
+class IdDePerfil(Base):
+    """O nome do perfil é DESTA máquina, e sobrevive a um reinício.
+
+    O defeito que isto conserta: o padrão era `clip-warden`, igual para toda
+    instalação. Com a chave do dono do agente no ambiente — que é como a Plow
+    entrega uma chave a várias máquinas — todas cairiam no mesmo perfil, que é
+    o mesmo canal do YouTube. A primeira pessoa conectaria o canal dela e a
+    segunda publicaria lá dentro sem nenhuma das duas ter pedido isso.
+    """
+
+    def _uma_maquina(self, pasta, perfis=None):
+        """Resolve o perfil como se fosse uma máquina com aquele volume."""
+        self.ambiente(WARDEN_POST_DIR=pasta)
+        if perfis is not None:
+            self.servidor.responde("/api/uploadposts/users", (200, perfis))
+        return P.status()["perfil"]
+
+    def test_o_id_tem_a_forma_pedida(self):
+        nome = P.status()["perfil"]
+        self.assertTrue(nome.startswith("clip-warden-"))
+        sufixo = nome[len("clip-warden-"):]
+        self.assertEqual(len(sufixo), 8)
+        self.assertTrue(all(c in "0123456789abcdef" for c in sufixo))
+
+    def test_o_mesmo_volume_devolve_o_mesmo_id_entre_reinicios(self):
+        """Um reinício é um processo novo lendo o mesmo volume."""
+        primeiro = P.status()["perfil"]
+        # O "reinício": nada em memória sobrevive, e o arquivo sim.
+        P._PEDIDOS.clear()
+        segundo = P.status()["perfil"]
+        self.assertEqual(primeiro, segundo)
+        # E o envio usa exatamente esse, sem consultar /users de novo.
+        antes = len(self.servidor.recebidos("/api/uploadposts/users"))
+        P.publish_youtube(self.clipe, "Título")
+        pedido = self.servidor.recebidos("/api/upload")[0]
+        campos = {n: b for n, a, b in partes_multipart(pedido) if a is None}
+        self.assertEqual(campos["user"].decode(), primeiro)
+        self.assertEqual(len(self.servidor.recebidos("/api/uploadposts/users")),
+                         antes)
+
+    def test_duas_maquinas_com_a_MESMA_chave_nao_compartilham_o_perfil(self):
+        """O caso que este desenho existe para impedir, em uma linha."""
+        maquina_a = _temp(self, prefix="warden-maquina-a-")
+        maquina_b = _temp(self, prefix="warden-maquina-b-")
+        nome_a = self._uma_maquina(maquina_a)
+        nome_b = self._uma_maquina(maquina_b)
+        self.assertNotEqual(nome_a, nome_b)
+        self.assertTrue(nome_a.startswith("clip-warden-"))
+        self.assertTrue(nome_b.startswith("clip-warden-"))
+
+    def test_o_ambiente_continua_ganhando_de_tudo(self):
+        """A saída de emergência de quem já tinha um canal ligado."""
+        self.ambiente(WARDEN_POST_PROFILE="Clip-Warden")
+        self.assertEqual(P.status()["perfil"], "Clip-Warden")
+        self.assertEqual(P.status()["perfil_origem"], "ambiente")
+        # E nada foi gravado: quem nomeia à mão não deixa rastro no volume.
+        self.assertIsNone(P.id_guardado())
+
+    # ── a adoção: só quando a chave é da própria pessoa
+
+    def test_chave_do_ARQUIVO_com_um_perfil_so_ADOTA_esse_perfil(self):
+        """A instalação que já tem canal ligado não pode perder o canal."""
+        self.ambiente(WARDEN_POST_API_KEY=None)
+        P.guardar_chave(CHAVE)
+        saida = P.status()
+        self.assertEqual(saida["perfil"], "Clip-Warden")
+        self.assertEqual(saida["perfil_origem"], "adotado")
+        # E fica guardado: a adoção acontece UMA vez, não a cada chamada.
+        self.assertEqual(P.id_guardado(), "Clip-Warden")
+        self.assertTrue(any("já existia nesta conta" in a for a in saida["avisos"]))
+
+    def test_chave_do_AMBIENTE_com_um_perfil_so_NAO_adota(self):
+        """A chave do ambiente pode ser do dono do agente, e a conta compartilhada.
+
+        Este é o par do teste acima e a razão de a origem da chave existir: os
+        dois casos veem exatamente a mesma conta, com exatamente um perfil, e
+        têm de terminar diferente.
+        """
+        saida = P.status()
+        self.assertEqual(saida["perfil_origem"], "gerado")
+        self.assertNotEqual(saida["perfil"], "Clip-Warden")
+
+    def test_chave_do_arquivo_com_DOIS_perfis_nao_adota_nenhum(self):
+        """Com dois, não há "o perfil desta pessoa" — há uma escolha que não é nossa."""
+        self.ambiente(WARDEN_POST_API_KEY=None)
+        P.guardar_chave(CHAVE)
+        users = json.loads(json.dumps(USERS))
+        users["profiles"].append({"username": "Outro-Canal", "social_accounts": {}})
+        self.servidor.responde("/api/uploadposts/users", (200, users))
+        saida = P.status()
+        self.assertEqual(saida["perfil_origem"], "gerado")
+        self.assertNotIn(saida["perfil"], ("Clip-Warden", "Outro-Canal"))
+
+    def test_chave_do_arquivo_com_conta_VAZIA_gera_id(self):
+        self.ambiente(WARDEN_POST_API_KEY=None)
+        P.guardar_chave(CHAVE)
+        self.servidor.responde("/api/uploadposts/users",
+                               (200, {"success": True, "limit": 2, "profiles": []}))
+        saida = P.status()
+        self.assertEqual(saida["perfil_origem"], "gerado")
+        self.assertTrue(saida["perfil"].startswith("clip-warden-"))
+
+    # ── connect, que é quem cria o perfil desta máquina
+
+    def test_connect_cria_o_perfil_desta_maquina_e_devolve_UM_endereco(self):
+        self.servidor.responde("/api/uploadposts/users",
+                               (200, {"success": True, "limit": 2, "profiles": []}))
+        self.servidor.filas["/api/uploadposts/users"] = [
+            (200, {"success": True, "limit": 2, "profiles": []})]
+        self.servidor.responde("/api/uploadposts/users/generate-jwt",
+                               (200, {"access_url": "https://app.upload-post.com/jwt/x"}))
+        saida = P.conectar()
+        self.assertTrue(saida["perfil"].startswith("clip-warden-"))
+        self.assertEqual(saida["perfil_origem"], "gerado")
+        self.assertTrue(saida["perfil_criado"])
+        self.assertFalse(saida["ja_conectado"])
+        self.assertEqual(saida["url"], "https://app.upload-post.com/jwt/x")
+        # O POST que criou o perfil levou o nome desta máquina, no campo
+        # `username` — que é o nome MEDIDO em 16/09/2026 (com `profile` a API
+        # responde 400).
+        criacao = self.servidor.recebidos("/api/uploadposts/users")
+        corpo = json.loads([c for c in criacao if c["metodo"] == "POST"][0]["corpo"])
+        self.assertEqual(corpo["username"], saida["perfil"])
+
+    def test_connect_no_limite_do_plano_DIZ_que_e_o_limite_do_plano(self):
+        """Uma recusa sem causa faz o agente inventar uma. Esta traz a dela."""
+        users = json.loads(json.dumps(USERS))
+        users["profiles"].append({"username": "Outro-Canal", "social_accounts": {}})
+        users["limit"] = 2
+        self.servidor.responde("/api/uploadposts/users", (200, users))
+        with self.assertRaises(P.PostIndisponivel) as erro:
+            P.conectar()
+        texto = str(erro.exception)
+        self.assertIn("limite do plano", texto)
+        self.assertIn("2", texto)
+        self.assertIn("Clip-Warden", texto)          # os que ocupam as vagas
+        self.assertIn("apague", texto)               # e o que fazer
+        # Nenhum perfil foi criado: a recusa vem ANTES do POST.
+        self.assertEqual([c for c in self.servidor.recebidos("/api/uploadposts/users")
+                          if c["metodo"] == "POST"], [])
+
+
+# ─────────────────────────────────────────────── as outras duas redes
+
+class Redes(Base):
+    """TikTok e Instagram, pelo mesmo `/upload`, com os campos de cada uma.
+
+    NENHUM ENVIO REAL PASSOU POR ESTAS DUAS. Os nomes de campo vêm da spec
+    OpenAPI oficial (docs.upload-post.com/openapi.json) e das páginas de cada
+    rede na documentação, lidas em 16/09/2026. É exatamente por isso que estes
+    testes existem: um nome de campo errado numa rede não medida é um envio que
+    a API aceita e publica com a legenda vazia.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.ambiente(WARDEN_POST_PROFILE="Clip-Warden")
+
+    def _campos(self):
+        pedido = self.servidor.recebidos("/api/upload")[0]
+        return {n: b.decode("utf-8") for n, a, b in partes_multipart(pedido)
+                if a is None}
+
+    def _redes_enviadas(self):
+        pedido = self.servidor.recebidos("/api/upload")[0]
+        return [b.decode("utf-8") for n, a, b in partes_multipart(pedido)
+                if a is None and n == "platform[]"]
+
+    def test_tiktok_manda_os_campos_da_spec(self):
+        P.publicar(self.clipe, ["tiktok"], "A legenda do TikTok")
+        campos = self._campos()
+        self.assertEqual(self._redes_enviadas(), ["tiktok"])
+        # `tiktok_title` é a LEGENDA, e `privacy_level`/`post_mode` são enums
+        # próprios do TikTok — nada disto se parece com o do YouTube.
+        self.assertEqual(campos["tiktok_title"], "A legenda do TikTok")
+        self.assertEqual(campos["privacy_level"], "PUBLIC_TO_EVERYONE")
+        self.assertEqual(campos["post_mode"], "DIRECT_POST")
+        # E nada de YouTube foi junto.
+        self.assertNotIn("privacyStatus", campos)
+
+    def test_tiktok_rascunho_usa_MEDIA_UPLOAD_e_avisa_o_que_se_perde(self):
+        saida = P.publicar(self.clipe, ["tiktok"], "Legenda", rascunho=True)
+        self.assertEqual(self._campos()["post_mode"], "MEDIA_UPLOAD")
+        self.assertTrue(any("RASCUNHO" in a for a in saida["avisos"]))
+        # O que a documentação oficial diz e a pessoa precisa saber: em
+        # rascunho o TikTok IGNORA a legenda mandada pela API.
+        self.assertTrue(any("IGNORA a legenda" in a for a in saida["avisos"]))
+
+    def test_tiktok_recusa_unlisted_em_vez_de_traduzir_por_conta_propria(self):
+        with self.assertRaises(P.PostIndisponivel) as erro:
+            P.publicar(self.clipe, ["tiktok"], "Legenda", privacidade="unlisted")
+        texto = str(erro.exception)
+        self.assertIn("não tem 'unlisted'", texto)
+        self.assertIn("PUBLIC_TO_EVERYONE", texto)
+        self.assertEqual(self.servidor.recebidos("/api/upload"), [])
+
+    def test_tiktok_private_vira_SELF_ONLY(self):
+        P.publicar(self.clipe, ["tiktok"], "Legenda", privacidade="private")
+        self.assertEqual(self._campos()["privacy_level"], "SELF_ONLY")
+
+    def test_instagram_manda_os_campos_da_spec(self):
+        P.publicar(self.clipe, ["instagram"], "A legenda do Reel")
+        campos = self._campos()
+        self.assertEqual(self._redes_enviadas(), ["instagram"])
+        self.assertEqual(campos["instagram_title"], "A legenda do Reel")
+        self.assertEqual(campos["media_type"], "REELS")
+        self.assertEqual(campos["share_to_feed"], "true")
+
+    def test_instagram_stories_troca_o_media_type_e_larga_o_feed(self):
+        P.publicar(self.clipe, ["instagram"], "Legenda", stories=True)
+        campos = self._campos()
+        self.assertEqual(campos["media_type"], "STORIES")
+        # `share_to_feed` não vale para Story, e mandá-lo seria ruído num
+        # campo que a API pode interpretar.
+        self.assertNotIn("share_to_feed", campos)
+
+    def test_instagram_recusa_privacidade_porque_a_rede_nao_tem_essa_opcao(self):
+        for pedida in ("private", "unlisted"):
+            with self.subTest(privacidade=pedida):
+                with self.assertRaises(P.PostIndisponivel) as erro:
+                    P.publicar(self.clipe, ["instagram"], "Legenda",
+                               privacidade=pedida)
+                self.assertIn("não aceita privacidade por post",
+                              str(erro.exception))
+        self.assertEqual(self.servidor.recebidos("/api/upload"), [])
+
+    def test_as_tres_redes_num_envio_so_e_o_arquivo_sobe_uma_vez(self):
+        P.publicar(self.clipe, ["youtube", "tiktok", "instagram"], "Um título",
+                   descricao="a descrição")
+        campos = self._campos()
+        self.assertEqual(self._redes_enviadas(),
+                         ["youtube", "tiktok", "instagram"])
+        self.assertEqual(campos["title"], "Um título")
+        self.assertEqual(campos["privacyStatus"], "public")
+        self.assertEqual(campos["youtube_description"], "a descrição")
+        self.assertEqual(campos["tiktok_title"], "Um título")
+        self.assertEqual(campos["instagram_title"], "Um título")
+        # UMA requisição, um arquivo. O intermediário é quem distribui.
+        self.assertEqual(len(self.servidor.recebidos("/api/upload")), 1)
+        pedido = self.servidor.recebidos("/api/upload")[0]
+        arquivos = [(a, b) for n, a, b in partes_multipart(pedido) if a]
+        self.assertEqual(arquivos, [("clipe.mp4", self.conteudo)])
+
+    def test_rede_desconhecida_e_recusada_antes_de_qualquer_requisicao(self):
+        with self.assertRaises(P.PostIndisponivel) as erro:
+            P.publicar(self.clipe, ["twitter"], "Título")
+        self.assertIn("'twitter'", str(erro.exception))
+        self.assertEqual(self.servidor.pedidos, [])
+
+    def test_o_teto_de_100_do_youtube_nao_vale_para_as_outras_duas(self):
+        """Um título de 150 é recusado no YouTube e aceito nas outras."""
+        longo = "a" * 150
+        with self.assertRaises(P.PostIndisponivel):
+            P.publicar(self.clipe, ["youtube"], longo)
+        P.publicar(self.clipe, ["tiktok"], longo)
+        self.assertEqual(len(self.servidor.recebidos("/api/upload")), 1)
+
+    def test_legenda_acima_de_2200_e_recusada_nas_duas(self):
+        gigante = "a" * (P.TETO_LEGENDA + 1)
+        for rede in ("tiktok", "instagram"):
+            with self.subTest(rede=rede):
+                with self.assertRaises(P.PostIndisponivel) as erro:
+                    P.publicar(self.clipe, [rede], gigante)
+                self.assertIn(str(P.TETO_LEGENDA), str(erro.exception))
+        self.assertEqual(self.servidor.recebidos("/api/upload"), [])
+
+    def test_um_envio_com_rede_NAO_MEDIDA_sai_avisando_que_nao_foi_medida(self):
+        """A regra deste projeto inteiro: 200 sem medição não vale o mesmo."""
+        saida = P.publicar(self.clipe, ["tiktok", "instagram"], "Legenda")
+        aviso = "\n".join(saida["avisos"])
+        self.assertIn("NENHUM envio real", aviso)
+        self.assertIn("tiktok", aviso)
+        self.assertIn("instagram", aviso)
+        # E o YouTube sozinho não ganha esse aviso: ele FOI medido.
+        so_youtube = P.publicar(self.clipe, ["youtube"], "Título")
+        self.assertFalse(any("NENHUM envio real" in a
+                             for a in so_youtube["avisos"]))
+
+    def test_o_status_devolve_o_resultado_de_CADA_rede(self):
+        self.servidor.responde("/api/uploadposts/status", (200, {
+            "status": "completed", "completed": 2, "total": 2, "results": [
+                {"platform": "youtube", "success": True,
+                 "platform_post_id": "abc123",
+                 "post_url": "https://www.youtube.com/watch?v=abc123"},
+                {"platform": "tiktok", "success": False,
+                 "error_message": "TikTok posting requires a paid plan"}]}))
+        P.publicar(self.clipe, ["youtube", "tiktok"], "Título")
+        saida = P.wait_for("req-42")
+        # Uma rede falhou: o envio NÃO é sucesso. Chamar isto de sucesso
+        # esconderia exatamente a rede que precisa ser reenviada.
+        self.assertFalse(saida["sucesso"])
+        self.assertEqual(saida["por_plataforma"]["youtube"]["url"],
+                         "https://www.youtube.com/watch?v=abc123")
+        self.assertTrue(saida["por_plataforma"]["youtube"]["sucesso"])
+        self.assertFalse(saida["por_plataforma"]["tiktok"]["sucesso"])
+        # A causa, verbatim e da API. Nenhuma frase daqui adivinha.
+        self.assertTrue(any("requires a paid plan" in a for a in saida["avisos"]))
+        # `post_url` continua sendo o da PRIMEIRA rede pedida, e não o que a
+        # ordem do dicionário da resposta decidir.
+        self.assertEqual(saida["post_url"],
+                         "https://www.youtube.com/watch?v=abc123")
+
+    def test_envio_so_de_tiktok_le_o_endereco_do_tiktok(self):
+        """O bug que a generalização conserta: `post_url` fixo no YouTube."""
+        self.servidor.responde("/api/uploadposts/status", (200, {
+            "status": "completed", "results": [
+                {"platform": "tiktok", "success": True,
+                 "post_url": "https://www.tiktok.com/@x/video/7401"}]}))
+        P.publicar(self.clipe, ["tiktok"], "Legenda")
+        saida = P.wait_for("req-42")
+        self.assertEqual(saida["post_url"], "https://www.tiktok.com/@x/video/7401")
+        self.assertTrue(saida["sucesso"])
 
 
 # ──────────────────────────────────────────────────────────── o sigilo da chave

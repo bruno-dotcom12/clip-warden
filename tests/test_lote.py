@@ -402,12 +402,34 @@ class LoteRenderFazTudoODepois(_ComLoteFalso):
         self.assertEqual(corte["start"], 2.0)          # o IN_POINT do dublê
         self.assertEqual(corte["end"], 22.0)           # + os 20s da janela
 
-    def test_os_hooks_vao_um_por_janela_na_ordem(self):
+    def test_cada_janela_leva_o_SEU_gancho(self):
+        """O pareamento gancho-janela, e não a ordem em que os renders acabam.
+
+        Este teste afirmava `[c["hook"] for c in cortes] == ["primeiro",
+        "segundo"]`, e isso era uma asserção sobre a ordem de EXECUÇÃO: o
+        dublê anota cada corte na hora em que ele acontece. Com
+        `WARDEN_RENDER_PARALELO=2` -- que é o padrão do container desde
+        16/09/2026 -- os dois ffmpeg correm juntos e qualquer um dos dois pode
+        terminar primeiro, então o teste falhava em cerca de duas de cada cinco
+        rodadas, na árvore limpa, sem nada de errado no produto.
+
+        A ordem que IMPORTA continua garantida e não é esta: `lote render`
+        percorre os futuros na ordem de submissão, então as linhas `MEDIA:` e
+        o "primeiro corte / segundo corte" saem na ordem das janelas
+        independentemente de quem acabou antes. O que este teste tem de pegar é
+        o gancho do clipe 1 aparecendo no clipe 2 -- e isso se vê pareando cada
+        gancho com a janela dele, que é o que ele faz agora.
+        """
         self._prep()
         self._roda(["lote", "render", URL, "--windows", "10-30,60-80",
                     "--hooks", "primeiro|segundo"])
-        self.assertEqual([c["hook"] for c in self.media.cortes],
-                         ["primeiro", "segundo"])
+        # O par estável é o SUFIXO NUMÉRICO do arquivo de saída, que o lote
+        # atribui pela ordem das janelas antes de submeter qualquer render. O
+        # nome inteiro carrega um hash da fonte no meio (`corte-<hash>-01.mp4`)
+        # e afirmar o nome cru amarraria este teste a esse hash.
+        por_indice = {os.path.splitext(os.path.basename(c["out"]))[0][-2:]: c["hook"]
+                      for c in self.media.cortes}
+        self.assertEqual(por_indice, {"01": "primeiro", "02": "segundo"})
 
     def test_a_legenda_publicada_e_assinada_sozinha(self):
         """A queima é determinística: a ferramenta transcreve e queima.

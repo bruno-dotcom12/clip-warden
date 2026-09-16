@@ -1321,21 +1321,53 @@ def cmd_post(args):
     """
     P = _post()
 
-    # O portão de "desligado", e ele vem ANTES de tudo. Sem chave não há
-    # requisição, não há traceback e não há `invalid choice`: há uma frase que
-    # diz o que falta e o que o agente faz em vez disso. Código 1 e não 2 de
-    # propósito -- 2 é erro de uso do comando, e não usar errado quem não
-    # configurou o ambiente.
+    # ── warden post setkey
+    #
+    # ANTES do portão de "desligado", porque este é o comando que LIGA. Ele lê a
+    # chave da entrada padrão e nunca de um argumento: um argumento fica no
+    # `ps`, no histórico do shell e no log de comandos do runtime, e os três
+    # são lidos por quem não deveria ler a chave do canal de alguém.
+    #
+    # Por que ele existe, já que a variável de ambiente sempre funcionou: na
+    # nuvem da Plow cada pessoa tem a própria máquina e não há `.env` nem
+    # `compose.yml` -- o ambiente traz o que a Plow põe nele. Sem este comando,
+    # a chave da PRÓPRIA PESSOA não tem por onde entrar, e ela fica dependendo
+    # da chave do dono do agente ou de nenhuma.
+    if args.action == "setkey":
+        bruto = sys.stdin.read()
+        try:
+            caminho = P.guardar_chave(bruto)
+        except P.PostIndisponivel as exc:
+            die(str(exc), code=2)
+        except Exception as exc:
+            die(f"{type(exc).__name__}: {exc}", code=1)
+        # O caminho e a permissão. NUNCA a chave, nem um prefixo dela, nem o
+        # tamanho: um prefixo é o que se usa para procurar a chave inteira num
+        # log, e o tamanho diz qual provedor é.
+        print(f"key stored at {caminho} (0600). It is never printed, never "
+              f"logged and never repeated back.")
+        print("  next:  warden post connect  -- ONE address for them to open",
+              file=sys.stderr)
+        return 0
+
+    # O portão de "desligado". Sem chave não há requisição, não há traceback e
+    # não há `invalid choice`: há uma frase que diz o que falta e o que o agente
+    # faz em vez disso. Código 1 e não 2 de propósito -- 2 é erro de uso do
+    # comando, e não usar errado quem não configurou o ambiente.
     if not P.esta_configurado():
-        die("the publishing intermediary is OFF: WARDEN_POST_API_KEY is not "
-            "set in this environment, so nothing was sent and nothing was "
-            "tried. Until the owner exports that key, do NOT claim anything "
-            "was published -- hand the finished file over in your final "
-            "message instead, with the title and the description written out, "
+        die("the publishing intermediary is OFF: there is no key on this "
+            "install -- not in WARDEN_POST_API_KEY and not in this machine's "
+            "own file. Nothing was sent and nothing was tried. Do NOT claim "
+            "anything was published. Two roads: hand the finished file over in "
+            "your final message, with the title and the description written "
             # "em menos de um minuto" saiu daqui: ninguém cronometrou um upload
             # manual do dono, e esta frase existe justamente para ser a única
             # da saída que não promete nada.
-            "so the owner can upload it by hand.", code=1)
+            "out, so the owner can upload it by hand; and offer them the setup "
+            "-- a free account at https://app.upload-post.com, the key at "
+            "https://app.upload-post.com/api-keys, and they paste it here so "
+            "you can run `warden post setkey`. The persona's \"Publishing\" "
+            "section has the exact three lines to send.", code=1)
 
     # ── warden post connect [nome do perfil]
     #
@@ -1352,6 +1384,8 @@ def cmd_post(args):
             die(str(exc), code=2)
         except Exception as exc:
             die(f"{type(exc).__name__}: {exc}", code=1)
+        for aviso in saida.get("avisos") or []:
+            print(f"  note: {aviso}", file=sys.stderr)
         if saida["ja_conectado"]:
             print(f"already connected: {saida['canal']} {saida['handle']} on "
                   f"profile {saida['perfil']}. Nothing to do -- "
@@ -1360,7 +1394,11 @@ def cmd_post(args):
                   file=sys.stderr)
             return 0
         if saida["perfil_criado"]:
-            print(f"  created the profile {saida['perfil']}", file=sys.stderr)
+            # O NOME, sempre. Ele é o que distingue esta máquina de outra que
+            # use a mesma chave, e é o que a pessoa procura no painel do
+            # provedor quando quer apagar um perfil que não usa mais.
+            print(f"  created this machine's own profile: {saida['perfil']}",
+                  file=sys.stderr)
         if saida["pede_reautenticacao"]:
             print(f"  {saida['canal']} is connected but needs REAUTH, which is "
                   f"why it would not publish. The same link fixes it.",
@@ -1373,7 +1411,19 @@ def cmd_post(args):
               "it says `already connected` when it worked.", file=sys.stderr)
         return 0
 
-    if args.action == "status":
+    # `and not args.file`, e a ausência dessa condição era um defeito.
+    #
+    # Este ramo estava escrito só como `args.action == "status"` e vinha ANTES
+    # do ramo que lê um request_id -- então ele retornava SEMPRE, e o bloco de
+    # baixo, o que consulta um envio, era código inalcançável. `warden post
+    # status <id>` lia a conta e ignorava o id em silêncio.
+    #
+    # O que isso custava: a própria persona manda o agente rodar `warden post
+    # status <id>` quando o envio cai na fila do intermediário. Ele rodava,
+    # recebia a listagem da conta, não encontrava o envio ali, e ficava sem o
+    # endereço do vídeo -- que era justamente a coisa que ele tinha prometido
+    # mandar de volta.
+    if args.action == "status" and not args.file:
         try:
             saida = P.status()
         except P.PostIndisponivel as exc:
@@ -1382,7 +1432,14 @@ def cmd_post(args):
             die(f"{type(exc).__name__}: {exc}", code=1)
         print(f"provider: {saida['provedor']} ({saida['base']})")
         print(f"account:  {saida['email']} -- plan {saida['plano']}")
-        print(f"profile:  {saida['perfil'] or 'NOT CHOSEN'}")
+        # DE ONDE veio a chave e DE ONDE veio o nome do perfil. Nunca o valor
+        # da chave. A procedência é o que a pessoa precisa ler quando o canal
+        # não é o que ela esperava: uma chave do ambiente é a do dono do
+        # agente, e aí o perfil desta máquina tem de ser só dela.
+        print(f"key:      configured (from the {saida.get('chave_origem')})")
+        print(f"profile:  {saida['perfil'] or 'NOT CHOSEN'}"
+              + (f" ({saida['perfil_origem']})" if saida.get("perfil_origem")
+                 else ""))
         publicam = []
         for perfil in saida["perfis"]:
             for rede, conta in sorted(perfil["contas"].items()):
@@ -1462,25 +1519,35 @@ def cmd_post(args):
         print(f"\n{saida['prova']}", file=sys.stderr)
         return 0
 
-    # ── warden post youtube <clip> --title "..."
+    # ── warden post youtube|tiktok|instagram <clip> --title "..."
+    #
+    # Uma rede por invocação, e `--also` acrescenta outras ao MESMO envio: a
+    # API recebe `platform[]` repetido e o arquivo sobe uma vez só para todas.
+    redes = [args.action] + [r.strip().lower()
+                             for r in (args.also or "").split(",") if r.strip()]
     if not args.file:
-        die("post youtube needs the clip to publish: "
-            "`warden post youtube CLIP --title \"...\"`", code=2)
+        die(f"post {args.action} needs the clip to publish: "
+            f"`warden post {args.action} CLIP --title \"...\"`", code=2)
     if not args.title:
-        die("post youtube needs --title. YouTube requires a title, and this "
-            "command will not invent one for the owner's channel.", code=2)
+        die(f"post {args.action} needs --title. YouTube requires a title and "
+            f"the other networks use it as the caption; this command will not "
+            f"invent one for the owner's channel.", code=2)
 
     try:
-        envio = P.publish_youtube(args.file, args.title,
-                                  descricao=args.description or "",
-                                  privacidade=args.privacy,
-                                  shorts=args.shorts)
+        envio = P.publicar(args.file, redes, args.title,
+                           descricao=args.description or "",
+                           privacidade=args.privacy,
+                           shorts=args.shorts,
+                           rascunho=args.draft,
+                           stories=args.stories)
     except P.PostIndisponivel as exc:
         die(str(exc), code=2)
     except Exception as exc:
         die(f"{type(exc).__name__}: {exc}", code=1)
 
-    print(f"accepted for processing: request_id={envio['request_id']}", file=sys.stderr)
+    print(f"accepted for processing: request_id={envio['request_id']} "
+          f"({', '.join(envio['plataformas'])}, profile {envio['perfil']})",
+          file=sys.stderr)
     for aviso in envio["avisos"]:
         print(f"  note: {aviso}", file=sys.stderr)
 
@@ -1519,7 +1586,20 @@ def cmd_post(args):
         die(f"the intermediary reported the upload FAILED, so nothing was "
             f"published. Its own words are in the notes above.", code=2)
 
-    if saida["post_url"]:
+    # O ENDEREÇO QUE A API DEVOLVEU, por rede, e nenhum endereço composto aqui.
+    # Montar `youtube.com/watch?v=<id>` a partir de um id seria inventar um
+    # link que ninguém devolveu -- e num envio para três redes seriam três
+    # invenções.
+    por_rede = saida.get("por_plataforma") or {}
+    if len(por_rede) > 1:
+        for rede, res in por_rede.items():
+            if res["url"]:
+                print(f"{rede}: {res['url']}")
+            elif res["sucesso"] is False:
+                print(f"{rede}: FAILED -- see the notes above", file=sys.stderr)
+            else:
+                print(f"{rede}: the API returned no address", file=sys.stderr)
+    elif saida["post_url"]:
         print(saida["post_url"])
     print(f"  video id: {saida['platform_post_id']}", file=sys.stderr)
     if saida["prevalidacao"]:
@@ -5573,24 +5653,42 @@ def main(argv=None):
     p = sub.add_parser("post",
                        help="publish through the audited intermediary -- the "
                             "path that does NOT get locked as private")
-    p.add_argument("action", choices=["youtube", "status", "connect"])
+    p.add_argument("action", choices=["youtube", "tiktok", "instagram",
+                                      "status", "connect", "setkey"])
     p.add_argument("file", nargs="?",
                    help="the clip to publish; with `status`, the request_id of "
-                        "an upload already sent")
-    p.add_argument("--title", help="the video title; at most 100 characters, "
-                                   "and this refuses a longer one rather than "
-                                   "truncating it in silence")
-    p.add_argument("--description", default="", help="the video description")
+                        "an upload already sent; with `connect`, the profile "
+                        "name to connect (this machine's own by default)")
+    p.add_argument("--title", help="the video title on YouTube, the caption on "
+                                   "TikTok and Instagram. At most 100 "
+                                   "characters for YouTube and 2200 for the "
+                                   "other two, and this refuses a longer one "
+                                   "rather than truncating it in silence")
+    p.add_argument("--description", default="",
+                   help="the YouTube description. The other two networks have "
+                        "no separate description: there the caption is --title")
+    p.add_argument("--also", default="",
+                   help="other networks to send the SAME file to in the same "
+                        "upload, comma separated (e.g. `--also tiktok`). The "
+                        "file is uploaded once and the intermediary fans it out")
     p.add_argument("--privacy", default="public",
                    choices=["public", "unlisted", "private"],
                    help="public by default, and unlike `warden youtube "
                         "publish` that default actually holds: the "
                         "intermediary's app is audited, so YouTube does not "
                         "lock the upload as private. Measured public on "
-                        "15/09/2026.")
+                        "15/09/2026. TikTok has no `unlisted` and refuses it; "
+                        "Instagram has no per-post privacy at all and refuses "
+                        "anything but public")
     p.add_argument("--shorts", action="store_true",
                    help="append #Shorts to the description. A HINT only -- "
                         "YouTube decides what a Short is from the file itself")
+    p.add_argument("--draft", action="store_true",
+                   help="[TikTok] send to the drafts instead of publishing "
+                        "(`post_mode=MEDIA_UPLOAD`). In draft mode TikTok "
+                        "ignores the caption and privacy sent by the API")
+    p.add_argument("--stories", action="store_true",
+                   help="[Instagram] post as a Story instead of a Reel")
     # 45s e não 300s.
     #
     # Medido em 16/09/2026 num envio real: o comando ficou 5 minutos BLOQUEADO

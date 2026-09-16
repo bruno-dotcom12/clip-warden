@@ -252,6 +252,13 @@ else
     printf '     Desligada. Quer ligar? Precisa de WARDEN_POST_API_KEY no .env, que é\n'
     printf '     uma conta sua em upload-post.com (plano grátis, 10 envios por mês,\n'
     printf '     não pede cartão).\n'
+    # A segunda estrada, e ela não passa por este arquivo. Quem instala aqui tem
+    # um .env ao lado; quem roda na nuvem da Plow não tem -- e para esse a chave
+    # entra pela conversa, com o agente rodando `warden post setkey`. Dito aqui
+    # porque este é o texto que a pessoa lê no fim da instalação, e sem ele a
+    # única forma que ela conhece de ligar isso é editar um arquivo.
+    printf '     Ou, sem mexer em arquivo: peça ao agente no chat que ele te manda\n'
+    printf '     os três passos e guarda a chave sozinho.\n'
 fi
 if [ "$TEM_YT" -eq 1 ]; then
     printf '  2. `warden youtube connect` -- NÃO publica. ligada (achei WARDEN_YT_CLIENT_ID no .env).\n'
