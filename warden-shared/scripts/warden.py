@@ -4841,8 +4841,12 @@ def _lote_prep(args):
     print("\n===== WHAT HAPPENS NEXT, WITHOUT ASKING =====")
     for linha in linhas:
         print(linha)
-    print("\n# Say those five lines to the person in ONE line of prose and keep "
-          "going. Do not ask them to confirm: each of these has a default and "
+    # NÃO "e siga falando": dizer isso aqui é mandar o modelo escrever prosa no
+    # MEIO do turno, e foi exatamente assim que a entrega de 16/09 morreu. Esta
+    # saída é lida DEPOIS de o turno da confirmação já ter terminado.
+    print("\n# Those five lines go to the person in ONE line of prose, in the "
+          "final message of a turn -- never between two tool calls. Do not ask "
+          "them to confirm: each of these has a default and "
           "the default is what they get, so a question here buys a turn of "
           "waiting and changes nothing. If they want another number, they say "
           "so and the next render uses it.")
@@ -4857,7 +4861,7 @@ def _lote_prep(args):
     idioma = padroes.get("language")
     em = (f"<hook line in {idioma}>" if idioma
           else "<hook line in the source language>")
-    print(f"# then, in the SAME turn, pick {padroes['n']} window(s) on the text "
+    print(f"# then pick {padroes['n']} window(s) on the text "
           f"above and run:\n"
           f"#   warden lote render {url} --windows <a-b,c-d> "
           f"--hooks '{em} 1|{em} 2'"
@@ -5615,6 +5619,9 @@ _ANUNCIOU = re.compile(r"Delivering (\d+) non-image MEDIA")
 # ligada, um intervalo abaixo de `_TETO_SONO_NATURAL_S` mede o sono e não o
 # upload, e o comando diz que não mediu em vez de riscar.
 _PISO_UPLOAD_S = 0.5
+# O piso acima é para 16 MB, que é o tamanho medido em 15 e 16/09. Para outros
+# tamanhos ele é escalado em `upload_instantaneo` -- ver o comentário lá.
+_TAXA_LENTA_BPS = 16_000_000 / _PISO_UPLOAD_S
 _BYTES_QUE_DEMORAM = 1_000_000
 
 # O teto do sono do modo `natural` (base.py:3729-3740). Acima dele, o que sobra
@@ -5696,7 +5703,7 @@ def envios_desde(quando):
 
     Sem esse teto, QUALQUER anexo posterior desarmava o cronômetro: os dois
     anexos engolidos da mensagem davam intervalo 0,000 s, mas
-    `_maior_intervalo` é um `max` sobre a lista inteira, então bastava a
+    `_menor_intervalo` era um `max` sobre a lista inteira, então bastava a
     resposta seguinte -- três minutos depois -- para o maior intervalo virar
     180 s, passar do piso, e o alarme calar sobre o clipe perdido. Medido
     rodando o comando, não deduzido.
@@ -5743,18 +5750,25 @@ def envios_desde(quando):
             "carimbos": carimbos}
 
 
-def _maior_intervalo(carimbos):
-    """O maior intervalo entre duas tentativas consecutivas, ou None.
+def _menor_intervalo(carimbos):
+    """O MENOR intervalo entre duas tentativas consecutivas, ou None.
 
     None com menos de duas tentativas, e é uma distinção que importa: com uma
     linha só não há intervalo NENHUM para medir -- a duração do último upload
     não é escrita em lugar nenhum --, e "não deu para medir" nunca pode virar
     "medi e está tudo certo".
+
+    ERA UM `max`, E O `max` APROVAVA UMA ENGOLIDA PARCIAL. Medido por uma
+    auditoria em 16/09/2026: três anexos anunciados, o primeiro levando 4,8 s e
+    o segundo 0,000 s -- um upload real seguido de um fantasma. Com `max` o
+    veredito era 4,8 s, "nenhum instantâneo", e o clipe perdido era riscado do
+    livro. A pergunta que este número responde não é "algum upload demorou?",
+    é "TODOS demoraram?" -- e quem responde isso é o menor deles.
     """
     ordenados = sorted(t for t in (carimbos or []) if t is not None)
     if len(ordenados) < 2:
         return None
-    return max(b - a for a, b in zip(ordenados, ordenados[1:]))
+    return min(b - a for a, b in zip(ordenados, ordenados[1:]))
 
 
 def upload_instantaneo(log, caminho):
@@ -5770,8 +5784,8 @@ def upload_instantaneo(log, caminho):
     """
     if not log:
         return None
-    intervalo = _maior_intervalo(log.get("carimbos"))
-    if intervalo is None or intervalo >= _PISO_UPLOAD_S:
+    intervalo = _menor_intervalo(log.get("carimbos"))
+    if intervalo is None:
         return None
     try:
         tamanho = os.path.getsize(caminho)
@@ -5779,8 +5793,25 @@ def upload_instantaneo(log, caminho):
         return None
     if tamanho < _BYTES_QUE_DEMORAM:
         return None
+    # O PISO ESCALA COM O ARQUIVO, e um piso fixo era um falso alarme PERMANENTE.
+    # Medido por uma auditoria em 16/09/2026: dois clipes de 1,5 MB a 0,300 s de
+    # intervalo -- 5 MB/s, uma rede boa -- eram acusados de envio-fantasma, e o
+    # ramo da acusação não pede reenvio nenhum, então o `lote render` ficava
+    # travado para sempre. O piso de 0,5 s tinha sido calibrado contra 16 MB a
+    # 3,4 MB/s; aplicá-lo a 1,5 MB é exigir que um arquivo onze vezes menor
+    # demore o mesmo.
+    #
+    # `_TAXA_LENTA_BPS` é deliberadamente PESSIMISTA: quanto mais lenta a taxa
+    # que se assume, menor o tempo esperado e menos este portão acusa. Acusar de
+    # menos custa um clipe que some; acusar de mais custa o trabalho parado sem
+    # saída, que foi medido e é pior.
+    esperado = max(_PISO_UPLOAD_S * (tamanho / 16_000_000.0), 0.05)
+    if intervalo >= esperado:
+        return None
     return (f"the {log['saiu']} attachment line(s) after it are {intervalo:.3f}s "
-            f"apart, and that file is {tamanho / 1000000.0:.1f} MB. The gateway "
+            f"apart, and that file is {tamanho / 1000000.0:.1f} MB -- even at a "
+            f"deliberately slow rate that should have taken {esperado:.3f}s. "
+            f"The gateway "
             f"writes that line BEFORE the upload it starts, so the gap between "
             f"one line and the next IS how long the previous upload took: "
             f"{intervalo:.3f}s means no upload happened. Measured 16/09/2026: "
@@ -5808,7 +5839,7 @@ def cronometro_cego(log, caminho):
     lado de `upload_instantaneo`: aquele acusa, este se recusa a aprovar. As
     duas cegueiras medidas em 16/09/2026:
 
-      - UM ANEXO SÓ. `_maior_intervalo` devolve None com menos de duas linhas,
+      - UM ANEXO SÓ. `_menor_intervalo` devolve None com menos de duas linhas,
         e o comando riscava assim mesmo: log com uma linha em 0 ms e arquivo de
         16 MB saíam `EXIT: 0`. A duração do ÚLTIMO upload não é escrita em
         lugar nenhum do log, então aqui não há medida -- e "me dá um clipe" é
@@ -5831,7 +5862,7 @@ def cronometro_cego(log, caminho):
     if tamanho < _BYTES_QUE_DEMORAM:
         return None
     megas = tamanho / 1000000.0
-    intervalo = _maior_intervalo((log or {}).get("carimbos"))
+    intervalo = _menor_intervalo((log or {}).get("carimbos"))
     if intervalo is None:
         return (f"the gateway logged a single attachment line after that "
                 f"message, and the duration of the LAST upload is written "
@@ -6304,9 +6335,22 @@ def verifica_um_envio(caminho, varredura=False):
     # do último upload não é escrita em lugar nenhum, então com uma linha só
     # não há intervalo a medir. Dizer "nenhuma instantânea" aí seria a mesma
     # afirmação sem medida que esta saída existe para não repetir.
-    cronometro = (" none of them instant"
-                  if _maior_intervalo(log.get("carimbos")) is not None
-                  else " a single attempt, so there is no gap to time")
+    # A FRASE TEM DE VIR DA MEDIDA, NÃO DE "existe medida". Ela dizia
+    # "none of them instant" sempre que houvesse dois carimbos -- inclusive
+    # quando o intervalo medido era 0,000 s. Uma auditoria de 16/09 rodou isso:
+    # arquivo de 900 KB, dois anexos no MESMO milissegundo, e a saída afirmou
+    # "none of them instant" sobre um intervalo de zero. Afirmação falsa sobre
+    # uma medida que o próprio comando tinha acabado de fazer.
+    _intervalo = _menor_intervalo(log.get("carimbos"))
+    if _intervalo is None:
+        cronometro = " a single attempt, so there is no gap to time"
+    elif _intervalo >= _PISO_UPLOAD_S:
+        cronometro = f" the closest two {_intervalo:.3f}s apart"
+    else:
+        cronometro = (f" the closest two only {_intervalo:.3f}s apart, which "
+                      f"is under the {_PISO_UPLOAD_S}s floor -- this file is "
+                      f"small enough that the floor does not accuse, but the "
+                      f"gap is not evidence of an upload either")
     print(f"handed off: {nome} -- its MEDIA: line was in a final message"
           + (f", the gateway announced {log['anunciados']} MEDIA"
              if log["anunciados"] else "")

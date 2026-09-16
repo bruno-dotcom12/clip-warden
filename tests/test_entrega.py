@@ -2075,7 +2075,7 @@ class ACONFIRMACAONaoESobreUmaTENTATIVA(_ComAsDuasPontas):
         warden.entregas_registra(self.clipe)
         code, err = self._confirma()
         self.assertEqual(code, 0, err)
-        self.assertIn("none of them instant", err)
+        self.assertIn("apart", err)
 
     def test_o_comando_registra_onde_a_prova_de_chegada_ESTARIA(self):
         """A prosa que impede a próxima pessoa de refazer a busca de 16/09.
@@ -2187,7 +2187,7 @@ class OCronometroSoOlhaOEpisodioDaquelaMensagem(_ComCronometro):
     """Qualquer anexo POSTERIOR desarmava o cronômetro inteiro.
 
     Medido em 16/09/2026, rodando o comando: `envios_desde` lia o log INTEIRO
-    depois da mensagem, sem teto, e `_maior_intervalo` é um `max`. O episódio
+    depois da mensagem, sem teto, e `_menor_intervalo` é um `max`. O episódio
     da mensagem sozinho dá intervalo 0,000 s e o comando acusa; basta UMA linha
     de anexo de um episódio POSTERIOR -- a resposta seguinte, três minutos
     depois -- para o `max` virar 180 s, ficar acima do piso, e o alarme calar
@@ -2206,7 +2206,7 @@ class OCronometroSoOlhaOEpisodioDaquelaMensagem(_ComCronometro):
         lida = warden.envios_desde(t0 - 1)
         self.assertEqual(lida["saiu"], 2, lida)
         self.assertEqual(len(lida["carimbos"]), 2, lida)
-        self.assertLess(warden._maior_intervalo(lida["carimbos"]), 0.5, lida)
+        self.assertLess(warden._menor_intervalo(lida["carimbos"]), 0.5, lida)
 
     def test_o_episodio_seguinte_nao_cala_o_alarme(self):
         """O caso inteiro: dois anexos engolidos, e a resposta de depois."""
@@ -2229,7 +2229,7 @@ class OCronometroSoOlhaOEpisodioDaquelaMensagem(_ComCronometro):
         t0 = self._log_episodios([(0.0, 2, [0.001, 0.001, 90.0])])
         lida = warden.envios_desde(t0 - 1)
         self.assertEqual(lida["saiu"], 2, lida)
-        self.assertLess(warden._maior_intervalo(lida["carimbos"]), 0.5, lida)
+        self.assertLess(warden._menor_intervalo(lida["carimbos"]), 0.5, lida)
 
     def test_o_episodio_do_7a_continua_riscando(self):
         """O controle: 4,866 s entre os dois anexos, e eles CHEGARAM."""
@@ -2245,7 +2245,7 @@ class UmClipeSoPrecisaDeEvidenciaComoOsOutros(_ComCronometro):
     """Um anexo só não era protegido por nada, e "me dá um clipe" é o pedido.
 
     Medido em 16/09/2026: log com UMA linha de anexo em 0 ms, arquivo de 16 MB,
-    `warden delivered <clipe>` -> EXIT 0 e clipe riscado. `_maior_intervalo`
+    `warden delivered <clipe>` -> EXIT 0 e clipe riscado. `_menor_intervalo`
     devolve None com menos de duas linhas, `upload_instantaneo` trata None como
     "nada a acusar", e o comando riscava.
 
@@ -2515,9 +2515,13 @@ class UmClipeSoNaoPodeTravarOTrabalho(_ComCronometro):
         grande = self._um_anexo_so()
         self._confirma(grande)
         _code, saida = self._confirma(grande)
+        # `can ` ERA um prefixo permitido, e uma auditoria de 16/09 mostrou o
+        # buraco rodando a asserção contra "this machine can confirm it
+        # arrived" -- que PASSAVA. "can confirm" é exatamente a afirmação que
+        # esta máquina não pode fazer; só a negação dela é permitida.
         for antes in saida.lower().split("confirm")[:-1]:
-            self.assertTrue(antes.endswith("not ") or antes.endswith("cannot ")
-                            or antes.endswith("can "), saida)
+            self.assertTrue(antes.endswith("not ") or antes.endswith("cannot "),
+                            "a saída afirma que algo foi confirmado: %r" % saida)
 
     def test_o_recado_que_fecha_sem_medida_e_em_ingles(self):
         """Quem lê a saída é o modelo; a frase da pessoa é o modelo que escreve."""
@@ -2665,3 +2669,70 @@ class OCarimboDeTesteNaoEscreveMilSegundos(unittest.TestCase):
                 carimbo_de_log(quando) + " INFO x: y")
             self.assertAlmostEqual(lido, quando, delta=0.002,
                                    msg=f"{fracao!r} -> {carimbo_de_log(quando)}")
+
+class OCronometroNaoMenteNemTrancaOTrabalho(unittest.TestCase):
+    """Os três buracos que uma auditoria independente abriu à mão em 16/09.
+
+    Os três foram RODADOS contra o código antigo antes de existir conserto:
+    uma engolida parcial era aprovada, um clipe pequeno em rede boa era acusado
+    para sempre, e a saída afirmava "none of them instant" sobre um intervalo
+    de 0,000 s que ela mesma tinha medido.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="warden-crono-")
+
+    def _clipe(self, mb):
+        caminho = os.path.join(self.dir, "c%s.mp4" % mb)
+        with open(caminho, "wb") as fh:
+            fh.write(b"\0" * int(mb * 1_000_000))
+        return caminho
+
+    @staticmethod
+    def _log(carimbos):
+        return {"carimbos": carimbos, "saiu": len(carimbos),
+                "anunciados": len(carimbos)}
+
+    def test_engolida_parcial_e_acusada(self):
+        """`max` aprovava: um upload real mascarava os fantasmas ao lado dele.
+
+        Três anexos, o primeiro levando 4,8 s e o resto 0,000 s. A pergunta que
+        o número responde não é "algum demorou?", é "TODOS demoraram?".
+        """
+        dito = warden.upload_instantaneo(
+            self._log([100.0, 104.8, 104.8]), self._clipe(16.5))
+        self.assertTrue(dito, "engolida parcial passou batido")
+        self.assertIn("0.000s", dito)
+
+    def test_clipe_pequeno_em_rede_boa_nao_e_acusado(self):
+        """1,5 MB a 0,300 s são 5 MB/s -- uma rede boa, não um fantasma.
+
+        O piso de 0,5 s foi calibrado contra 16 MB. Aplicá-lo a um arquivo onze
+        vezes menor é exigir que ele demore o mesmo, e o ramo da acusação não
+        pede reenvio: o `lote render` ficava travado PARA SEMPRE.
+        """
+        self.assertIsNone(warden.upload_instantaneo(
+            self._log([100.0, 100.3]), self._clipe(1.5)))
+
+    def test_o_fantasma_de_16_09_continua_sendo_acusado(self):
+        """O conserto não pode custar a acusação que motivou tudo isto."""
+        dito = warden.upload_instantaneo(
+            self._log([100.0, 100.0]), self._clipe(16.5))
+        self.assertTrue(dito, "o fantasma de 16/09 deixou de ser acusado")
+
+    def test_o_piso_de_tamanho_continua_valendo(self):
+        """Abaixo de 1 MB não se mede nada: era o achado 11 do 7a."""
+        self.assertIsNone(warden.upload_instantaneo(
+            self._log([100.0, 100.0]), self._clipe(0.9)))
+
+    def test_a_saida_nao_afirma_o_que_nao_mediu(self):
+        """"none of them instant" saía sempre que houvesse dois carimbos.
+
+        Inclusive quando o intervalo medido era zero. Agora a frase vem da
+        medida: ou o número, ou a ausência dele.
+        """
+        import inspect
+        fonte = inspect.getsource(warden)
+        self.assertNotIn(' none of them instant"', fonte,
+                         "a frase voltou a ser dita sem olhar o número")
+

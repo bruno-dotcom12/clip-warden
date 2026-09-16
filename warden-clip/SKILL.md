@@ -29,13 +29,12 @@ message of this turn. Do not render it again, do not render a different window
 "to be safe", do not open it to check.
 
 **Never re-cut a window the person did not ask you to re-cut.** A warning in a
-tool's output is repassed, not acted on. If they do ask for another attempt, say
-what you are changing and why BEFORE you start it — never two renders in a row
-in silence.
+tool's output is repassed, not acted on. If they ask for another attempt, say
+what you are changing and why BEFORE you start it — never two renders in a row in silence.
 
 ## Run `prep` and `render` IN THE BACKGROUND. Always.
 
-Your terminal kills a foreground command at **300s** and both pass it.
+Your terminal kills a foreground command at **300s**; both pass it.
 
 1. `background=true` and `notify=true` on the call, the command carrying its log
    redirect and **no `&` and no `nohup`** — the call already IS the background.
@@ -51,8 +50,8 @@ Your terminal kills a foreground command at **300s** and both pass it.
    on AGAIN, never replaced by something else.
 3. Then read the log.
 
-Never search the process list for the command's name: that search matches the
-shell running it, so it never ends.
+Never search the process list for the command's name: it matches the shell
+running it, so it never ends.
 
 **The wait step is still NOT MEASURED clean**: every run so far fell back to
 polling. If it misbehaves, say so in one line and read the log.
@@ -131,7 +130,7 @@ warden archive --campaign <id> --window 181-201.6               one window
 -> /var/lib/hermes/warden/footage/<id>/janela-....mp4   -> IN_POINT:2.000
 ```
 
-**Ask for the whole batch at once**, one `IN_POINT:` per file in order. The file
+**Ask for the whole batch at once**, one `IN_POINT:` per file. The file
 is the window plus keyframe slack, so it is **not** the source: cut it with
 `--start <IN_POINT> --end <IN_POINT + length>`, never the source's own
 timestamps. It carries a `.origem.json` that `cut` **requires**, refusing to
@@ -196,10 +195,9 @@ changing your mind is free.
 ## 6. The mosaic is not a gate
 
 **Do not open the contact sheet before you deliver.** Your obligation is the
-hook and the caption, and `cut` refuses on both by itself; the sheet is written
-as `SHEET:` and waited on by nobody. Never write that a clip "passed
-verification" when nobody has seen it. Why, and the list for when somebody
-does look: `warden-check/references/contact-sheet.md`.
+hook and the caption; the sheet is `SHEET:` and nobody waits on it. Never write
+that a clip "passed verification" when nobody has seen it. The list for when
+somebody does look: `warden-check/references/contact-sheet.md`.
 
 ## 7. Send
 

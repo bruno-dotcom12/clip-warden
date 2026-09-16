@@ -8,10 +8,12 @@ description: The whole path from one message to finished clips. Use when someone
 **Answer in the language the person wrote to you in**, every message, including
 the first. No sentence in this repository is a line to copy out.
 
-**Before you run a single command, send ONE short line saying you are on it** —
-two or three words, the instant you have the link and know what they want. Then
-work without stopping. Measured 15/09: the owner waited ten minutes with no sign
-the request had arrived.
+**Start the job in the BACKGROUND with `notify` on, then END that turn with ONE
+short line saying you are on it** — two or three words, no tool call after it.
+Its notification brings you back and the work happens on the next turn. NEVER
+say it with `plow_send_sequence` or anything that writes to the chat mid-turn:
+that made the adapter swallow a whole delivery on 16/09. The persona carries
+the measurement.
 
 **And nothing you do after that is a message.** Not which window you picked, not
 that a clip was approved, not a second you adjusted.

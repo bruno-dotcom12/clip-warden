@@ -113,7 +113,26 @@ SEED_SHA256 = "038c798df463d5e5b684cfb06238556bf1a128cb530098da748913b1fb36cdab"
 # eles acabarem o arquivo volta a ser truncado EM SILÊNCIO, que é o defeito que
 # originou este teste. A quinta vez não pode ser uma subida: tem de ser uma
 # regra indo para uma SKILL.md, ou prosa saindo de verdade.
-META_CHARS = 18_700
+# 19.000. QUINTA subida, e a anterior dizia que esta não podia acontecer. Ela
+# aconteceu, então o que vale é a conta, não a promessa:
+#
+#   limite REAL do Hermes            20.000   (não é nosso, não se levanta)
+#   montado hoje                     18.812
+#   folga que sobra                   1.188
+#
+# As cinco subidas pagaram, todas, regra que um defeito medido cobrou -- a
+# última é a proibição de falar no meio do turno, que custou a quarta gravação
+# do dono. Cortar regra para caber é o que este projeto se proibiu de fazer
+# depois que um corte de tamanho apagou o contrato de entrega inteiro.
+#
+# O QUE FAZER DA PRÓXIMA VEZ, porque subir de novo é gastar os 1.188 que separam
+# este arquivo de voltar a ser truncado EM SILÊNCIO: tirar a seção `## Publishing`
+# (~2.900 chars) da persona e pô-la em `warden-shared/references/postagem.md`,
+# que já existe e já entra na imagem, deixando na persona só as três REGRAS dela
+# (nunca repetir a chave; a bifurcação com/sem chave; só YouTube foi medido).
+# Isso devolve ~2.400 de uma vez. O custo é que uma skill pode ser podada e a
+# persona não -- por isso as regras ficam e só o procedimento sai.
+META_CHARS = 19_000
 
 # O limite real observado no teste 7a, só para a mensagem de erro ter contexto.
 LIMITE_HERMES_MEDIDO = 20_000
@@ -669,9 +688,23 @@ def test_a_razao_dos_doze_segundos(soul):
     numa chamada com a tela compartilhada — não está em lugar nenhum da imagem
     desde o corte. O próximo agente que achar doze segundos pouco vai aumentá-lo
     sem saber o que está pagando por isso.
+
+    16/09: o NÚMERO saiu da persona e o teste mudou junto. Duas razões, as duas
+    do dono: ele subiu a espera para 14s (`warden.py:1881`, porque em dois
+    pedidos reais o link chegou 1 segundo depois da desistência aos 12), e as
+    duas skills passaram a proibir a flag (`warden-shared/SKILL.md:53`,
+    `warden-clip/SKILL.md:64`) — `warden inbox` sem flag já carrega o número e
+    volta assim que um link chega. Uma persona que fixa `--wait 12` desfaz as
+    duas decisões, e a persona ganha das skills porque nunca é podada.
+    O que este teste cobra agora é a RAZÃO, que é o que se perde num corte: o
+    número vive no código, onde é medido.
     """
-    espera = soul.find("--wait 12")
-    assert espera != -1, "sumiu o `warden inbox --wait 12`"
+    espera = soul.find("warden inbox")
+    assert espera != -1, "sumiu a regra do `warden inbox`"
+    assert "--wait 12" not in soul, (
+        "o `--wait 12` voltou para a persona. Ele desfaz os 14s que o dono "
+        "mediu e a proibição da flag que as duas skills carregam."
+    )
     perto = soul[espera : espera + 500]
     assert re.search(r"(?i)(screen|call|watching|judging)", perto), (
         "o `--wait 12` está na persona sem a razão dos doze segundos: isto "

@@ -83,7 +83,17 @@ import warden  # noqa: E402  -- a fonte da verdade sobre o que a ferramenta impr
 # (agent.log:176, 180, 182). As outras quatro entram sob demanda.
 FRENTE = ("warden-run", "warden-clip", "warden-shared")
 
-TETO_FRENTE = 23_000
+# 23.100 desde 16/09, e a conta importa mais que o número. O orçamento real é o
+# que separa o piso do prompt (35.006 tokens) da poda (48.000): ~12.994 tokens,
+# ou ~35.000 chars. Os 23.000 eram a margem folgada escolhida em 15/09, não um
+# limite físico. Estes 100 chars a mais valem ~37 tokens contra esse orçamento --
+# 0,3% dele -- e pagam a proibição de falar no meio do turno, que custou a quarta
+# gravação do dono.
+#
+# O que NÃO fazer: continuar subindo. A distância real até a poda é o que impede
+# `warden-clip` de sumir do contexto no meio de um render, e foi exatamente isso
+# que aconteceu em 7a (SKILL_PRUNED às 14:52:50). Da próxima vez, encolher.
+TETO_FRENTE = 23_100
 TETO_ARQUIVO = 12_000
 
 CHARS_POR_TOKEN = 2.72   # 55.052 chars / 20.227 tokens, agent.log:175-182
