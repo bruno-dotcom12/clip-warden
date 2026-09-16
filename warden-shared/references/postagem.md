@@ -37,8 +37,13 @@ the title, the description ready to paste, and this:
 > 1. `<a free account at>` https://app.upload-post.com `<— no card asked>`
 > 2. `<open>` https://app.upload-post.com/api-keys `<, press "Generate New API
 >    Key" and copy the key>`
-> 3. `<paste the key here and I switch it on, then send you the link to connect
->    the channel>`
+> 3. `<paste the key here and I switch it on>`
+
+That third line STOPS there on purpose. A promise of a link to come would end
+the turn owing a message, with nothing running to wake the agent -- the 16/09
+defect. The persona is plain about it: never end a turn with the confirmation
+and nothing running. The connect link goes out on the turn the key arrives,
+which is the next one, and on that turn the person has just spoken.
 
 The links and the order are fixed. **The words are yours, in their language** —
 the angle brackets are slots, never text to copy out.

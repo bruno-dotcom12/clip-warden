@@ -67,9 +67,9 @@ whole number of bars, and the track comes in on the drop instead of the intro.
 **An edit is cut to the bar even when the file ships mute.** A campaign that
 requires the sound to be added on the platform still gets an edit, because a
 clip whose length is a whole number of bars lands on the beat the moment they
-pick the track in the app. **Tell them which second to start the sound on — that
-is `drop_s` from `warden beat`.** On a mute edit it is the only deliverable
-besides the file.
+pick the track in the app. **Which second to start the sound on — `drop_s`
+from `warden beat` — goes in the final message, beside the clip.** On a mute
+edit it is the only deliverable besides the file.
 
 ## The rest
 
