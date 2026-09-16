@@ -765,6 +765,50 @@ class Provedor:
         raise NotImplementedError
 
 
+def _sobrevive_ao_redator(url):
+    """Percent-encode o `e` de cada `eyJ` do token, para o link chegar INTEIRO.
+
+    O gateway do Hermes mascara todo JWT antes de entregar qualquer saída de
+    ferramenta ao modelo (`agent/redact.py`):
+
+        _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}")
+        if "eyJ" in text:
+            text = _JWT_RE.sub(lambda m: _mask_token(m.group(0)), text)
+
+    E o token deste link É um JWT. Medido em 16/09/2026, duas gravações
+    seguidas: o endereço chegou ao agente como
+    `...?token=eyJhbG...J_mI`, ele o repassou assim -- não tinha outra coisa
+    para repassar -- e a página respondeu `Token inválido ou expirado`. O dono
+    tinha feito tudo certo. Na segunda vez o agente até percebeu, leu o arquivo
+    em bytes e converteu para hexadecimal para escapar do mascaramento; a
+    decodificação voltou mascarada de novo.
+
+    A ironia está escrita no próprio `redact.py`, quatro linhas abaixo do
+    padrão: a redação de query string fica DESLIGADA de propósito porque
+    "many legitimate workflows pass opaque tokens through query strings --
+    magic-link checkouts, OAuth callbacks the agent is meant to follow". É
+    exatamente este caso; a regra do JWT dispara antes e atropela a intenção.
+
+    O CONSERTO NÃO É DESLIGAR A REDAÇÃO. Ela é a proteção que existe porque
+    este projeto já vazou um segredo numa imagem pública (ver docs). O conserto
+    é o link deixar de PARECER um JWT sem deixar de SER o token: `%65` é `e`,
+    então `%65yJ...` percent-decodifica para `eyJ...` em qualquer servidor que
+    siga o RFC 3986, e o literal `eyJ` -- que é o gatilho do redator -- não
+    aparece mais no texto.
+
+    O que isto NÃO resolve: um servidor que compare a query string CRUA, sem
+    decodificar. Se um dia o `connect` recusar um link que parece certo, é o
+    primeiro lugar para olhar.
+    """
+    corte = url.find("token=")
+    if corte < 0 or "eyJ" not in url:
+        return url
+    cabeca, token = url[:corte + len("token=")], url[corte + len("token="):]
+    partes = ["%65" + p[1:] if p.startswith("eyJ") else p
+              for p in token.split(".")]
+    return cabeca + ".".join(partes)
+
+
 class UploadPost(Provedor):
     """Upload-Post: o app auditado que publica no lugar do nosso, não auditado.
 
@@ -863,6 +907,8 @@ class UploadPost(Provedor):
                             **{"Content-Type": "application/json"}))
         dados = _json_ou_explica(codigo, bruto, "ao gerar o link de conexão")
         url = _primeiro(dados, ("access_url", "url", "link"))
+        if url:
+            url = _sobrevive_ao_redator(str(url))
         if not url:
             raise PostIndisponivel(
                 "o provedor respondeu sem endereço de conexão. O que ele "

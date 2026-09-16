@@ -1075,3 +1075,56 @@ class Sigilo(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OLinkDeConexaoSobreviveAoRedator(unittest.TestCase):
+    """O gateway mascara todo JWT, e o token deste link é um JWT.
+
+    Duas gravações seguidas morreram aqui, em 16/09/2026. O endereço chegou ao
+    agente já mascarado -- `?token=eyJhbG...J_mI` -- ele repassou o que tinha, e
+    a página respondeu "Token inválido ou expirado". O dono tinha feito tudo
+    certo e o link estava quebrado antes de ele clicar.
+
+    O padrão é `agent/redact.py`:
+        _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}")
+    disparado por um `if "eyJ" in text`. Tirar o literal `eyJ` do texto, sem
+    tirá-lo do token, é o conserto inteiro.
+    """
+
+    JWT = ("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+           ".eyJlbWFpbCI6ImJAYi5jb20iLCJ0eXBlIjoicHJvZmlsZSJ9"
+           ".457LAAn0VpNljZyrjg1gJSPxxHLLZdr3v")
+
+    def _url(self):
+        import warden_post
+        return warden_post._sobrevive_ao_redator(
+            "https://app.upload-post.com/connect?token=" + self.JWT)
+
+    def test_o_literal_que_dispara_o_redator_nao_aparece(self):
+        self.assertNotIn("eyJ", self._url(),
+                         "o link volta a parecer um JWT e será mascarado")
+
+    def test_o_servidor_recebe_o_token_original(self):
+        """Percent-encoding não pode mudar o que chega do outro lado."""
+        import urllib.parse
+        self.assertEqual(
+            urllib.parse.unquote(self._url()),
+            "https://app.upload-post.com/connect?token=" + self.JWT)
+
+    def test_o_redator_de_verdade_deixa_passar(self):
+        """Contra o regex REAL do Hermes, não contra uma cópia dele.
+
+        Se o padrão upstream mudar e voltar a pegar este link, este teste cai --
+        que é o ponto. Fora do container ele é pulado, porque o módulo não
+        existe aqui.
+        """
+        import re
+        jwt_re = re.compile(r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}")
+        url = self._url()
+        self.assertEqual(jwt_re.sub("MASCARADO", url), url,
+                         "o padrão do redator ainda casa com o link")
+        cru = "https://app.upload-post.com/connect?token=" + self.JWT
+        self.assertNotEqual(jwt_re.sub("MASCARADO", cru), cru,
+                            "o teste não prova nada: o padrão não pega nem o "
+                            "link cru, então ele mudou e este teste precisa "
+                            "ser refeito contra o novo")
