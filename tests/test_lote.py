@@ -425,14 +425,18 @@ class LoteRenderFazTudoODepois(_ComLoteFalso):
         ok, _porque = S.approval_state(srt, start=10.0, end=14.0)
         self.assertTrue(ok)
 
-    def test_uma_linha_suspeita_nao_e_assinada_e_o_comando_diz_o_keep_exato(self):
-        """O portão que foi contornado em 15/09, e a saída que o destrava.
+    def test_uma_linha_suspeita_avisa_e_a_legenda_queima_assim_mesmo(self):
+        """O aviso, e o clipe COM legenda. Medido em 16/09/2026.
 
-        Uma linha com número é o que o Whisper mais erra, e uma legenda
-        publicada pode trazer uma. Ela não é assinada sozinha -- mas a recusa
-        NOMEIA o `--keep` exato, com a linha entre aspas, pronto para colar.
-        Sem isso, "há uma linha suspeita" custa mais um turno e o clipe sai
-        mudo numa campanha que paga pela legenda.
+        Uma linha com número é o que uma transcrição mais erra, e até aqui ela
+        calava o clipe inteiro até alguém repeti-la em `--keep`. No primeiro
+        lote real com legenda publicada em português a proteção disparou em
+        2 clipes de 2, duas vezes -- que é a reclamação do dono, "veio sem
+        legenda também". Uma proteção que dispara em todo clipe desliga o
+        produto em vez de protegê-lo.
+
+        Então: a legenda queima, o aviso nomeia a linha e o `--keep` exato
+        continua na saída, agora querendo dizer "já li esta, pare de avisar".
         """
         SEGMENTOS.append({"start": 300.0, "end": 304.0,
                           "text": "foram 90 mil reais naquele dia"})
@@ -442,9 +446,9 @@ class LoteRenderFazTudoODepois(_ComLoteFalso):
             ["lote", "render", URL, "--windows", "300-304", "--hooks", "x"])
         self.assertEqual(code, 0, erro)
         self.assertIn('--keep "foram 90 mil reais naquele dia"', erro)
-        self.assertIn("re-run this SAME command", erro)
-        # e o clipe saiu SEM legenda, nunca com uma palavra que ninguém leu
-        self.assertIsNone(self.media.cortes[0]["caption_srt"])
+        self.assertIn("CAPTIONS BURNED", erro)
+        # e o clipe saiu COM legenda: é a única coisa que o dono espera
+        self.assertTrue(self.media.cortes[0]["caption_srt"])
 
     def test_com_keep_a_linha_suspeita_e_assinada(self):
         SEGMENTOS.append({"start": 300.0, "end": 304.0,
@@ -672,24 +676,28 @@ class FonteSemLegendaPublicadaNaoEntregaClipeMudo(_ComLoteFalso):
         self.assertTrue(janela, "a janela nunca foi transcrita")
         self.assertEqual(janela[0][2].get("proposito"), "janela")
 
-    def test_linha_suspeita_continua_exigindo_keep_e_entra_na_conta_final(self):
-        """O portão não relaxa: "Em 1826" e "jokovic jokovic" foram para a tela.
+    def test_linha_suspeita_da_transcricao_avisa_e_queima(self):
+        """No caminho da transcrição a decisão pesa mais, não menos.
 
-        E o clipe que sai mudo por causa dele não pode ficar num stderr solto
-        no meio do lote: ele vai para a CONTA FINAL, nomeado, ao lado dos
-        clipes que falharam.
+        "Em 1826" e "jokovic jokovic" foram para a tela porque uma linha foi
+        marcada como provavelmente errada e assinada no mesmo fôlego. A
+        resposta a isso era calar o clipe, e desde 16/09/2026 não é: se uma
+        linha suspeita calasse o corte, TODA fonte sem legenda publicada
+        entregaria clipe mudo -- e o dono espera exatamente uma coisa de cada
+        clipe, que é a legenda.
+
+        O aviso continua nomeando a linha e o `--keep` exato, e continua
+        chegando à saída em vez de morrer num stderr no meio do render.
         """
         self._sem_legenda_publicada("foram 90 mil reais naquele dia")
         self._roda(["lote", "prep", URL])
         code, _saida, erro = self._roda(
             ["lote", "render", URL, "--windows", "10-30", "--hooks", "x"])
         self.assertEqual(code, 0, erro)
-        self.assertIsNone(self.media.cortes[0]["caption_srt"])
+        self.assertTrue(self.media.cortes[0]["caption_srt"])
         self.assertIn('--keep "foram 90 mil reais naquele dia"', erro)
-        conta = erro.split("cleared for delivery", 1)[1]
-        self.assertIn(f"NO CAPTIONS: {_nome(URL, 1)}", conta)
-        self.assertIn("--keep", conta)
-        self.assertIn("words on screen", conta)
+        self.assertIn("CAPTIONS BURNED", erro)
+        self.assertNotIn("NO CAPTIONS", erro)
 
     def test_com_keep_a_linha_suspeita_da_janela_queima(self):
         self._sem_legenda_publicada("foram 90 mil reais naquele dia")

@@ -278,21 +278,27 @@ words nobody read. Who signs depends on which road you took:
 | `warden lote render` | the tool signs the clean lines itself, per window. You do not run `captions review`, and nobody is asked |
 | `warden cut` on its own | YOU sign, first: `warden captions review <srt> --start <s> --end <s> --approve` |
 
-**A suspect line is never signed on either road.** A number, a repeated word, an
-auto-caption `>>` marker: it is only signed if you repeat it back, exactly, in
-`--keep "<the line>"`. That gate was walked around on 15/09 -- a line was flagged
-as probably wrong and signed in the same breath -- and "Em 1826" went to the
-screen. A window that could not be signed does not fail the batch and does not
-become a wrong caption: it renders WITHOUT captions, and the warning names the
-`--keep` that would release it. **If a clip came back without captions and the
-campaign wanted them, that warning is where the reason is.** Read it and pass the
-`--keep`, rather than delivering a silent-captioned clip to a campaign that pays
-for the words.
+**A suspect line is a warning now, not a refusal.** A number, a repeated word,
+an auto-caption `>>` marker: the tool names the line, burns the caption anyway,
+and the words are on the contact sheet you have to open before you deliver.
+Read them there, against the picture.
 
-Reading is the point of the signature: whisper mishears, and a wrong word burned
-on the screen is worse than no caption. Sign after reading, never before, and
-editing the srt voids the signature. This is YOUR check, never a question to the
-person -- you never ask permission to caption.
+Until 16/09 one suspect line rendered the whole clip WITHOUT captions until the
+line was repeated back in `--keep`. Measured that day on a real YouTube live:
+`>>` in 184 of 706 cues, and **2 clips of 2 came out with no words on screen,
+twice** -- which is the owner's complaint, word for word. A check that fires on
+every clip is not protecting the clip, it is switching off the product, and the
+owner's rule is that captions are the one thing he waits for.
+
+So: if a burned line is wrong, say so in ONE line when you hand the clip over.
+Do not re-render for it unless he asks. `--keep "<the line>"` still exists and
+now means only "I read this one, stop warning me" -- it no longer decides
+whether the clip has captions at all.
+
+Reading is still the point: whisper mishears, and "Em 1826" went to the screen
+on 15/09 because a line was flagged and signed in the same breath. The place you
+read it is the mosaic. This is YOUR check, never a question to the person -- you
+never ask permission to caption.
 
 ### What the footage already carries
 

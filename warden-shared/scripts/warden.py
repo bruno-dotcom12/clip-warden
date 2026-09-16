@@ -4288,25 +4288,59 @@ def _lote_prep(args):
     return 0
 
 
-def _porque_a_linha_suspeita_trava(pendentes):
-    """A recusa que já vem com o comando que a destrava.
+def _folga_da_frase():
+    """Quanto o `cut` pode andar para fechar a frase, em segundos.
 
-    O `--keep` EXATO, com a linha entre aspas, pronto para colar. A diferença
-    entre isto e "há uma linha suspeita" é a diferença entre o clipe sair com
-    legenda e sair mudo numa campanha que paga pela legenda: uma frase que
-    descreve o problema sem dar o comando que o resolve custa mais um turno.
+    Lido de `warden_media` e não copiado: dois números para a mesma folga são
+    duas folgas na primeira vez que um deles muda, e o sintoma é um clipe
+    reprovado por uma assinatura que não alcança o próprio conserto.
+    """
+    try:
+        return float(_media().TETO_DA_FRASE_S)
+    except Exception:
+        return 6.0
 
-    Uma função só, e não duas cópias, porque o portão agora tem DOIS caminhos
-    até ele -- a legenda publicada e a transcrição da janela -- e uma regra que
+
+def _aviso_de_linha_suspeita(pendentes):
+    """O aviso das linhas que merecem um olhar. A legenda QUEIMA de qualquer jeito.
+
+    Até 16/09/2026 isto era uma RECUSA: uma linha suspeita e o clipe inteiro
+    saía mudo até alguém repetir a linha de volta em `--keep`. A intenção era
+    não queimar palavra que ninguém leu. O efeito medido foi o contrário do
+    produto.
+
+    Medido em 16/09/2026 na legenda publicada em português de uma live do
+    YouTube: `>>` em 184 das 706 cues, mais as gaguejadas da transcrição
+    automática ("esse esse", "do do", "ocular ocular") e os números. Nos dois
+    testes reais pela linha da Plow, 2 clipes de 2 saíram SEM LEGENDA, duas
+    vezes -- e é exatamente a reclamação do dono, "veio sem legenda também".
+    Uma proteção que dispara em todo clipe não protege clipe nenhum: ela
+    desliga o produto.
+
+    A regra do dono, escolhida por ele em 16/09, é "nunca entrega sem legenda",
+    e ele roda isto numa chamada de tela compartilhada, onde a volta extra do
+    `--keep` custa mais um render inteiro. Então a linha suspeita deixa de
+    calar o clipe e passa a ser o que sempre pôde ser: um aviso, ao lado do
+    mosaico que é obrigatório abrir antes de entregar. As palavras estão na
+    tela do mosaico; ler é olhar.
+
+    `--keep` continua valendo, e agora quer dizer "eu já li esta, pare de
+    avisar". O que ele nunca mais faz é decidir se o clipe tem legenda.
+
+    Uma função só, e não duas cópias, porque o aviso tem DOIS caminhos até
+    aqui -- a legenda publicada e a transcrição da janela -- e uma regra que
     vive em dois lugares são duas regras na primeira vez que uma é editada.
     """
     colar = " ".join(f'--keep "{r["text"].strip()}"' for r in pendentes)
-    return (f"{len(pendentes)} suspect line(s) are not decided, so this clip "
-            f"renders WITHOUT captions rather than burn a word nobody read. "
-            f"Read each line below against the video; if it is right, re-run "
-            f"this SAME command with these flags appended and the words "
-            f"burn:\n#     {colar}\n"
-            f"#   the lines, as they will appear on screen: "
+    return (f"CAPTIONS BURNED, {len(pendentes)} line(s) worth a second look "
+            f"(a number, a word repeated back to back, or an auto-subtitle "
+            f"marker -- what a transcription gets wrong most often). They are "
+            f"ON the contact sheet you have to open anyway: read them there "
+            f"against the picture. If one is wrong, say so in one line when "
+            f"you hand the clip over; do NOT re-render for it unless the "
+            f"person asks. To silence this warning on a re-run, append: "
+            f"\n#     {colar}\n"
+            f"#   the lines, as they appear on screen: "
             + " | ".join(r["text"].strip() for r in pendentes))
 
 
@@ -4398,9 +4432,11 @@ def _legenda_da_janela(out, resultados, janelas, guardadas):
         pendentes = [r for r, _w in linhas_suspeitas(dentro_da_janela)
                      if r["text"].strip() not in decididas]
         if pendentes:
-            porques[(de, ate)] = _porque_a_linha_suspeita_trava(pendentes)
-            continue
-        S.write_approval(alvo, start=de, end=ate)
+            # Mesma decisão do caminho publicado, e aqui ela pesa mais: esta
+            # transcrição é NOSSA, e se uma linha suspeita calasse o clipe,
+            # toda fonte sem legenda publicada entregaria clipe mudo.
+            porques[(de, ate)] = _aviso_de_linha_suspeita(pendentes)
+        S.write_approval(alvo, start=de, end=ate + _folga_da_frase())
         queimar[(de, ate)] = alvo
     return queimar, porques, ouvida, ouvida_medida
 
@@ -4419,15 +4455,16 @@ def _aprova_as_janelas(srt, janelas, guardadas):
     não uma opinião. A revisão humana linha a linha existia para o que o
     Whisper inventa; ela não se aplica ao que o dono dos direitos escreveu.
 
-    O que NÃO é automático continua não sendo: uma linha suspeita -- número,
-    palavra repetida, marcador `>>` de auto-legenda -- só é assinada se vier
-    repetida de volta em `--keep`, exatamente como em `warden captions review`.
-    É o portão que foi contornado em 15/09, quando uma linha foi marcada como
-    provavelmente errada e assinada no mesmo fôlego, e "Em 1826" foi para a
-    tela.
+    Uma linha suspeita -- número, palavra repetida, marcador `>>` de
+    auto-legenda -- é AVISADA e assinada, desde 16/09/2026. Ela calava o clipe
+    inteiro, e o porquê de não calar mais está em `_aviso_de_linha_suspeita`,
+    com a medição: 2 clipes de 2 saíram sem uma palavra na tela, duas vezes
+    seguidas, porque a legenda publicada de uma live traz `>>` em um quarto das
+    cues. O aviso vai para a conta final, ao lado do mosaico que ninguém
+    entrega sem abrir.
 
-    Uma janela que não pôde ser assinada não derruba o lote e não vira legenda
-    errada: ela renderiza SEM legenda e o aviso diz qual `--keep` a libera.
+    Uma janela sem NENHUMA linha continua sem legenda -- não há o que assinar
+    -- e isso continua indo para a conta final como clipe mudo.
     """
     import warden_style as S
     decididas = {t.strip() for t in (guardadas or [])}
@@ -4443,15 +4480,21 @@ def _aprova_as_janelas(srt, janelas, guardadas):
         pendentes = [r for r, _w in linhas_suspeitas(dentro)
                      if r["text"].strip() not in decididas]
         if pendentes:
-            situacao[(de, ate)] = False
-            # O `--keep` EXATO, com a linha entre aspas, pronto para colar. A
-            # diferença entre isto e "há uma linha suspeita" é a diferença
-            # entre o clipe sair com legenda e sair mudo numa campanha que
-            # paga pela legenda: uma frase que descreve o problema sem dar o
-            # comando que o resolve é uma frase que custa mais um turno.
-            avisos.append(((de, ate), _porque_a_linha_suspeita_trava(pendentes)))
-            continue
-        S.write_approval(srt, start=de, end=ate)
+            # Avisa e assina. O porquê está inteiro em `_aviso_de_linha_suspeita`:
+            # calar o clipe por causa de uma linha entregava zero palavra na
+            # tela em 4 clipes de 4 medidos, e a regra do dono é que a legenda
+            # é a única coisa pela qual vale a pena esperar.
+            avisos.append(((de, ate), _aviso_de_linha_suspeita(pendentes)))
+        # Assina até onde o corte PODE chegar, não até onde ele foi planejado.
+        #
+        # `cut` fecha sozinho a frase que o `--end` parte ao meio, andando no
+        # máximo `TETO_DA_FRASE_S` para a frente. Assinar só a janela nominal
+        # fazia o próprio conserto invalidar a assinatura: medido em 16/09,
+        # o corte esticou 0,4s e voltou "as approved windows are 323-343s" --
+        # clipe reprovado por uma linha que a ferramenta mesma foi buscar.
+        # A folga é limitada pelo mesmo teto, então nada fora do alcance do
+        # corte entra na assinatura.
+        S.write_approval(srt, start=de, end=ate + _folga_da_frase())
         situacao[(de, ate)] = True
     return situacao, avisos
 
@@ -5506,9 +5549,9 @@ def main(argv=None):
                                        "vez do que o `prep` escreveu")
     p.add_argument("--keep", action="append", metavar="LINE",
                    help="render: uma linha suspeita repetida de volta, exata, "
-                        "querendo dizer que você a leu e ela está certa. Sem "
-                        "isto a janela dela renderiza SEM legenda, nunca com "
-                        "uma palavra que ninguém leu")
+                        "querendo dizer que você já a leu. Desde 16/09 a "
+                        "legenda queima de qualquer jeito: isto só cala o "
+                        "aviso dela")
     p.add_argument("--crop", help="render: qual lado de uma fonte mais larga "
                                   "fica, como em `warden cut --crop`")
     p.set_defaults(func=cmd_lote)

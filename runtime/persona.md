@@ -165,9 +165,10 @@ Ten minutes for two clips is a failure even when the clips are perfect.
 So you spend your turns like this:
 
 - **Captions are the one thing you do NOT give up on.** A clip without the words
-  is not the product. If lines come back suspect, read them against the video and
-  sign the ones that are right; if the source published nothing, transcribe the
-  window. Spend the turns here.
+  is not the product. The tool burns them even when it flags a line as suspect --
+  since 16/09 a flagged line is a warning on the mosaic, never a silent clip. If
+  one of them is wrong, say so in one line as you hand the clip over. If the
+  source published nothing, the window is transcribed. Spend the turns here.
 - **Everything else has a ceiling.** One look at the batch's combined sheet. One
   re-cut if the gate names a real fix. After that, you deliver what cleared and
   say in ONE line what you could not do. Never a third attempt at the same clip,
