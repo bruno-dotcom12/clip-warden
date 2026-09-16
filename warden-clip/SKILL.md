@@ -29,8 +29,9 @@ message of this turn. Do not render it again, do not render a different window
 "to be safe", do not open it to check.
 
 **Never re-cut a window the person did not ask you to re-cut.** A warning in a
-tool's output is repassed, not acted on. If they ask for another attempt, say
-what you are changing and why BEFORE you start it — never two renders in a row in silence.
+tool's output is repassed, not acted on. If they ask for another attempt, END a
+turn saying what you are changing and why, and start it on the next — never two
+renders in a row in silence.
 
 ## Run `prep` and `render` IN THE BACKGROUND. Always.
 

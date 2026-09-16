@@ -336,11 +336,24 @@ class ClipeProntoNaoEnviado(unittest.TestCase):
                 f"falta {pedaco!r}")
 
     def test_entre_uma_tentativa_e_outra_a_pessoa_e_avisada(self):
+        """O aviso continua obrigatório. O que mudou é QUANDO ele sai.
+
+        16/09: este teste exigia, junto, "say what you are changing and why
+        BEFORE you start it" -- que é falar e depois chamar ferramenta no mesmo
+        turno, a redação exata que fez o adaptador engolir a entrega. A suíte
+        estava PROTEGENDO o defeito: quem consertasse a skill quebrava o teste.
+        """
         t = corrido(skills()["warden-clip"])
         self.assertIn(
             "never two renders in a row in silence", t,
             "entre 14:51:58 e a coleta foram 11 minutos e três renders sem "
             "uma palavra para a pessoa")
+        self.assertNotIn(
+            "BEFORE you start it", t,
+            "voltou a mandar falar ANTES de começar, no mesmo turno")
+        self.assertIn(
+            "END a turn saying what you are changing", t,
+            "o aviso tem de ENCERRAR um turno; o render começa no seguinte")
 
 
 # ---------------------------------------------------------------------------

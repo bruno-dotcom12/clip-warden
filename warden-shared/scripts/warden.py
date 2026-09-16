@@ -1652,9 +1652,11 @@ def cmd_post(args):
               f"a failure nor a success. It is the intermediary's queue, not "
               f"this machine: the file left here already.")
         print(f"  ask again with:  warden post status {saida['request_id']}")
-        print(f"  TELL THE PERSON, in one line, that it is uploading and you "
-              f"will come back with the address. Do not go looking for another "
-              f"way to ask: this is the way.", file=sys.stderr)
+        print(f"  END THIS TURN telling the person, in one line, that it is "
+              f"uploading and you will come back with the address -- prose "
+              f"between two tool calls does not reach them. Ask again on the "
+              f"NEXT turn. Do not go looking for another way: this is the way.",
+              file=sys.stderr)
         return 0
     if saida["sucesso"] is False:
         die(f"the intermediary reported the upload FAILED, so nothing was "
@@ -5809,9 +5811,9 @@ def upload_instantaneo(log, caminho):
     if intervalo >= esperado:
         return None
     return (f"the {log['saiu']} attachment line(s) after it are {intervalo:.3f}s "
-            f"apart, and that file is {tamanho / 1000000.0:.1f} MB -- even at a "
-            f"deliberately slow rate that should have taken {esperado:.3f}s. "
-            f"The gateway "
+            f"apart, and that file is {tamanho / 1000000.0:.1f} MB, which at the "
+            f"only rate ever measured here (16 MB in 4.866s) takes far longer "
+            f"than the {esperado:.3f}s this gate asks for. The gateway "
             f"writes that line BEFORE the upload it starts, so the gap between "
             f"one line and the next IS how long the previous upload took: "
             f"{intervalo:.3f}s means no upload happened. Measured 16/09/2026: "
@@ -5872,7 +5874,7 @@ def cronometro_cego(log, caminho):
                 f"took 4.866s, measured 16/09/2026)")
     if (_modo_de_sono_do_gateway() == "natural"
             and intervalo < _TETO_SONO_NATURAL_S):
-        return (f"the widest gap between those attachment lines is "
+        return (f"the smallest gap between those attachment lines is "
                 f"{intervalo:.3f}s, and the gateway is sleeping 0.8-2.5s "
                 f"before EACH attachment because HERMES_HUMAN_DELAY_MODE="
                 f"natural (base.py:3894-3895) -- so that gap measures the "
@@ -6286,8 +6288,31 @@ def verifica_um_envio(caminho, varredura=False):
         # O defeito de 16/09, e o único ponto em que o log do gateway acusa
         # sozinho um envio que não aconteceu. Não risca: é o que faz o agente
         # reenviar, e reenviar custa uma linha contra um clipe perdido.
+        #
+        # SEM TETO, E ISSO É DELIBERADO. Uma auditoria pediu um teto aqui,
+        # porque rodou seis turnos seguidos travados. O teto está no ramo CEGO,
+        # onde não há medição nenhuma -- aqui há, e ela diz que o arquivo NÃO
+        # saiu. Riscar depois de duas tentativas seria dizer "mandei, não sei
+        # se chegou" sobre um envio que o log prova não ter acontecido, que é
+        # pior que travar: é a mentira que este comando inteiro existe para não
+        # contar. Ver `test_o_envio_fantasma_MEDIDO_trava_para_sempre`.
+        #
+        # O que se faz contra o laço não é riscar: é NOMEAR a saída. A partir da
+        # segunda acusação do mesmo clipe a mensagem diz que já houve outra e
+        # aponta `--even-if-owed`, que é uma decisão de quem está lendo, não uma
+        # afirmação desta máquina.
+        _ja = entregas_reenvios_pedidos(caminho)
+        entregas_pede_reenvio(caminho)
+        _de_novo = ("" if not _ja else
+                    f" This is the {_ja + 1}th time this clip measures as a "
+                    f"send that did not happen. The file is still not theirs, "
+                    f"so this keeps holding the batch -- that is the honest "
+                    f"state, not a bug. If you need the next render to run "
+                    f"anyway, that is a decision someone takes out loud with "
+                    f"`warden lote render ... --even-if-owed`, never a silent "
+                    f"crossing-off.")
         print(f"NOT confirming {nome}: {instantaneo}. Nothing here says that "
-              f"file reached the person. "
+              f"file reached the person." + _de_novo + " "
               + _como_fechar_no_lugar_do_cronometro(caminho), file=sys.stderr)
         return False
     if log["saiu"] < 1:

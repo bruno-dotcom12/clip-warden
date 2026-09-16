@@ -2499,7 +2499,8 @@ def model_wait_note(size):
     if info.get("state") == "failed":
         return (f"the {size} model failed to download at boot. This request "
                 f"would fetch {info['want_mb']} MB now, which is a long silence "
-                f"in a chat -- say so before you wait.")
+                f"in a chat -- END A TURN saying so, and wait on the next: "
+                f"prose between two tool calls does not reach them.")
     return (f"the {size} transcription model is not on this machine yet "
             f"({info.get('want_mb', 0)} MB). It downloads in the background "
             f"after install; this request would fetch it now.")

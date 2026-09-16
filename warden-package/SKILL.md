@@ -77,8 +77,9 @@ paste. Never that it went up with the caption already on it.
 
 It needs a TikTok token for their account, which the image cannot carry -- it
 belongs to a person, not to the agent. `warden status` has a `tiktok draft
-upload:` line saying whether it is set up. When it is not, say so before
-rendering a clip on the promise of posting it, not after.
+upload:` line saying whether it is set up. When it is not, say so in the final
+message of a turn and render on the next -- prose between two tool calls does
+not reach them. Never after the promise.
 
 ## After they post
 
