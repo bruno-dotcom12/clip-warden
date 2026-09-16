@@ -2538,14 +2538,24 @@ class SemDetectorDeRostoOCorteParaEDiz(unittest.TestCase):
         self.M.face_detection_status = lambda: (False, "OpenCV is not installed")
         self.addCleanup(lambda: setattr(self.M, "face_detection_status", real))
 
-    def test_a_landscape_cut_with_no_crop_stops_instead_of_centring(self):
+    def test_a_landscape_cut_with_no_crop_falls_back_to_centre_and_says_so(self):
+        """Isto ERA um `raise`, e virou uma queda para o centro em 16/09/2026.
+
+        Enquadramento está na lista do que o dono mandou apenas AVISAR: um
+        clipe torto que a pessoa recebe custa um descarte; um clipe que não sai
+        custa o pedido inteiro, e isso aconteceu duas vezes. O aviso vai como
+        `LOOK:`, que é o que o agente repassa em uma frase -- não como a nota
+        calada de 14/09, que ninguém lia.
+        """
         self._sem_detector()
-        with self.assertRaises(RuntimeError) as erro:
-            self.M.cut(self.src, os.path.join(self.dir, "a.mp4"), self.r,
+        r = self.M.cut(self.src, os.path.join(self.dir, "a.mp4"), self.r,
                        start=0, end=3, sound="platform")
-        mensagem = str(erro.exception)
-        self.assertIn("no face detection", mensagem)
-        self.assertIn("--crop", mensagem, "o erro tem de dizer o que fazer")
+        self.assertTrue(os.path.exists(r["out"]), "o corte não saiu")
+        olhares = [n for n in r["notes"] if n.startswith("LOOK:")]
+        self.assertTrue(
+            any("no face detector" in n for n in olhares),
+            "caiu no centro CALADO, que foi o defeito de 14/09: %r" % r["notes"])
+        self.assertTrue(any("CENTRE" in n for n in olhares), olhares)
 
     def test_a_named_side_is_honoured_without_a_detector(self):
         """A mensagem manda passar --crop, então --crop tem de funcionar. Um
@@ -2684,14 +2694,24 @@ class MissingDependencySpeaks(unittest.TestCase):
         self.M.face_detection_status = lambda: (False, "OpenCV is not installed")
         self.addCleanup(lambda: setattr(self.M, "face_detection_status", real))
 
-    def test_a_landscape_cut_with_no_crop_stops_instead_of_centring(self):
+    def test_a_landscape_cut_with_no_crop_falls_back_to_centre_and_says_so(self):
+        """Isto ERA um `raise`, e virou uma queda para o centro em 16/09/2026.
+
+        Enquadramento está na lista do que o dono mandou apenas AVISAR: um
+        clipe torto que a pessoa recebe custa um descarte; um clipe que não sai
+        custa o pedido inteiro, e isso aconteceu duas vezes. O aviso vai como
+        `LOOK:`, que é o que o agente repassa em uma frase -- não como a nota
+        calada de 14/09, que ninguém lia.
+        """
         self._sem_detector()
-        with self.assertRaises(RuntimeError) as erro:
-            self.M.cut(self.src, os.path.join(self.dir, "a.mp4"), self.r,
+        r = self.M.cut(self.src, os.path.join(self.dir, "a.mp4"), self.r,
                        start=0, end=3, sound="platform")
-        mensagem = str(erro.exception)
-        self.assertIn("no face detection", mensagem)
-        self.assertIn("--crop", mensagem, "o erro tem de dizer o que fazer")
+        self.assertTrue(os.path.exists(r["out"]), "o corte não saiu")
+        olhares = [n for n in r["notes"] if n.startswith("LOOK:")]
+        self.assertTrue(
+            any("no face detector" in n for n in olhares),
+            "caiu no centro CALADO, que foi o defeito de 14/09: %r" % r["notes"])
+        self.assertTrue(any("CENTRE" in n for n in olhares), olhares)
 
     def test_a_named_side_is_honoured_without_a_detector(self):
         """A mensagem manda passar --crop, então --crop tem de funcionar. Um

@@ -71,7 +71,8 @@ and you are finding out why:
 - [ ] there are not two captions in the same frame
 - [ ] no frame edge, source border or third party's text is sliced at the margin
 - [ ] the subject's face is not covered by text
-- [ ] no black bar along any edge — `warden check` rejects one now
+- [ ] no black bar along any edge — one shows up as a `LOOK:` and, since 16/09, does
+  not hold the clip back
 
 A tile is 300px wide: enough to notice, never enough to conclude, so a tile that
 makes you suspicious is settled with `ffmpeg -ss <t> -i <clip> -frames:v 1

@@ -3518,10 +3518,17 @@ def cmd_cut(args):
               "render, because it will be another clip. Running the same "
               "command again is the one thing that cannot help.",
               file=sys.stderr)
+        # `asked_for_hook` e `style_looks` vão explícitos, e não por omissão.
+        # Um portão que lê campo AUSENTE não dispara, e esse é o padrão exato
+        # que custou o clipe mudo de 15/09 e o clipe sem hook de 16/09. Aqui o
+        # clipe já passou por tudo uma vez, então nada mudaria hoje -- mas o
+        # dia em que mudar, muda calado, que é o defeito.
         return deliver({"out": ja["clip"], "sheet": ja["sheet"],
                         "notes": list(ja.get("notes") or []),
                         "style": ja.get("style") or {},
                         "asked_for_captions": bool(ja.get("asked_for_captions")),
+                        "asked_for_hook": bool(ja.get("asked_for_hook")),
+                        "style_looks": list(ja.get("style_looks") or []),
                         "style_breaches": []},
                        rules, args.campaign,
                        ledger_for(args.campaign) if args.campaign else [])

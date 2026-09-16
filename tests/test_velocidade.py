@@ -1701,23 +1701,21 @@ class OPREPEORENDERESCOLHEMOMESMOVIDEO(unittest.TestCase):
 
 # ------------------------------------------------- o enquadramento sem rosto
 
-class SemDETECTORoCorteCONTINUAparando(unittest.TestCase):
-    """A decisão, escrita onde ela é testada: a recusa fica.
+class SemDETECTORoCorteCAINOCENTROEDIZ(unittest.TestCase):
+    """A decisão mudou em 16/09/2026, e a razão antiga está preservada abaixo.
 
-    A alternativa seria cair no centro avisando em voz alta, e ela foi
-    recusada por três razões. A imagem TEM o detector -- OpenCV e YuNet são
-    instalados no Dockerfile e conferidos no build --, então no container, que
-    é onde o agente atende o dono, este ramo nunca roda e a promessa de uma
-    pergunta só não é tocada. O caso sem detector é a máquina de quem roda
-    fora do container, onde um argumento a mais é barato e quem o passa já
-    está no terminal. E cair no centro calado foi o que se fez até 14/09: o
-    resultado foi um clipe entregue com o rosto na borda, sob um aviso que
-    dizia "enquadrei no centro" -- verdadeiro e inútil.
+    ERA uma recusa, e o argumento era bom: a imagem TEM o detector, então no
+    container este ramo nunca roda; fora dele quem está no terminal passa um
+    `--crop` barato; e cair no centro CALADO foi o que se fez até 14/09, com o
+    resultado de um clipe entregue com o rosto na borda sob um aviso que
+    ninguém leu.
 
-    Fica registrado que `warden-clip/SKILL.md` fala em "falls back to the
-    centre" sem separar os dois casos (detector ausente x detector que não
-    achou rosto). O segundo cai no centro mesmo; o primeiro não. O texto é de
-    outro dono.
+    O que mudou não foi a leitura do risco, foi quem decide. O dono pôs
+    "enquadramento" na lista do que só AVISA: um clipe torto que a pessoa
+    recebe custa um descarte; um clipe que não sai custa o pedido inteiro, e
+    isso aconteceu duas vezes (15/09 e 16/09). E o aviso deixou de ser a nota
+    calada de 14/09 -- agora é `LOOK:`, que a persona manda repassar em uma
+    frase, na língua da pessoa.
     """
 
     def setUp(self):
@@ -1738,20 +1736,17 @@ class SemDETECTORoCorteCONTINUAparando(unittest.TestCase):
              caminho], check=True, capture_output=True)
         return caminho
 
-    def test_o_corte_para_e_a_mensagem_diz_que_o_container_TEM_detector(self):
-        """A recusa já existia; o que faltava era ela dizer que este não é o
-        caminho normal. Sem essa frase, quem a lê conclui que o agente pede um
-        argumento extra sempre -- e aí a segunda pergunta parece regra."""
-        with self.assertRaises(RuntimeError) as erro:
-            M.cut(self._paisagem(), os.path.join(self.dir, "a.mp4"),
+    def test_a_landscape_cut_with_no_crop_falls_back_to_centre_and_says_so(self):
+        """Sem detector, o corte SAI, enquadrado no centro, e diz que foi assim."""
+        import warden_media as M
+        r = M.cut(self._paisagem(), os.path.join(self.dir, "a.mp4"),
                   self.regras, start=0, end=3, sound="platform")
-        msg = " ".join(str(erro.exception).split())
-        self.assertIn("no face detection", msg)
-        self.assertIn("--crop", msg)
-        self.assertIn("This is not the agent's container", msg)
-
-
-# ------------------------------------------------------------- o segredo na rede
+        self.assertTrue(os.path.exists(r["out"]), "o corte não saiu")
+        olhares = [n for n in r["notes"] if n.startswith("LOOK:")]
+        self.assertTrue(
+            any("no face detector" in n for n in olhares),
+            "caiu no centro CALADO, que foi o defeito de 14/09: %r" % r["notes"])
+        self.assertTrue(any("CENTRE" in n for n in olhares), olhares)
 
 class UMREDIRECTNaoLEVAoAuthorization(unittest.TestCase):
     """Os três módulos que carregam segredo falavam por `urlopen` cru.

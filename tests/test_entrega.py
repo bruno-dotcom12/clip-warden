@@ -1232,6 +1232,41 @@ class LegendaPEDIDAEZEROCUESNaTelaEUmClipeMUDO(unittest.TestCase):
         self.assertEqual(code, 0, erro)
         self.assertIn("MEDIA:", saida)
 
+    def test_hook_pedido_e_nenhum_desenhado_reprova(self):
+        """O portão que nasceu sem rede, apontado pela auditoria de 16/09.
+
+        `--hooks` passado e NENHUM hook na imagem não era pego por nada: o
+        único portão do hook lia `hook.complete is False`, e quando nada foi
+        desenhado a chave `hook` simplesmente não existe no sidecar. Um portão
+        que lê campo AUSENTE não dispara -- o mesmo defeito, do outro lado da
+        tela, que deixou sair o clipe mudo de 15/09.
+        """
+        r = self._resultado({"cues": 7, "max_lines": 2})
+        r["asked_for_hook"] = True          # o --hooks foi passado
+        r["style"].pop("hook", None)        # e nada foi desenhado
+        code, saida, erro = self._entrega(r)
+        self.assertEqual(code, 1, erro)
+        self.assertEqual(saida, "", "saiu um MEDIA: para um clipe sem hook")
+        self.assertIn("none was drawn", erro)
+
+    def test_hook_pedido_e_desenhado_a_entrega_sai(self):
+        """O par positivo: o portão novo não pode custar uma entrega boa."""
+        r = self._resultado({"cues": 7, "max_lines": 2})
+        r["asked_for_hook"] = True
+        r["style"]["hook"] = {"complete": True, "lines": 2}
+        code, saida, erro = self._entrega(r)
+        self.assertEqual(code, 0, erro)
+        self.assertIn("MEDIA:", saida)
+
+    def test_sem_pedir_hook_a_ausencia_dele_nao_reprova(self):
+        """Quem não pediu hook não fica sem clipe por não ter hook."""
+        r = self._resultado({"cues": 7, "max_lines": 2})
+        r["asked_for_hook"] = False
+        r["style"].pop("hook", None)
+        code, saida, erro = self._entrega(r)
+        self.assertEqual(code, 0, erro)
+        self.assertIn("MEDIA:", saida)
+
     def test_uma_cue_so_ja_nao_e_zero(self):
         code, _saida, erro = self._entrega(
             self._resultado({"cues": 1, "max_lines": 1}))

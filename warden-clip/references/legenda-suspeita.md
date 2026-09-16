@@ -51,8 +51,9 @@ It finds three states, not two:
 - That case became a third state, **suspect**, and `cut` treats it like the
   first: it covers the footer anyway, because a gradient over clean picture
   costs a gradient and a second caption costs the clip. `warden style check`
-  then reads the sidecar and rejects the file if a suspect background was left
-  uncovered under our caption.
+  then reads the sidecar and prints a `LOOK:` if a suspect background was left
+  uncovered under our caption -- since 16/09 that is said to the person, not
+  held against the clip.
 
 `cut` prints one line about the picture **every time it burns a caption**, with
 the numbers, including when it found nothing — before that, "clean" and "nobody

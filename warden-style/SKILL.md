@@ -145,7 +145,8 @@ means; it does not refuse anything.
   "nobody looked" read the same.
 - `style check` gives a second opinion on the finished file: it counts bands of
   text per frame and compares them with the lines the sidecar says we drew. More
-  bands than we drew, in most frames, with two to spare, is a reject. Two to
+  bands than we drew, in most frames, with two to spare, is a `LOOK:` -- said to
+   the person, never a reason to hold the clip. Two to
   spare because the band count invents a band of its own on real footage — the
   approved corpus measured up to 2.1 bands on average for a single two-line
   phrase.
@@ -179,8 +180,8 @@ warden style check <render.mp4>                      measure a new one
 of each metric across the corpus. Ranges, not single values — one approved clip
 runs 13s and another 73s and neither is "the right one".
 
-`check` reports every metric with the approved range beside it and rejects on
-three things only. The corpus is twenty scenepack edits with no running caption,
+`check` reports every metric with the approved range beside it. Since 16/09 it
+rejects on ONE thing: a file no frame of which opens. The corpus is twenty scenepack edits with no running caption,
 so most ranges do not apply to a podcast cut and `check` says so out loud rather
 than rejecting a format it never measured. Why the list is short, with the
 numbers, is in `warden-style/references/estilo-calibracao.md`.
@@ -190,9 +191,10 @@ from pixels: `cut` writes a `-estilo.json` beside every clip with the hook's
 real drawn width against the usable width, the seconds the hook stayed on, the
 lines per cue, the longest cue, whether the scale moved, and — when `--seconds`
 was passed — the duration the person asked for against the duration delivered.
-Those are the numbers the Definition of Done is checked against, and `cut`
-refuses to print `MEDIA:` when one of them fails, which is also why a clip that
-fails one of them has no path to put in a final message.
+Those are the numbers the render reports on itself, and since 16/09 each is a
+`LOOK:`: the clip IS delivered and whoever asked decides on another take. Only a
+missing hook and missing captions hold a `MEDIA:` back -- and it is because only
+those two hold it that dropping them is never the way out.
 
 ## And none of it replaces looking — but looking is no longer yours to do
 

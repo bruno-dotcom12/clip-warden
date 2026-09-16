@@ -4943,14 +4943,32 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
             # esse texto é sobre OUTRA coisa -- detector presente que não achou
             # rosto, que de fato cai no centro logo abaixo. Ele não distingue
             # os dois casos, e é de outro dono; fica registrado aqui.
+            # 16/09/2026: isto ERA um `raise`, e um `raise` aqui é um clipe que
+            # não sai por causa de ENQUADRAMENTO -- que o dono pôs, com essa
+            # palavra, na lista do que só pode AVISAR. A auditoria do mesmo dia
+            # o encontrou: era a única coisa que não é gancho, legenda, arquivo
+            # ilegível nem regra de campanha e ainda assim impedia um `MEDIA:`.
+            #
+            # O argumento de 14/09 continua de pé e é bom: cair no centro CALADO
+            # entregou um clipe com o rosto na borda, e "enquadrei no centro" é
+            # um aviso que ninguém lê num clipe que parece pronto. O que mudou
+            # não é a leitura do risco, é quem decide. Um clipe torto que a
+            # pessoa recebe e descarta custa um descarte; um clipe que não sai
+            # custa o pedido inteiro, e foi o que aconteceu duas vezes.
+            #
+            # Então: cai no centro, e o aviso vai no lugar onde ele é lido --
+            # `LOOK:`, que o agente repassa em uma frase à pessoa, na língua
+            # dela. Não é o mesmo que a nota calada de 14/09.
             if crop in (None, "auto"):
-                raise RuntimeError(
-                    f"no face detection on this machine ({why}) -- pass --crop "
-                    f"left|right|center|<0-100> to say where the subject is, or "
-                    f"rebuild the image, which ships the detector. This is not "
-                    f"the agent's container: there OpenCV and the YuNet model "
-                    f"are installed at build time, the face chooses the band, "
-                    f"and this question is never asked.")
+                crop = "center"
+                notes.append(
+                    f"LOOK: no face detector on this machine ({why}), so this "
+                    f"cut was framed on the CENTRE without measuring anything: "
+                    f"nothing checked where the subject actually is, and a "
+                    f"person standing off to one side would be cut in half. "
+                    f"Say that to them in one clause. In the agent's own "
+                    f"container the detector ships with the image and the face "
+                    f"picks the band, so this line does not appear there.")
             # Um lado nomeado é o dono dizendo onde o sujeito está, e isso é
             # honrado. Mas continua sendo um lado, não uma medição: a nota diz
             # isso em vez de deixar parecer que alguém conferiu.

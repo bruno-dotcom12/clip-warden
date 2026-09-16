@@ -26,10 +26,12 @@ back into a defect that has already shipped once.
   running caption at all. It is the owner's call of 14/09, recorded as a
   decision and not as a measurement.
 
-## Why `check` rejects on three things only
+## Why `check` rejects on almost nothing
 
-`check` reports every metric with the approved range beside it, and rejects on
-three things only. Be clear about why the list is short:
+`check` reports every metric with the approved range beside it. Since 16/09 the
+only thing it rejects on is a file no frame of which opens: every look it takes
+comes back as a `LOOK:`, said to the person, and the clip is delivered. The list
+was already short before that, and the reasons are worth keeping:
 
 - The corpus is twenty scenepack edits — one sustained anchor phrase, no running
   caption. A podcast cut has a hook **and** captions, so it has more text bands
@@ -45,8 +47,9 @@ three things only. Be clear about why the list is short:
   cannot: the sidecar knows the hook, which PIL drew, and knows nothing about
   text that was already in the frame — the archive's burned captions, another
   clipper's mark. Two instruments, different blind spots. So `check` crosses
-  them: it rejects when both say the text is too wide, and when they disagree it
-  names which is which instead of picking one and silencing the other.
+  them: it says the text is too wide when BOTH instruments say so, and when they
+  disagree it names which is which instead of picking one and silencing the
+  other. Either way it is a `LOOK:`, not a gate.
 - The spec is called `estilo-aprovado-scenepack.json` and not
   `estilo-aprovado.json` for the same reason. A generic name over a specific
   corpus is how a range measured on one format ends up rejecting another. When

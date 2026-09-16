@@ -84,9 +84,15 @@ class FaixaEscuraNaoSeguraOClipe(unittest.TestCase):
     def test_nada_do_que_e_olhar_reprova(self):
         """A varredura inteira, não um portão de cada vez.
 
-        Se alguém acrescentar um portão visual amanhã e o marcar como
-        OBRIGACAO, este teste cai -- que é o ponto. A lista de quem pode
-        barrar uma entrega é curta e fechada.
+        Duas correções de uma auditoria de 16/09, que este teste mereceu:
+
+        - ele não tinha PISO. `assertNotIn(OBRIGACAO, ...)` sobre uma lista
+          vazia passa, e um teste que passa por vazio não prova nada. Agora
+          exige achados.
+        - ele não tinha ALCANCE. Varria só `check_sidecar`, e quem reprovou os
+          dois clipes do demo foi `cross_check` -- a função que olha os PIXELS.
+          Um portão novo lendo `black_bars` passava batido pelo teste que
+          promete pegá-lo. Agora varre as duas.
         """
         lado = {
             "hook": {"width_px": 2000, "usable_px": 854, "lines": 4,
@@ -96,11 +102,40 @@ class FaixaEscuraNaoSeguraOClipe(unittest.TestCase):
             "duration_s": 20.0, "motion": False, "footer_covered": False,
             "source_text": {"bottom": True},
         }
-        niveis = {lv for lv, _m in S.check_sidecar(lado)}
-        self.assertNotIn(
-            S.OBRIGACAO, niveis,
+        medida = {"black_bars": {"top": 0.0, "bottom": 0.195,
+                                 "left": 0.107, "right": 0.0},
+                  "text_rows_per_frame": [4] * 10,
+                  "text_width_ratio": 1.31}
+        achados = S.check_sidecar(lado) + S.cross_check(lado, medida)
+        self.assertTrue(
+            achados,
+            "a varredura não achou NADA num lado deliberadamente feio: ela "
+            "passaria por vazio, e um teste que passa por vazio não prova nada")
+        self.assertFalse(
+            [m for lv, m in achados if lv == S.OBRIGACAO],
             "um portão VISUAL voltou a bloquear a entrega: %r"
-            % [m for lv, m in S.check_sidecar(lado) if lv == S.OBRIGACAO])
+            % [m for lv, m in achados if lv == S.OBRIGACAO])
+
+    def test_so_dois_portoes_no_modulo_inteiro_podem_bloquear(self):
+        """A promessa do teste acima, feita no arquivo em vez de na fixture.
+
+        Um lado de teste só dispara os portões que ele alimenta. Esta asserção
+        é sobre o MÓDULO: se alguém escrever um portão novo e o marcar como
+        OBRIGACAO, o número muda e isto cai, tenha a fixture o campo dele ou
+        não.
+        """
+        import inspect
+        fonte = inspect.getsource(S)
+        # só as CHAMADAS contam: a definição da constante e os comentários que
+        # a explicam não são portões.
+        usos = [l.strip() for l in fonte.split("\n")
+                if "OBRIGACAO" in l
+                and not l.strip().startswith(("#", "OBRIGACAO ="))]
+        self.assertEqual(
+            len(usos), 2,
+            "warden_style.py passou a ter %d portões que BLOQUEIAM, e só dois "
+            "podem: o hook truncado e o arquivo do qual nenhum quadro abre. "
+            "Os novos são: %r" % (len(usos), usos))
 
 
 class GanchoELegendaContinuamObrigatorios(unittest.TestCase):
