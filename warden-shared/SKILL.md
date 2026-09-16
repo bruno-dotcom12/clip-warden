@@ -36,7 +36,7 @@ Every one takes `--help`, so a row says what a command is FOR, not its flags.
 | `warden archive … --windows <a>-<b>,<c>-<d>` / `--window <a>-<b>` | the chosen windows, each with its origin card |
 | `warden archive --campaign <id>` | the WHOLE file; `warden-clip` 4c says when |
 | `warden delivered` | anything rendered here and never sent? Exit 1 while there is. **Run it before you render anything new** |
-| `warden delivered <clip>` | did THIS path go out? At the **START of the next turn**: it cannot confirm a send that has not happened |
+| `warden delivered <clip>` | what the gateway ANNOUNCED for this path, never arrival. At the **START of the next turn** |
 | `warden authorize <url> --campaign <id>` | is this link in the archive? exit 1 = no |
 | `warden transcribe <file>` / `digest <transcript>` | words, then words you can afford to read |
 | `warden signals <transcript> --source <file>` | where words and sound spike |

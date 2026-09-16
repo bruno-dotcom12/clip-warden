@@ -542,7 +542,7 @@ class ReceitaDeEspera(unittest.TestCase):
     def test_a_receita_diz_o_que_o_7a_mediu_e_o_que_ela_ainda_nao_tem(self):
         t = corrido(skills()["warden-clip"])
         for pedaco in ("process_manage",
-                       "no `&` at the end",
+                       "no `&` and no `nohup`",
                        "clamped to 180s",
                        "NOT MEASURED"):
             self.assertIn(
@@ -903,6 +903,78 @@ class FormatoDaSaida(unittest.TestCase):
             "9:16", corpo,
             "nenhuma regra do corpo de warden-clip diz o formato da saida; a "
             "unica ocorrencia era a description do front-matter")
+
+
+# ---------------------------------------------------------------------------
+# O livro de entregas nao prova chegada
+# ---------------------------------------------------------------------------
+#
+# 16/09, msg 63 da sessao 20260916_181828_6e588b67: a prosa e os dois MP4 de
+# 16 MB foram carimbados `delivered` e o dono nao recebeu nada. A evidencia em
+# que `warden delivered` se apoia e escrita ANTES do envio -- medido no gateway
+# desta imagem:
+#
+#     $ docker exec -u 10000 warden-demo-agent-1 \
+#           grep -n "Sending video attachment" \
+#           /opt/hermes/gateway/platforms/base.py
+#     3880:  logger.info("[%s] Sending video attachment (%s) to %s", ...)
+#
+# e 3881 e o `result = await self.send_video(...)`. O log e TENTATIVA, nunca
+# CHEGADA: os dois anexos saíram no MESMO milissegundo (18:22:41,674), contra
+# 5s de intervalo no 7a que chegou de verdade.
+#
+# Consertar a ferramenta e de outra faixa. Aqui se cobra o TEXTO: enquanto uma
+# skill mandar o agente ler aquilo como "o arquivo chegou", ele escreve
+# "entregue" para a pessoa mesmo com a ferramenta consertada.
+
+class LivroDeEntregasNaoProvaChegada(unittest.TestCase):
+
+    def test_a_tabela_do_shared_nao_diz_que_o_delivered_responde_se_saiu(self):
+        t = corrido(skills()["warden-shared"])
+        self.assertNotIn(
+            "did THIS path go out?", t,
+            "warden-shared/SKILL.md ainda apresenta `warden delivered <clip>` "
+            "como quem responde se o arquivo saiu. Ele le a linha que o "
+            "gateway escreve ANTES do envio (base.py:3880)")
+        self.assertRegex(
+            t, r"(?i)`warden delivered <clip>` \| [^|]*announce",
+            "a linha de `warden delivered <clip>` em warden-shared/SKILL.md "
+            "nao diz que o que ela devolve e o ANUNCIO do gateway")
+        self.assertRegex(
+            t, r"(?i)`warden delivered <clip>` \| [^|]*(never arrival|not "
+               r"arrival|not that it arrived)",
+            "a linha de `warden delivered <clip>` nomeia o anuncio mas nao "
+            "diz que ele NAO e chegada -- que e a parte que evita o carimbo")
+
+    def test_a_tabela_do_check_nao_oferece_o_delivered_como_prova_de_chegada(self):
+        t = corrido(skills()["warden-check"])
+        self.assertNotIn(
+            "whether a file arrived | `warden delivered`", t,
+            "warden-check/SKILL.md lista `warden delivered` na coluna 'what "
+            "proves it' para a afirmacao 'whether a file arrived'. Nada neste "
+            "install prova chegada hoje: `messages.platform_message_id` esta "
+            "NULL nas 31 mensagens do assistente")
+        self.assertNotRegex(
+            t, r"(?i)\| whether a file arrived \|",
+            "a afirmacao 'whether a file arrived' continua na tabela do "
+            "warden-check sem nada que a prove")
+
+    def test_a_regra_de_contagem_do_clip_nao_afirma_o_que_pousou(self):
+        """warden-clip mandava reportar 'the count of attachments that left'.
+
+        Em 18:22:41,674 o gateway anunciou dois e zero saiu. A contagem que o
+        agente tem e a das linhas `MEDIA:` que ele PÔS na mensagem final --
+        essa ele sabe. Quantas pousaram no telefone do dono, nao.
+        """
+        t = corrido(skills()["warden-clip"])
+        self.assertIn(
+            "Rendered is not delivered", t,
+            "sumiu a regra `Rendered is not delivered` de warden-clip")
+        self.assertNotIn(
+            "the count of attachments that left", t,
+            "warden-clip/SKILL.md manda reportar 'the count of attachments "
+            "that left' -- o agente nao tem esse numero, tem o que o gateway "
+            "anunciou")
 
 
 if __name__ == "__main__":

@@ -38,7 +38,7 @@ something comes back wrong.
 | whether there are two captions | that frame, cropped to the band, at full size |
 | what our caption says | the `.ass` — and only ours is in it |
 | whether the clip is the length asked | `warden check`, never your own reading |
-| whether a file arrived | `warden delivered` |
+| whether the gateway announced a file | `warden delivered` — announcing is not arriving, and nothing here proves arrival |
 
 That table answers a question SOMEONE ASKED. It is not a round of checks before
 delivering: **you do not look at the clip before you send it.**

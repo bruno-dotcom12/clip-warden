@@ -35,24 +35,27 @@ in silence.
 
 ## Run `prep` and `render` IN THE BACKGROUND. Always.
 
-Your terminal kills a foreground command at **300 seconds** and both pass it:
-`lote prep` was killed at 301.58s with nothing to show.
+Your terminal kills a foreground command at **300s** and both pass it.
 
 1. `background=true` and `notify=true` on the call, the command carrying its log
-   redirect and **no `&` at the end** — the call already IS the background. With
-   the `&`, what the terminal holds is the shell that has already exited, and
-   the wait came back in 0.01s.
+   redirect and **no `&` and no `nohup`** — the call already IS the background.
+   Exactly this shape, and nothing else:
+
+       terminal(command="warden lote prep <url> --n 2 > /tmp/prep.log 2>&1",
+                background=true, notify=true)
+
+   With `&` or `nohup` the terminal holds a shell that already exited:
+   16/09 `process_manage` said `exited` in 4s on a prep still running.
 2. **One `process_manage` wait on that session id.** It is **clamped to 180s**
    and a render runs longer, so a wait that comes back still running is waited
    on AGAIN, never replaced by something else.
 3. Then read the log.
 
 Never search the process list for the command's name: that search matches the
-shell running it, so it never ends. Never a sleep loop: 166s spent waiting on a
-render that had already finished.
+shell running it, so it never ends.
 
-**This recipe is NOT MEASURED end to end** — 7a measured only the two ways that
-fail. If the wait misbehaves, say so in one line and read the log.
+**The wait step is still NOT MEASURED clean**: every run so far fell back to
+polling. If it misbehaves, say so in one line and read the log.
 
 ## 0. The link may be one message behind
 
@@ -212,8 +215,8 @@ stands between those two lines IS your final message. Obey the printout over
 your memory of this file: tool output reaches you whole, and this file was
 pruned from memory in the same second a render started.
 
-**Rendered is not delivered**: the count you report is the count of attachments
-that left. If one did not make it, say which, and that it is going again.
+**Rendered is not delivered**: you report the `MEDIA:` lines you sent, never
+that they landed. If one did not go, say which, and that it is going again.
 
 ### The plan, for several clips
 

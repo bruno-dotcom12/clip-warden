@@ -962,6 +962,37 @@ own `config.yaml`, at `compression: proactive_prune_tokens`. Set it to `0` and
 it stays `0`: the container only writes that setting when it is not already
 there, so a value you chose is never overwritten.
 
+## The agent does not review itself, and that is on purpose
+
+A stock Hermes runs a **background curator**: after a turn, it starts a second
+model turn of its own, reads the whole conversation back, and rewrites the skill
+library. Nobody asks for it, and you are billed for it.
+
+This image turns it off, for every install, by writing
+`auxiliary: background_review: enabled: false` into the agent's own
+`config.yaml` at boot — `image/s6-overlay/scripts/warden-curador`, a oneshot
+that runs as the agent, never as root.
+
+**Declaring it `false` is the whole point: leaving it out does not turn it
+off.** The runtime reads the key fail-open —
+`/opt/hermes/agent/background_review.py:187-199` returns
+`is_truthy_value(task.get("enabled"), default=True)` — so an absent key is an
+**enabled** curator. Measured on 16/09/2026 on this install: `config.yaml` had
+no `auxiliary` section at all, and the curator was running during a recording.
+It opened a turn at 18:22:41,518 (`agent.log:219`,
+`msg='Review the conversation above and update the skill library...'`) and at
+18:23:37,833 it tried to patch the bundled `warden-clip` skill and was refused
+by the runtime (`agent.log:247`).
+
+It was **not** what lost the two clips that day — that was the Plow adapter's
+anti-duplicate gate, `plow_chat/__init__.py:2062-2065`, returning
+`SendResult(success=True)` without sending. The curator is switched off for its
+own reasons: an unrequested model turn that writes to the skill library.
+
+To turn it back on, open the same `config.yaml` and set that `enabled:` to
+`true`. It stays `true`: the container only writes the key when it is not
+already on record, so a value you chose is never overwritten.
+
 ## "MCP server 'plow' failed initial connection"
 
 If `docker compose logs agent` repeats this every five minutes:

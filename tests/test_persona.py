@@ -85,7 +85,35 @@ SEED_SHA256 = "038c798df463d5e5b684cfb06238556bf1a128cb530098da748913b1fb36cdab"
 # são quase só regra, e decidiu: o teto sobe, a regra fica. O que NÃO se move é
 # o limite do Hermes, que continua 20.000 e não é nosso -- daí a folga de 2.166
 # que este número preserva de propósito.
-META_CHARS = 18_000
+# 18.500 desde 16/09, e a terceira vez que este número sobe -- sempre pelo mesmo
+# motivo, que é a regra do dono: não se corta REGRA para bater número. 16.000 era
+# a meta; 18.000 pagou a restauração das 12 regras que a auditoria cobrou de
+# volta; 18.500 paga duas regras que a GRAVAÇÃO cobrou, e nenhuma delas é prosa:
+# a confirmação que viaja junto do comando (sem ela o agente para para sempre) e
+# o NO_REPLY para notificação de processo (sem ele o dono lê a vida interna do
+# agente depois de os clipes chegarem).
+#
+# O limite real do Hermes é 20.000 e continua intocado -- `context_file_max_chars`
+# não existe neste repositório. A folga que sobra, ~1.500, é o que separa este
+# arquivo de voltar a ser truncado em silêncio, que é o defeito que originou
+# tudo isto. Quando ela acabar, o caminho é encolher de verdade, não subir de
+# novo.
+# 18.700, e esta é a QUARTA vez que este número sobe. Todas pelo mesmo motivo --
+# a regra do dono, "não se corta REGRA para bater número" -- e cada subida pagou
+# uma regra que um defeito medido cobrou:
+#   16.000  a meta original
+#   18.000  as 12 regras que a auditoria da persona cobrou de volta
+#   18.500  a confirmação que viaja com o trabalho, e o NO_REPLY
+#   18.700  a proibição de mandar recado no meio do turno (16/09: um "On it."
+#           mid-turn fez o adaptador engolir a entrega inteira)
+#
+# AVISO, e ele é para quem ler isto da próxima vez: a pista está acabando. O
+# limite real do Hermes é 20.000 e ele NÃO se levanta -- `context_file_max_chars`
+# não existe neste repositório e não vai existir. Sobram ~1.400 chars, e quando
+# eles acabarem o arquivo volta a ser truncado EM SILÊNCIO, que é o defeito que
+# originou este teste. A quinta vez não pode ser uma subida: tem de ser uma
+# regra indo para uma SKILL.md, ou prosa saindo de verdade.
+META_CHARS = 18_700
 
 # O limite real observado no teste 7a, só para a mensagem de erro ter contexto.
 LIMITE_HERMES_MEDIDO = 20_000
@@ -849,24 +877,150 @@ def test_a_primeira_mensagem_chega_antes_do_silencio(soul):
         "começa o trabalho. Sem isso o agente encerra o turno sem nada "
         "rodando e nada o acorda: %r" % corpo[:300]
     )
-    assert re.search(r"(?i)(keep going|keeps going|same turn)", corpo), (
-        "a persona não diz que o trabalho CONTINUA no mesmo turno. Sem essa "
-        "metade, 'a confirmação encerra o turno' é um agente que para para "
-        "sempre, porque num gateway de chat nada abre o turno seguinte."
+    # TERCEIRA redação desta regra em dois dias, e as duas primeiras custaram uma
+    # gravação cada. O que sobrevive às três está aqui, e é isto que se cobra:
+    #
+    #   1ª  "encerra o turno, o trabalho começa no turno seguinte" -> o turno
+    #       seguinte não existe. Parou para sempre, sem processo nenhum vivo.
+    #   2ª  "a confirmação viaja junto e você continua no mesmo turno" -> o
+    #       modelo alcançou `plow_send_sequence` para falar no meio do turno, e
+    #       o adaptador engoliu a entrega inteira (16/09, 18:20:21 x 18:22:41).
+    #   3ª  o trabalho fica RODANDO em segundo plano, a confirmação encerra o
+    #       turno, e a NOTIFICAÇÃO do processo é o que traz o agente de volta.
+    assert re.search(r"(?i)(notification|notify)", corpo), (
+        "a persona não diz QUEM traz o agente de volta. Sem isso, 'a "
+        "confirmação encerra o turno' é o defeito da 1ª redação: ele para e "
+        "nada o acorda."
+    )
+    assert re.search(r"(?i)background", corpo), (
+        "a persona não manda deixar o trabalho RODANDO antes de encerrar o "
+        "turno. Encerrar com nada rodando é não ter o que notificar."
+    )
+    assert re.search(r"(?i)never send a message mid-turn", corpo), (
+        "falta a proibição que custou a gravação de 16/09: uma mensagem no "
+        "MEIO do turno faz o adaptador do chat tratar o turno como já "
+        "respondido e engolir a entrega que vem depois, reportando sucesso"
+    )
+    assert "plow_send_sequence" in corpo, (
+        "a proibição não NOMEIA a ferramenta. 'Não mande recado' sem o nome "
+        "deixa o modelo achar que a regra é sobre outra coisa -- foi "
+        "exatamente esta ferramenta que ele usou."
     )
     assert re.search(r"(?i)never end a turn with the confirmation", corpo), (
         "falta a proibição explícita: encerrar um turno com a confirmação e "
         "nada rodando foi o defeito medido em 16/09 na gravação"
     )
-    assert re.search(r"(?i)(before the silence|arrive before)", corpo), (
-        "a persona não diz POR QUE a confirmação viaja junto do comando: para "
-        "CHEGAR antes do silêncio, que é o degrau 2 do critério de aceite"
-    )
+    # O degrau 2 do critério de aceite -- "o aviso chega antes do silêncio" --
+    # deixou de ser uma frase a cobrar e passou a ser consequência: a prosa de um
+    # turno é entregue QUANDO O TURNO TERMINA, e nesta redação a confirmação é o
+    # fim de um turno curto. Ela chega em segundos, não porque o texto promete,
+    # mas porque não há nada depois dela naquele turno.
     assert "then work nonstop" not in soul, (
         "a ordem de trabalhar no mesmo turno depois do aviso continua na "
         "persona"
     )
 
+
+
+def test_notificacao_de_processo_nao_vira_conversa(soul):
+    """16/09, na gravação, e foi a última coisa que o dono leu.
+
+    Os dois clipes saíram às 18:22:40 e `warden delivered` confirmou os dois
+    anexos. Seis segundos depois chegou a notificação de que o `prep` ANTIGO
+    tinha terminado (msg 64). Isso abre um turno igual a uma mensagem -- e o
+    agente respondeu, ao dono:
+
+        "That old notification was just the earlier prep step finishing --
+         nothing pending. Both clips already confirmed delivered, no action
+         needed."
+
+    Nada ali é para a pessoa. É a vida interna do agente, colada no fim de uma
+    entrega que tinha dado certo, e foi o que fez a gravação ser jogada fora.
+    A persona já proíbe "progress" e "a problem you found and fixed"; faltava
+    dizer que a notificação de processo é uma DESSAS ocasiões, e que o silêncio
+    tem um nome: NO_REPLY.
+    """
+    corrido = " ".join(soul.split())
+    marca = re.search(r"(?i)background process finishing", corrido)
+    assert marca, (
+        "a persona não trata a notificação de processo em segundo plano. Ela "
+        "abre um turno como uma mensagem abre, e sem regra o agente conversa."
+    )
+    janela = corrido[marca.start(): marca.start() + 400]
+    assert "NO_REPLY" in janela, (
+        "a regra não nomeia o silêncio. 'Não responda' sem NO_REPLY deixa o "
+        "agente inventando uma forma de não responder: %r" % janela[:200]
+    )
+    assert re.search(r"(?i)(not them talking|is the machine|not the person)", janela), (
+        "a regra não diz que quem abriu o turno foi a MÁQUINA e não a pessoa, "
+        "que é a razão de não haver o que responder"
+    )
+
+
+def test_o_livro_de_entregas_nao_promete_chegada(soul):
+    """16/09, msg 63: a entrega foi carimbada `delivered` e nunca saiu.
+
+    O gateway registrou as três linhas em que `warden delivered` se apoia:
+
+        18:22:41,665 [Plow_Chat] Sending response (250 chars)
+        18:22:41,674 [Plow_Chat] Delivering 2 non-image MEDIA attachment(s)
+        18:22:41,674 [Plow_Chat] Sending video attachment (.mp4)
+
+    As três são escritas ANTES do `await` que envia. Medido no gateway desta
+    imagem, não inferido:
+
+        $ docker exec -u 10000 warden-demo-agent-1 \
+              grep -n "Sending video attachment" \
+              /opt/hermes/gateway/platforms/base.py
+        3880:  logger.info("[%s] Sending video attachment (%s) to %s", ...)
+
+    e a linha 3881 logo abaixo é `result = await self.send_video(...)`. Logo o
+    log prova TENTATIVA e nunca CHEGADA. Naquele turno nada saiu -- os dois
+    anexos de 16 MB foram registrados no MESMO milissegundo (18:22:41,674),
+    contra 5 segundos de intervalo no teste 7a que chegou
+    (logs-7a/container/logs/gateway.log, 15:14:49,517 e 15:14:54,384) -- e
+    ainda assim `warden delivered` respondeu
+
+        "confirmed: corte-ec898de219-01.mp4 -- its MEDIA: line was in a final
+         message, the gateway announced 2 MEDIA and 2 video attachment(s)"
+
+    O dono não recebeu nem a prosa nem os dois MP4.
+
+    A persona mandava acreditar naquilo: dizia que `warden delivered` "says
+    whether that exact file went out" e que ele prova "a file that arrived".
+    Enquanto ela disser isso, o agente carimba entregue o que não saiu -- e,
+    pior, nunca reenvia.
+
+    Consertar a ferramenta (outra faixa) não basta: se a persona continuar
+    prometendo chegada, o agente promete chegada com as palavras dele.
+    """
+    corrido = " ".join(soul.split())
+
+    for promessa in ("whether that exact file went out",
+                     "for a file that arrived"):
+        assert promessa not in corrido, (
+            "a persona ainda diz %r sobre `warden delivered`. O que ele lê é a "
+            "linha que o gateway escreve ANTES do envio (base.py:3880), então "
+            "ela é tentativa e nunca chegada." % promessa
+        )
+
+    marca = re.search(r"(?i)\bannounce", corrido)
+    assert marca, (
+        "a persona não diz em lugar nenhum que a evidência de `warden "
+        "delivered` é o ANÚNCIO do gateway. Sem isso, 'it says whether the "
+        "file went out' volta na próxima redação."
+    )
+    janela = corrido[max(0, marca.start() - 300): marca.start() + 400]
+    assert "warden delivered" in janela, (
+        "o anúncio do gateway está na persona longe de `warden delivered`, "
+        "que é a ferramenta que o lê: %r" % janela[:200]
+    )
+    assert re.search(r"(?i)(not (its )?arrival|never arrival|not that it "
+                     r"arrived|is not arrival)", janela), (
+        "a persona nomeia o anúncio mas não diz que ele NÃO é chegada, que é "
+        "a única coisa que o agente precisa saber antes de escrever "
+        "'entregue': %r" % janela[:300]
+    )
 
 
 def test_o_aviso_de_inicio_sai_uma_vez_so(soul):

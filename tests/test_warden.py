@@ -677,7 +677,7 @@ class RealRender(unittest.TestCase):
         except SystemExit:
             pass
         # A saída do warden é INGLÊS de propósito (quem a lê é o modelo:
-        # warden.py:3023-3031). A agulha segue o texto; o comportamento é o
+        # warden.py:3083-3090). A agulha segue o texto; o comportamento é o
         # mesmo -- o padrão sai anunciado e o render recebe `embedded`.
         self.assertIn("sound: original (default; the brief does not decide "
                       "this one)", err.getvalue())
@@ -5449,14 +5449,24 @@ class AConfirmacaoDeEntregaEUmaLeituraNaoUmaPromessa(unittest.TestCase):
         self.assertEqual(code, 1, err)
         self.assertIn("no video attachment", err)
 
-    def test_log_ilegivel_risca_mas_diz_em_voz_alta_que_nao_verificou(self):
-        # "Não consegui olhar" não é "está tudo certo", e também não pode
-        # travar a entrega para sempre. O meio-termo é dizer.
+    def test_log_ilegivel_nao_risca_e_diz_em_voz_alta_o_que_nao_leu(self):
+        """O "meio-termo" que este teste guardava era só a frase honesta.
+
+        Ele dizia `assertEqual(code, 0)` porque "não consegui olhar" não podia
+        travar a entrega para sempre. Mas riscar é o que faz o agente NÃO
+        reenviar, e "não consegui olhar" com o efeito de "chegou" põe o clipe
+        no mesmo lugar em que ele ficou em 16/09: perdido entre o gateway e a
+        pessoa, com o livro fechado. O meio-termo real é dizer E continuar
+        cobrando; o que destrava é a pessoa, com `warden delivered <clipe>
+        --arrived`, e não uma leitura que não aconteceu.
+        """
         self.W.entregas_registra(self.clipe)
         self.W.GATEWAY_LOG = os.path.join(self.dir, "nao-existe.log")
         code, err = self._confirma()
-        self.assertEqual(code, 0, err)
+        self.assertEqual(code, 1, err)
         self.assertIn("NOT verified", err)
+        self.assertIn("--arrived", err)
+        self.assertEqual(len(self.W.entregas_pendentes()), 1)
 
     def test_o_numero_reportado_e_o_de_envios_e_nao_o_de_arquivos(self):
         outro = os.path.join(self.dir, "corte-02.mp4")

@@ -1,0 +1,290 @@
+#!/opt/hermes/.venv/bin/python3
+"""Desligar o curador de fundo, uma vez no boot, em TODA instalação.
+
+POR QUE ESTE ARQUIVO EXISTE
+---------------------------
+O Hermes roda um `background_review` -- um turno de modelo que ninguém pediu,
+que lê a conversa inteira e reescreve a biblioteca de skills. Ele é FAIL-OPEN:
+
+    /opt/hermes/agent/background_review.py:187-199
+
+        def load_background_review_settings() -> tuple[bool, Dict[str, Any]]:
+            \"\"\"Single config read -> ``(enabled, task_cfg)``. Fail-open
+            (``enabled=True``) so a broken config never silently disables
+            reviews -- but WARN so the cost is visible.\"\"\"
+            ...
+                return is_truthy_value(task.get("enabled"), default=True), task
+
+`default=True` é a frase inteira: CHAVE AUSENTE É CHAVE LIGADA. Não declarar
+nada não desliga nada. É por isso que este arquivo escreve `false` em vez de se
+limitar a não escrever.
+
+O QUE FOI MEDIDO, em 16/09/2026, no container `warden-demo-agent-1`
+-------------------------------------------------------------------
+* ESTA INSTALAÇÃO NUNCA DECLAROU A CHAVE. `/var/lib/hermes/config.yaml` não tem
+  seção `auxiliary` nenhuma -- as chaves de topo são `mcp_servers, agent, cron,
+  tools, model, providers, display, memory, platforms, terminal,
+  group_sessions_per_user, onboarding, plugins, _config_version, compression,
+  approvals`. Pela regra acima, ligado.
+
+* E ELE ESTAVA RODANDO DURANTE A DEMO DO DONO. Dois registros:
+
+    agent.log:219  2026-09-16 18:22:41,518  agent.turn_context: conversation
+        turn: session=20260916_181828_6e588b67 model=anthropic/claude-sonnet-5
+        ... msg='Review the conversation above and update the skill library.
+        Be ACTIVE -- most ses...'
+
+    agent.log:247  2026-09-16 18:23:37,833  WARNING agent.tool_executor:
+        Tool skill_manage returned error (0.01s): {"success": false, "error":
+        "Refusing background curator patch for bundled skill 'warden-clip'."}
+
+  A primeira linha é o turno de curador começando 125 ms antes de o gateway
+  montar a entrega dos dois clipes (gateway.log:48, 18:22:41,665). A segunda é
+  ele tentando reescrever uma skill empacotada da imagem, e sendo recusado.
+  Ou seja: custo de modelo e escrita na biblioteca de skills, sem ninguém pedir,
+  no meio de uma gravação.
+
+* `false` DESLIGA DE FATO. `is_truthy_value` (/opt/hermes/utils.py:24-30) faz
+  `bool(value)` para não-string, então o booleano `false` do YAML chega como
+  `False` e vence o `default=True`. Por isso este arquivo escreve um booleano de
+  YAML, e não a string `'no'`, cuja coerção depende do conjunto TRUTHY.
+
+O QUE ESTE ARQUIVO NÃO AFIRMA
+-----------------------------
+Que o curador tenha sumido com a entrega de 16/09. NÃO foi ele: a entrega foi
+engolida pelo portão anti-duplicata do adaptador Plow,
+`/opt/hermes/plugins/plow_chat/__init__.py:2062-2065`, que devolve
+`SendResult(success=True)` sem enviar nada quando o turno já marcou
+`reply_delivered`. O curador roda numa thread daemon sobre um AIAgent forkado e
+não toca no caminho de envio; `cancel_background_review_for_live_turn`
+(background_review.py:119) cancela a REVISÃO para um turno vivo começar, nunca o
+contrário. Escrever aqui uma causa refutada faria a próxima pessoa parar nela.
+
+O motivo de desligar é o parágrafo de cima, e só ele: um turno de modelo não
+pedido que escreve na biblioteca de skills, ligado por omissão em toda
+instalação que puxa esta imagem.
+
+COMO SE RELIGA
+--------------
+Pondo `enabled: true` à mão sob `auxiliary:` no `/var/lib/hermes/config.yaml`.
+Este oneshot preenche a OMISSÃO; ele não desfaz a escolha de ninguém -- mesma
+regra do `warden-context` com `proactive_prune_tokens`.
+
+COMO ELE SE COMPORTA
+--------------------
+* COMO O AGENTE (uid 10000), nunca como root. O `up` baixa o privilégio antes.
+  Um processo root dentro do $HERMES_HOME é como a contabilidade de uso desta
+  instalação morreu em 15/09.
+* IDEMPOTENTE: todo boot roda isto, e dois boots não podem render duas seções.
+* CIRURGIA DE LINHA, não round-trip de YAML. `yaml.safe_dump` jogaria fora o
+  bloco de comentários anotado que o seed entrega no fim do config.yaml. O
+  arquivo é PARSEADO para decidir e EDITADO como linhas para agir.
+* NUNCA FATAL. Qualquer imprevisto vira uma linha no stderr e `exit 0`. Um
+  oneshot que falha é um boot que falha, e uma chave de configuração não vale o
+  agente não subir.
+"""
+import os
+import re
+import sys
+
+import yaml
+
+CONFIG = os.environ.get("HERMES_CONFIG", "/var/lib/hermes/config.yaml")
+
+# O caminho da chave, em um lugar só. `SECAO` é a chave de topo, `TAREFA` a
+# subseção, `CHAVE` a folha.
+SECAO = "auxiliary"
+TAREFA = "background_review"
+CHAVE = "enabled"
+QUERO = False
+
+# O comentário que acompanha o bloco quando ele nasce inteiro -- que é o caso de
+# toda instalação nova, porque o seed não escreve `auxiliary`. Ele existe para
+# quem abre o config.yaml e pergunta "quem pôs isto aqui".
+#
+# Nenhuma linha daqui repete o nome da tarefa seguido de dois pontos: a chave
+# aparece UMA vez no arquivo, e é a de verdade.
+COMENTARIO = [
+    "",
+    "# Escrito no boot por /etc/s6-overlay/scripts/warden-curador.",
+    "#",
+    "# O curador de fundo do Hermes e um turno de modelo que ninguem pediu: ele",
+    "# le a conversa inteira e reescreve a biblioteca de skills. Medido em",
+    "# 16/09/2026 nesta instalacao, durante a gravacao da demo, ele comecou um",
+    "# turno as 18:22:41,518 (agent.log:219) e as 18:23:37,833 tentou remendar a",
+    "# skill empacotada warden-clip (agent.log:247, recusado pelo runtime).",
+    "#",
+    "# A chave e FAIL-OPEN -- background_review.py:187-199 le",
+    "# is_truthy_value(..., default=True), entao AUSENTE E LIGADO. Por isso ela e",
+    "# declarada `false` aqui, em vez de simplesmente nao existir.",
+    "#",
+    "# Para religar: troque para `true`. Este oneshot preenche a omissao e nunca",
+    "# desfaz uma escolha ja escrita.",
+]
+
+
+def diz(msg):
+    print("warden-curador: " + msg, file=sys.stderr)
+
+
+def _linha_de_topo(linhas, nome):
+    """Índice da linha que é exatamente `nome:` na coluna zero, ou None."""
+    for i, linha in enumerate(linhas):
+        if linha.rstrip() == nome + ":" and not linha.startswith((" ", "\t")):
+            return i
+    return None
+
+
+def _linha_da_tarefa(linhas, inicio):
+    """Índice de `  <TAREFA>:` dentro da seção que começa em `inicio`.
+
+    A varredura para na próxima chave de topo: uma linha não indentada é o fim
+    da seção, e um `background_review` de OUTRA seção não é este.
+    """
+    alvo = re.compile(r"^(\s+)" + re.escape(TAREFA) + r"\s*:\s*$")
+    for i in range(inicio + 1, len(linhas)):
+        linha = linhas[i]
+        if linha.strip() and not linha.startswith((" ", "\t", "#")):
+            return None, None
+        m = alvo.match(linha)
+        if m:
+            return i, m.group(1)
+    return None, None
+
+
+def _bloco_novo():
+    return COMENTARIO + [
+        "%s:" % SECAO,
+        "  %s:" % TAREFA,
+        "    %s: %s" % (CHAVE, "true" if QUERO else "false"),
+    ]
+
+
+def _monta(texto, config):
+    """O texto novo, ou None quando não há nada seguro a fazer."""
+    secao = config.get(SECAO)
+
+    if secao is None:
+        novo = texto
+        if novo and not novo.endswith("\n"):
+            novo += "\n"
+        return novo + "\n".join(_bloco_novo()) + "\n"
+
+    if not isinstance(secao, dict):
+        diz("`%s` e um %s, nao uma secao -- alguem quis dizer alguma coisa com "
+            "isso. Nao vou mexer." % (SECAO, type(secao).__name__))
+        return None
+
+    tarefa = secao.get(TAREFA)
+    if tarefa is not None and not isinstance(tarefa, dict):
+        diz("`%s.%s` e um %s, nao uma secao -- nao vou mexer."
+            % (SECAO, TAREFA, type(tarefa).__name__))
+        return None
+
+    linhas = texto.splitlines()
+    i_secao = _linha_de_topo(linhas, SECAO)
+    if i_secao is None:
+        diz("existe um `%s` no YAML mas nenhuma linha `%s:` na coluna zero "
+            "para escrever embaixo -- nao vou adivinhar. Ponha `%s: %s` ali a "
+            "mao." % (SECAO, SECAO, CHAVE, "true" if QUERO else "false"))
+        return None
+
+    i_tarefa, recuo = _linha_da_tarefa(linhas, i_secao)
+    if i_tarefa is None:
+        if tarefa is not None:
+            diz("`%s.%s` existe no YAML mas nao achei a linha dele para "
+                "escrever embaixo -- nao vou adivinhar." % (SECAO, TAREFA))
+            return None
+        novas = ["  %s:" % TAREFA,
+                 "    %s: %s" % (CHAVE, "true" if QUERO else "false")]
+        corte = i_secao + 1
+    else:
+        novas = ["%s  %s: %s"
+                 % (recuo, CHAVE, "true" if QUERO else "false")]
+        corte = i_tarefa + 1
+
+    return "\n".join(linhas[:corte] + novas + linhas[corte:]) + "\n"
+
+
+def main():
+    if not os.path.isfile(CONFIG):
+        diz("%s ainda nao existe -- nao ha o que desligar, e isso nao e erro."
+            % CONFIG)
+        return
+
+    with open(CONFIG, encoding="utf-8") as fh:
+        texto = fh.read()
+
+    try:
+        config = yaml.safe_load(texto) or {}
+    except Exception as erro:
+        diz("nao consegui ler %s como YAML (%s) -- deixando exatamente como "
+            "esta." % (CONFIG, type(erro).__name__))
+        return
+
+    if not isinstance(config, dict):
+        diz("o topo de %s e um %s, nao um mapa -- nao vou mexer."
+            % (CONFIG, type(config).__name__))
+        return
+
+    secao = config.get(SECAO)
+    tarefa = secao.get(TAREFA) if isinstance(secao, dict) else None
+    if isinstance(tarefa, dict) and CHAVE in tarefa:
+        diz("%s.%s.%s ja esta no arquivo como %r -- deixando como esta."
+            % (SECAO, TAREFA, CHAVE, tarefa[CHAVE]))
+        return
+
+    novo = _monta(texto, config)
+    if novo is None:
+        return
+
+    # Ler de volta ANTES de gravar. Um config que o runtime nao parseia e um
+    # agente que nao sobe, entao o texto novo tem de sobreviver a um parse aqui,
+    # numa string, antes de chegar ao arquivo. E a asserção é sobre o VALOR
+    # efetivo: escrever a chave e ela continuar valendo `True` seria pior que
+    # não escrever, porque pareceria resolvido.
+    try:
+        conferido = yaml.safe_load(novo) or {}
+        assert conferido[SECAO][TAREFA][CHAVE] is QUERO
+    except Exception as erro:
+        diz("a edicao nao releu limpa (%s) -- descartada, %s intacto."
+            % (type(erro).__name__, CONFIG))
+        return
+
+    # Escrito ao lado e renomeado por cima: um boot interrompido no meio nao
+    # pode deixar um config.yaml pela metade.
+    # O MODO DO ORIGINAL TEM DE SOBREVIVER AO RENAME. `open(...,"w")` cria com o
+    # umask (tipicamente 0644) e `os.replace` troca a ENTRADA DE DIRETORIO: o
+    # modo do arquivo antigo se perde junto. No container vivo o config.yaml e
+    # 0600 -- ele carrega chave de inferencia -- e afrouxa-lo para 0644 seria
+    # este script piorando a instalacao que veio consertar. Medido na auditoria
+    # de 16/09/2026, e o mesmo defeito ja existia no warden-context.
+    temp = CONFIG + ".warden-curador.tmp"
+    try:
+        try:
+            modo = os.stat(CONFIG).st_mode & 0o7777
+        except OSError:
+            modo = 0o600
+        with open(temp, "w", encoding="utf-8") as fh:
+            fh.write(novo)
+            os.fchmod(fh.fileno(), modo)
+        os.replace(temp, CONFIG)
+    except OSError as erro:
+        diz("nao consegui escrever %s (%s) -- nada mudou." % (CONFIG, erro))
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        return
+
+    diz("curador de fundo desligado: %s.%s.%s = false. Ele e fail-open "
+        "(background_review.py:187-199), entao ausente seria ligado."
+        % (SECAO, TAREFA, CHAVE))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as erro:  # noqa: BLE001 -- um boot nao vale um traceback
+        diz("stood down on %s: %s" % (type(erro).__name__, erro))
+    sys.exit(0)

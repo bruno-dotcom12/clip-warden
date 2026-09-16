@@ -40,6 +40,30 @@ os.environ.setdefault("WARDEN_DIR", tempfile.mkdtemp(prefix="warden-entrega-"))
 import warden
 
 
+def carimbo_de_log(quando):
+    """O carimbo de um instante no formato que `warden._carimbo_do_log` lê.
+
+    `int`, e NUNCA `round`. Com `round`, uma fração >= 0,9995 escreve `,1000`:
+    o campo passa a ter quatro dígitos, o leitor pega `linha[20:23]` == `"100"`
+    e lê 0,1 s onde deviam ser 1,0 s -- enquanto o `strftime` acima truncou os
+    segundos, então os dois campos discordam por um segundo inteiro. Isso fez
+    `ZeroMilissegundoNaoEUmUpload::test_envios_desde_devolve_o_carimbo_de_cada_tentativa`
+    falhar uma vez em duas rodadas, e um teste que falha pelo próprio andaime
+    ensina a ignorar a suíte.
+
+    Truncar é também o que o leitor faz: ele lê milissegundos inteiros. Os dois
+    lados passam a arredondar para o mesmo lado, que é a única razão de este
+    andaime existir. Ver `OCarimboDeTesteNaoEscreveMilSegundos`.
+
+    UM formatador para os três lugares que carimbavam: o de
+    `ZeroMilissegundoNaoEUmUpload`, o de `ACONFIRMACAONaoESobreUmaTENTATIVA` e
+    o `_ComCronometro._linha`. Três cópias do mesmo defeito é o defeito três
+    vezes, e foi assim que ele sobreviveu ao primeiro conserto.
+    """
+    return (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(quando))
+            + ",%03d" % int((quando % 1) * 1000))
+
+
 def _temp(caso, prefix):
     """Um diretório temporário que se APAGA quando o teste acaba.
 
@@ -222,7 +246,7 @@ class OCaminhoFoiEscritoNoMeioDoTurno(_ComAsDuasPontas):
         warden.entregas_registra(self.clipe)
         code, err = self._confirma()
         self.assertEqual(code, 0, err)
-        self.assertIn("confirmed", err)
+        self.assertIn("handed off", err)
 
 
 class OCaminhoFoiEscritoNaMensagemFinal(_ComAsDuasPontas):
@@ -236,7 +260,7 @@ class OCaminhoFoiEscritoNaMensagemFinal(_ComAsDuasPontas):
         warden.entregas_registra(self.clipe)
         code, err = self._confirma()
         self.assertEqual(code, 0, err)
-        self.assertIn("confirmed", err)
+        self.assertIn("handed off", err)
         self.assertIn("final message", err)
         self.assertEqual(warden.entregas_pendentes(), [])
 
@@ -357,15 +381,30 @@ class QuandoNaoDaParaLerORegistro(_ComAsDuasPontas):
                 self.assertEqual(resposta["estado"], "ilegivel")
                 self.assertTrue(resposta["porque"])
 
-    def test_gateway_ilegivel_com_state_db_bom_risca_e_diz(self):
-        """Metade lida é melhor que nenhuma, e ela é dita como metade."""
+    def test_gateway_ilegivel_com_state_db_bom_nao_risca_e_diz(self):
+        """Era "metade lida é melhor que nenhuma", e a metade riscava o clipe.
+
+        Este teste dizia `assertEqual(code, 0)` e foi por isso que o buraco
+        durou: a saída era honesta -- "não consigo ler o gateway.log daqui" --
+        e o EFEITO dela era o de uma confirmação. O clipe saía do livro, o
+        comando saía 0, o agente não reenviava, e a pessoa ficava sem o
+        arquivo exatamente como em 16/09. A metade que faltava é justamente a
+        que pegou aquele defeito: naquele dia as duas linhas `MEDIA:` estavam
+        na mensagem final do turno e nenhum dos dois arquivos chegou, então a
+        metade lida aqui não distingue um caso do outro.
+
+        A metade continua sendo dita; o que mudou é que ela não fecha mais o
+        livro. Quem fecha sem medida é a pessoa que recebeu (`--arrived`).
+        """
         escreve_state_db(self.db, [
             ("assistant", f"MEDIA:{os.path.abspath(self.clipe)}", "stop")])
         warden.GATEWAY_LOG = os.path.join(self.dir, "nao-existe.log")
         warden.entregas_registra(self.clipe)
         code, err = self._confirma()
-        self.assertEqual(code, 0, err)
-        self.assertIn("NOT verified beyond that", err)
+        self.assertEqual(code, 1, err)
+        self.assertIn("NOT verified", err)
+        self.assertIn("not readable from here", err)
+        self.assertEqual(len(warden.entregas_pendentes()), 1)
 
 
 class ALeituraESoLeitura(_ComAsDuasPontas):
@@ -424,6 +463,25 @@ class OBlocoDaMensagemFinal(unittest.TestCase):
         self.assertNotIn("one per turn", texto)
         self.assertNotIn("one clip per turn", texto)
         self.assertIn("ONE message carrying all 2", texto)
+
+    def test_o_bloco_proibe_mandar_recado_ANTES_no_mesmo_turno(self):
+        """O bloco proibia o tool call DEPOIS. O que perdeu a demonstração veio ANTES.
+
+        Medido em 16/09/2026: às 18:20:21 o agente mandou "On it." pelo
+        `plow_send_sequence`, no MEIO do turno. Isso marcou
+        `turn["reply_delivered"] = True` (plow_chat:2603), e às 18:22:41 o
+        portão anti-duplicata do adaptador (plow_chat:2062-2065) devolveu
+        `SendResult(success=True)` SEM MANDAR NADA para a prosa e para os dois
+        anexos de 16 MB. O livro de entregas carimbou `delivered`, e o dono não
+        recebeu clipe nenhum.
+
+        O bloco já dizia "não chame ferramenta DEPOIS destas linhas". A outra
+        ponta -- não mande recado pelo chat ANTES, no mesmo turno -- não estava
+        escrita em lugar nenhum: nem aqui, nem na persona, nem na skill.
+        """
+        texto = self._bloco([("a.mp4", "/clipes/a.mp4")])
+        self.assertIn("EARLIER in this same turn", texto)
+        self.assertIn("plow_send_sequence", texto)
 
     def test_sem_clipe_nenhum_o_bloco_nao_sai(self):
         """Um "termine o turno agora" sem nada para anexar é uma ordem vazia."""
@@ -1123,13 +1181,25 @@ class OQueNaoFoiMedidoNaoEAfirmado(_ComAsDuasPontas):
     saída dizia "the gateway logged N media send failure(s)", como fato.
     """
 
-    def test_a_constante_esta_marcada_como_nao_confirmada_no_comentario(self):
+    def test_o_comentario_da_constante_cita_a_fonte_que_a_escreve(self):
+        """A frase foi lida na fonte em 16/09; o comentário tem de dizer ONDE.
+
+        Ela deixou de ser "uma string que ninguém viu" -- base.py:3885-3886,
+        lido dentro do container vivo, formata `[Plow_Chat] Failed to send
+        media (.mp4): <erro>` palavra por palavra. O que o comentário agora
+        precisa carregar é a outra metade, que é a que importa: a linha só é
+        escrita quando `result.success` é falso, e o portão do Plow devolve
+        `success=True` sem mandar nada -- então o silêncio desta rede continua
+        não provando entrega nenhuma.
+        """
         fonte = warden.__file__.replace(".pyc", ".py")
         with open(fonte, encoding="utf-8") as fh:
             texto = fh.read()
         antes = texto.split('_FALHOU = "Failed to send media"')[0]
-        bloco = antes[-1400:]
-        self.assertIn("NÃO foi confirmada", bloco)
+        bloco = antes[-2400:]
+        self.assertIn("base.py:3885-3886", bloco)
+        self.assertIn("if not result.success", bloco)
+        self.assertIn("success=True", bloco)
 
     def test_a_recusa_nao_chama_o_padrao_de_falha_medida(self):
         escreve_state_db(self.db, [
@@ -1146,7 +1216,8 @@ class OQueNaoFoiMedidoNaoEAfirmado(_ComAsDuasPontas):
         # mas não afirma o que ninguém mediu
         self.assertNotIn("media send failure(s)", err)
         self.assertNotIn("The person does not have it", err)
-        self.assertIn("never seen in a real gateway log", err)
+        # e agora diz de onde a frase vem, em vez de chamá-la de palpite
+        self.assertIn("the gateway's send-failure wording", err)
 
 
 class LegendaPEDIDAEZEROCUESNaTelaEUmClipeMUDO(unittest.TestCase):
@@ -1516,9 +1587,9 @@ class ADividaDeEntregaEDaCONVERSA(unittest.TestCase):
 # duas vezes, e as duas nasceram reprovadas. Custou 2 renders (~150s de CPU) e
 # 2 laços de espera (~523s) em cima de uma instrução que não dizia nada.
 #
-# A origem é warden_style.py:2669-2677: `falta = float(fecha) -
-# float(side["duration_s"])` montava a frase sem nenhuma guarda para
-# `falta <= 0`.
+# A origem é warden_style.py:2727-2732: `falta = float(fecha) - dur` montava a
+# frase (warden_style.py:2733-2739) sem nenhuma guarda para `falta <= 0`. A
+# guarda -- `if falta > 0.05` -- é o conserto, e está na 2732.
 
 class OPortaoNuncaMandaCortarNOMESMONUMERO(unittest.TestCase):
     """A regra, em uma linha: nenhum conselho pode ter o número atual."""
@@ -1580,7 +1651,7 @@ class ATEXTONaoTRAZUMAFRASEPRONTAEMPORTUGUES(unittest.TestCase):
 
     Medido em 7a: a nota do render mandava o agente dizer, palavra por palavra,
     `"ficou {N} segundo(s) mais longo para não cortar a frase no meio"`
-    (warden_media.py:4791-4795, :4818-4822; warden_style.py:2674-2677). Ela
+    (warden_media.py:4789-4791, :4818-4822; warden_style.py:2733-2739). Ela
     chegou ao modelo no meio de uma conversa EM INGLÊS -- state.db msgs 69 e
     75, e o mesmo texto em render-outs.txt:29, :64, :127 -- e a resposta do
     agente à pessoa foi em português ("Em produção.", msg 21).
@@ -1744,7 +1815,7 @@ class OLivroFechaSozinhoNoTurnoSEGUINTE(_ComAsDuasPontas):
 
 
 class ORecadoDeEntregaNaoFalaPortugues(_ComAsDuasPontas):
-    """Item 7 da auditoria: `warden.py:5620` é a mais barata e a mais grave.
+    """Item 7 da auditoria: `warden.py:6148-6156` é a mais barata e a mais grave.
 
     Ela é meia string em português e meia em inglês NA MESMA FRASE -- `NOT
     sent: MEDIA escrito no meio do turno (msg às HH:MM). Esse anexo foi
@@ -1793,3 +1864,804 @@ class ORecadoDeEntregaNaoFalaPortugues(_ComAsDuasPontas):
             warden.cmd_delivered(type("A", (), {"clip": None})())
         texto = err.getvalue() + out.getvalue()
         self.assertEqual(self._pt_em(texto), [], texto)
+
+
+class ZeroMilissegundoNaoEUmUpload(_ComAsDuasPontas):
+    """16 MB não sobem em 0 ms, e o log já sabia disso -- ninguém olhava.
+
+    Medido em 16/09/2026, na demonstração do dono. Os dois cortes de 16 MB
+    saíram do render, a linha `MEDIA:` de cada um estava na mensagem FINAL do
+    turno, e o gateway escreveu o par de linhas que `warden delivered` lê:
+
+        18:22:41,674 [Plow_Chat] Delivering 2 non-image MEDIA attachment(s)
+        18:22:41,674 [Plow_Chat] Sending video attachment (.mp4) to cht_knq...
+        18:22:41,674 [Plow_Chat] Sending video attachment (.mp4) to cht_knq...
+
+    O dono não recebeu nenhum dos dois (foto da conversa dele: depois de "On
+    it." a bolha seguinte já é outra coisa). O comando respondeu `confirmed:
+    corte-ec898de219-01.mp4 -- ... and 2 video attachment(s) left after it.`
+
+    A comparação que faltava está no MESMO formato de log, no teste 7a, cujos
+    clipes o dono recebeu (logs-7a/publicacao/logs/gateway.log:85-87):
+
+        15:14:49,517 Delivering 2 non-image MEDIA attachment(s)
+        15:14:49,518 Sending video attachment (.mp4)
+        15:14:54,384 Sending video attachment (.mp4)      <- 4,866 s depois
+
+    Fora do carimbo, as linhas são iguais caractere por caractere; `envios_desde`
+    só contava ocorrências, então para ela os dois casos eram o mesmo. A única
+    grandeza que separa um do outro já estava no arquivo e era jogada fora: a
+    distância entre uma linha e a seguinte. Como o gateway escreve a linha
+    ANTES do `await` do envio (base.py:3880-3881, lido do container vivo), essa
+    distância É a duração do upload anterior. 4,866 s contra 0,000 s.
+    """
+
+    def _arquivo_grande(self, nome, megas=16):
+        caminho = os.path.join(self.dir, nome)
+        with open(caminho, "wb") as fh:
+            fh.write(b"\0" * (megas * 1000 * 1000))
+        return caminho
+
+    def _log_cronometrado(self, offsets, base=None):
+        """Um gateway.log com os anexos nos deslocamentos (segundos) dados."""
+        t0 = float(base if base is not None else time.time())
+        eventos = [(t0, "[Plow_Chat] Delivering %d non-image MEDIA "
+                        "attachment(s)" % len(offsets))]
+        eventos += [(t0 + float(off),
+                     "[Plow_Chat] Sending video attachment (.mp4) to cht_x")
+                    for off in offsets]
+        with open(self.log, "w", encoding="utf-8") as fh:
+            for quando, texto in eventos:
+                fh.write(f"{carimbo_de_log(quando)} INFO "
+                         f"gateway.platforms.base: {texto}\n")
+        return t0
+
+    def _cita_na_final(self, *clipes):
+        corpo = "\n".join(f"MEDIA:{os.path.abspath(c)}" for c in clipes)
+        escreve_state_db(self.db, [("assistant", "Both clips are done.\n" + corpo,
+                                    "stop")])
+        for c in clipes:
+            warden.entregas_registra(c)
+
+    def test_envios_desde_devolve_o_carimbo_de_cada_tentativa(self):
+        """Sem os carimbos na mão, nada acima pode medir intervalo nenhum."""
+        t0 = self._log_cronometrado([0.001, 4.866])
+        lida = warden.envios_desde(t0 - 1)
+        self.assertEqual(lida["saiu"], 2, lida)
+        carimbos = lida.get("carimbos")
+        self.assertEqual(len(carimbos or []), 2, lida)
+        self.assertAlmostEqual(carimbos[1] - carimbos[0], 4.865, delta=0.01)
+
+    def test_os_dois_anexos_no_mesmo_milissegundo_nao_riscam_o_clipe(self):
+        """O caso do dono: o comando dizia `confirmed` e o clipe estava perdido."""
+        grande = self._arquivo_grande("corte-ec898de219-01.mp4")
+        self._cita_na_final(grande)
+        self._log_cronometrado([0.0, 0.0])
+        code, err = self._confirma(grande)
+        self.assertEqual(code, 1, err)
+        self.assertIn("NOT confirming", err)
+        self.assertNotIn("confirmed:", err)
+        # e continua devendo: é o que faz o agente reenviar
+        self.assertEqual([r["clip"] for r in warden.entregas_pendentes()],
+                         [os.path.abspath(grande)])
+
+    def test_a_recusa_mostra_o_intervalo_medido_e_o_tamanho(self):
+        """Uma recusa que não mostra a medida não dá para conferir nem contestar."""
+        grande = self._arquivo_grande("corte-ec898de219-01.mp4")
+        self._cita_na_final(grande)
+        self._log_cronometrado([0.0, 0.0])
+        _code, err = self._confirma(grande)
+        self.assertIn("0.000s", err)
+        self.assertIn("MB", err)
+        self.assertIn("Send it again", err)
+
+    def test_o_intervalo_do_7a_risca_o_clipe(self):
+        """O controle: mesmo par de linhas, 4,866 s entre elas, e ele CHEGOU."""
+        grande = self._arquivo_grande("corte-7a-01.mp4")
+        self._cita_na_final(grande)
+        self._log_cronometrado([0.001, 4.866])
+        code, err = self._confirma(grande)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(warden.entregas_pendentes(), [])
+
+    def test_um_clipe_pequeno_no_mesmo_milissegundo_nao_e_acusado(self):
+        """O piso é uma medida de 16 MB; abaixo dele não há medida nenhuma.
+
+        `warden delivered` prefere não dizer nada a dizer o que não mediu --
+        nos dois sentidos. Acusar um arquivo de 1 byte de não ter subido em
+        0,5 s seria inventar uma física que este projeto não mediu, e o custo
+        disso é um livro que nunca fecha (achado 11 do 7a).
+        """
+        self._cita_na_final(self.clipe)
+        self._log_cronometrado([0.0, 0.0])
+        code, err = self._confirma(self.clipe)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(warden.entregas_pendentes(), [])
+
+
+class ACONFIRMACAONaoESobreUmaTENTATIVA(_ComAsDuasPontas):
+    """`confirmed:` era dito sobre uma linha escrita ANTES do envio.
+
+    `_SAIU = "Sending video attachment"` sai de base.py:3880, e o `await
+    self.send_video(...)` é a linha 3881 -- a linha do log é a declaração de
+    intenção do gateway, não o retorno do upload. `Delivering N non-image
+    MEDIA` (base.py:3891) é escrita antes do laço da 3893. Nenhuma das duas
+    sabe se um byte subiu.
+
+    Em cima dessas duas o comando escrevia `confirmed: <clipe> -- ... and 2
+    video attachment(s) LEFT after it.` -- e no dia da demonstração as duas
+    linhas existiam e o dono não tinha nenhum dos dois arquivos.
+
+    A única prova de chegada que existe hoje é o `uid` que a API do Plow
+    devolve por mensagem (`_post_message` -> `SendResult(message_id=...)`,
+    plow_chat:2482). O Hermes não o persiste: `messages.platform_message_id`
+    está NULL nas 31 mensagens do assistente desta sessão. Enquanto não houver
+    recibo, a saída deste comando não pode usar a palavra da chegada.
+    """
+
+    def _saida_boa(self):
+        escreve_state_db(self.db, [
+            ("assistant", f"here it is\nMEDIA:{os.path.abspath(self.clipe)}",
+             "stop")])
+        self._anexo_saiu()
+        warden.entregas_registra(self.clipe)
+        code, err = self._confirma()
+        self.assertEqual(code, 0, err)
+        return err
+
+    def test_a_saida_boa_nao_usa_a_palavra_confirmed(self):
+        err = self._saida_boa()
+        self.assertNotIn("confirmed", err.lower())
+
+    def test_a_saida_boa_diz_que_isto_nao_e_chegada(self):
+        err = self._saida_boa()
+        self.assertIn("NOT verified", err)
+        self.assertIn("arriv", err)          # arrived / arrival
+
+    def test_a_saida_boa_chama_a_linha_do_log_de_tentativa(self):
+        """`left after it` afirma saída. A linha só diz "vou tentar"."""
+        err = self._saida_boa()
+        self.assertNotIn("left after it", err)
+        self.assertIn("attempt", err)
+
+    def test_com_um_anexo_so_a_saida_nao_finge_ter_cronometrado(self):
+        """Um anexo só não tem intervalo nenhum: a duração do ÚLTIMO upload não
+        é escrita em lugar nenhum do log. Dizer "nenhum deles instantâneo" aí
+        seria a mesma mentira de novo, um degrau abaixo.
+
+        E ESTE TESTE ESTAVA CONSAGRANDO UM BURACO. O `self.assertEqual(code, 0)`
+        que `_saida_boa` faz dizia, sobre um log de UMA linha de anexo, que o
+        clipe podia ser riscado -- e riscar é o que faz o agente não reenviar.
+        Rodado em 16/09/2026 com o mesmo log e um arquivo de 16 MB: EXIT 0, e
+        o clipe some do livro sem que nada tenha medido o upload.
+
+        O que este teste mede continua valendo, porque `self.clipe` tem 1 byte:
+        abaixo de `_BYTES_QUE_DEMORAM` o cronômetro nunca foi o guarda deste
+        arquivo e segurar o livro ali seria o achado 11 do 7a de volta. A linha
+        acrescentada abaixo é a borda -- o MESMO log com um arquivo grande não
+        pode ser riscado --, para que o "code 0" daqui não volte a ser lido
+        como "um anexo só basta".
+        """
+        err = self._saida_boa()                      # um anexo só, 1 byte
+        self.assertNotIn("none of them instant", err)
+        self.assertIn("no gap to time", err)
+        grande = os.path.join(self.dir, "corte-16mb.mp4")
+        with open(grande, "wb") as fh:
+            fh.write(b"\0" * 16_000_000)
+        os.remove(self.db)               # o state.db da primeira metade
+        escreve_state_db(self.db, [
+            ("assistant", f"here it is\nMEDIA:{os.path.abspath(grande)}",
+             "stop")])
+        self._anexo_saiu()
+        warden.entregas_registra(grande)
+        code, err = self._confirma(grande)
+        self.assertEqual(code, 1, err)
+        self.assertIn("NOT confirming", err)
+        self.assertEqual([r["clip"] for r in warden.entregas_pendentes()],
+                         [os.path.abspath(grande)])
+
+    def test_com_dois_anexos_espacados_a_saida_diz_o_que_mediu(self):
+        dois = self._arquivo("corte-02.mp4")
+        escreve_state_db(self.db, [
+            ("assistant", f"here they are\nMEDIA:{os.path.abspath(self.clipe)}\n"
+             f"MEDIA:{os.path.abspath(dois)}", "stop")])
+        agora = time.time()
+        with open(self.log, "w", encoding="utf-8") as fh:
+            for off in (0.0, 5.0):
+                quando = agora + off
+                fh.write(carimbo_de_log(quando)
+                         + " INFO gateway.platforms.base: [Plow_Chat] "
+                           "Sending video attachment (.mp4) to cht_x\n")
+        warden.entregas_registra(self.clipe)
+        code, err = self._confirma()
+        self.assertEqual(code, 0, err)
+        self.assertIn("none of them instant", err)
+
+    def test_o_comando_registra_onde_a_prova_de_chegada_ESTARIA(self):
+        """A prosa que impede a próxima pessoa de refazer a busca de 16/09.
+
+        Quatro candidatas a prova de chegada foram lidas dentro do container
+        vivo e nenhuma serve: `platform_message_id` está NULL nas 31 mensagens
+        do assistente, `delivery_obligations` diz `delivered` para a prosa que
+        o dono não recebeu, o `response_store.db` é cache do modelo, e nenhum
+        uid de plataforma aparece nos logs. A única prova que existe é o GET da
+        thread no Plow, que exige um bearer que este comando não tem.
+        """
+        doc = warden.cmd_delivered.__doc__
+        self.assertIn("platform_message_id", doc)
+        self.assertIn("/v1/chats/", doc)
+        self.assertIn("handed off", doc)
+
+    def test_o_livro_continua_fechando(self):
+        """Trocar a palavra não pode reabrir o defeito do 7a.
+
+        Se a saída honesta deixasse de riscar, `warden delivered` voltaria a
+        responder `NOT confirmed as sent` para sempre e o agente reenviaria os
+        mesmos clipes em todo turno -- msg 97 de 7a.
+        """
+        self._saida_boa()
+        self.assertEqual(warden.entregas_pendentes(), [])
+
+    def test_sem_gateway_log_tambem_nao_diz_confirmed(self):
+        """O outro ramo que dizia `confirmed:` -- log ilegível.
+
+        O `assertEqual(code, 0)` que estava aqui media a PALAVRA e deixava
+        passar o EFEITO: trocar "confirmed" por "NOT verified" sem parar de
+        riscar deixa o agente exatamente onde ele estava -- sem reenviar. A
+        asserção agora é sobre as duas coisas, porque foi a segunda que custou
+        os dois clipes de 16/09.
+        """
+        escreve_state_db(self.db, [
+            ("assistant", f"here it is\nMEDIA:{os.path.abspath(self.clipe)}",
+             "stop")])
+        warden.GATEWAY_LOG = os.path.join(self.dir, "nao-existe.log")
+        warden.entregas_registra(self.clipe)
+        code, err = self._confirma()
+        self.assertEqual(code, 1, err)
+        # A palavra só pode aparecer negada: "NOT confirmed as sent", a linha
+        # que lista quem ainda deve. Qualquer outra ocorrência é a afirmação
+        # que este comando não tem como fazer.
+        for antes in err.lower().split("confirmed")[:-1]:
+            self.assertTrue(antes.endswith("not "), err)
+        self.assertIn("NOT verified", err)
+        self.assertEqual(len(warden.entregas_pendentes()), 1)
+
+
+# ---------------------------------------------------------------------------
+# A auditoria de 16/09/2026, depois do conserto do cronômetro: quatro buracos
+# NA REDE que o cronômetro é. Cada um foi medido rodando o comando, não
+# deduzido, e cada classe abaixo é o caso medido.
+# ---------------------------------------------------------------------------
+
+
+class _ComCronometro(_ComAsDuasPontas):
+    """Base dos quatro: arquivo grande de verdade e log por EPISÓDIO.
+
+    Um episódio é o que o gateway escreve por mensagem entregue: uma linha
+    `Delivering N non-image MEDIA attachment(s)` e, depois dela, as N linhas
+    `Sending video attachment`. O formato foi lido dos logs reais deste
+    repositório -- logs-7a/publicacao/nuvem-logs/gateway.log:83-91 tem dois
+    episódios seguidos, um de 2 anexos às 15:14:04 e um de 1 anexo às 15:17:07
+    -- e não inventado aqui.
+    """
+
+    def _arquivo_grande(self, nome="corte-16mb.mp4", megas=16):
+        caminho = os.path.join(self.dir, nome)
+        with open(caminho, "wb") as fh:
+            fh.write(b"\0" * (megas * 1000 * 1000))
+        return caminho
+
+    def _linha(self, quando, texto):
+        return (f"{carimbo_de_log(quando)} INFO gateway.platforms.base: "
+                f"[Plow_Chat] {texto}\n")
+
+    def _log_episodios(self, episodios, base=None):
+        """`episodios` = [(offset_do_anuncio, anunciados, [offsets_dos_anexos])].
+
+        `anunciados=None` escreve o episódio SEM a linha de anúncio, que é o
+        caso dos testes antigos desta suíte.
+        """
+        t0 = float(base if base is not None else time.time())
+        with open(self.log, "w", encoding="utf-8") as fh:
+            for quando_anuncio, anunciados, anexos in episodios:
+                if anunciados is not None:
+                    fh.write(self._linha(
+                        t0 + quando_anuncio,
+                        "Delivering %d non-image MEDIA attachment(s)"
+                        % anunciados))
+                for off in anexos:
+                    fh.write(self._linha(
+                        t0 + off,
+                        "Sending video attachment (.mp4) to cht_x"))
+        return t0
+
+    def _cita_na_final(self, *clipes):
+        corpo = "\n".join(f"MEDIA:{os.path.abspath(c)}" for c in clipes)
+        escreve_state_db(self.db, [("assistant", "Here they are.\n" + corpo,
+                                    "stop")])
+        for c in clipes:
+            warden.entregas_registra(c)
+
+
+class OCronometroSoOlhaOEpisodioDaquelaMensagem(_ComCronometro):
+    """Qualquer anexo POSTERIOR desarmava o cronômetro inteiro.
+
+    Medido em 16/09/2026, rodando o comando: `envios_desde` lia o log INTEIRO
+    depois da mensagem, sem teto, e `_maior_intervalo` é um `max`. O episódio
+    da mensagem sozinho dá intervalo 0,000 s e o comando acusa; basta UMA linha
+    de anexo de um episódio POSTERIOR -- a resposta seguinte, três minutos
+    depois -- para o `max` virar 180 s, ficar acima do piso, e o alarme calar
+    sobre o clipe que se perdeu.
+
+    A janela é o episódio: a linha de anúncio abre um, a próxima linha de
+    anúncio fecha esse e abre outro, e nenhum episódio conta mais anexos do que
+    anunciou. É a estrutura que os logs reais têm -- em
+    logs-7a/publicacao/agent-1-logs/gateway.log cada `Sending video attachment`
+    vem depois de um `Delivering N`, e o N bate com a contagem da corrida.
+    """
+
+    def test_o_anexo_do_episodio_seguinte_nao_entra_na_conta(self):
+        t0 = self._log_episodios([(0.0, 2, [0.001, 0.001]),
+                                  (180.0, 1, [180.001])])
+        lida = warden.envios_desde(t0 - 1)
+        self.assertEqual(lida["saiu"], 2, lida)
+        self.assertEqual(len(lida["carimbos"]), 2, lida)
+        self.assertLess(warden._maior_intervalo(lida["carimbos"]), 0.5, lida)
+
+    def test_o_episodio_seguinte_nao_cala_o_alarme(self):
+        """O caso inteiro: dois anexos engolidos, e a resposta de depois."""
+        grande = self._arquivo_grande()
+        self._cita_na_final(grande)
+        self._log_episodios([(0.0, 2, [0.0, 0.0]), (180.0, 1, [180.0])])
+        code, err = self._confirma(grande)
+        self.assertEqual(code, 1, err)
+        self.assertIn("NOT confirming", err)
+        self.assertEqual([r["clip"] for r in warden.entregas_pendentes()],
+                         [os.path.abspath(grande)])
+
+    def test_mais_anexos_que_o_anunciado_nao_entram_no_episodio(self):
+        """Sem anúncio próprio, um anexo de depois ainda é de depois.
+
+        O teto de `anunciados` é a segunda borda da janela: o gateway escreve
+        `Delivering N` e N linhas, então a linha N+1 é de outra entrega mesmo
+        que o anúncio dela não tenha sido escrito.
+        """
+        t0 = self._log_episodios([(0.0, 2, [0.001, 0.001, 90.0])])
+        lida = warden.envios_desde(t0 - 1)
+        self.assertEqual(lida["saiu"], 2, lida)
+        self.assertLess(warden._maior_intervalo(lida["carimbos"]), 0.5, lida)
+
+    def test_o_episodio_do_7a_continua_riscando(self):
+        """O controle: 4,866 s entre os dois anexos, e eles CHEGARAM."""
+        grande = self._arquivo_grande("corte-7a-01.mp4")
+        self._cita_na_final(grande)
+        self._log_episodios([(0.0, 2, [0.001, 4.867]), (180.0, 1, [180.0])])
+        code, err = self._confirma(grande)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(warden.entregas_pendentes(), [])
+
+
+class UmClipeSoPrecisaDeEvidenciaComoOsOutros(_ComCronometro):
+    """Um anexo só não era protegido por nada, e "me dá um clipe" é o pedido.
+
+    Medido em 16/09/2026: log com UMA linha de anexo em 0 ms, arquivo de 16 MB,
+    `warden delivered <clipe>` -> EXIT 0 e clipe riscado. `_maior_intervalo`
+    devolve None com menos de duas linhas, `upload_instantaneo` trata None como
+    "nada a acusar", e o comando riscava.
+
+    A escolha feita aqui é NÃO RISCAR quando o cronômetro não mediu e o arquivo
+    é grande o bastante para a medida existir. A outra saída -- riscar com
+    outra evidência -- foi procurada e não há: as quatro candidatas a prova de
+    chegada estão mortas (ver o docstring de `cmd_delivered`), e a palavra do
+    modelo já foi medida valendo zero. A única evidência que sobra é a da
+    PESSOA, e ela agora tem um lugar: `warden delivered <clipe> --arrived`.
+
+    O piso de tamanho é o MESMO que a acusação usa (`_BYTES_QUE_DEMORAM`):
+    abaixo de 1 MB este projeto não mediu nada, então nem acusa nem se cala --
+    simplesmente não é sobre isso.
+    """
+
+    def _args(self, clipe=None, arrived=False):
+        return type("A", (), {"clip": clipe, "arrived": arrived})()
+
+    def test_um_anexo_so_de_16_mb_nao_e_riscado(self):
+        grande = self._arquivo_grande()
+        self._cita_na_final(grande)
+        self._log_episodios([(0.0, 1, [0.001])])
+        code, err = self._confirma(grande)
+        self.assertEqual(code, 1, err)
+        self.assertIn("NOT confirming", err)
+        self.assertEqual([r["clip"] for r in warden.entregas_pendentes()],
+                         [os.path.abspath(grande)])
+
+    def test_a_recusa_diz_por_que_nao_mediu_e_como_fechar_o_livro(self):
+        grande = self._arquivo_grande()
+        self._cita_na_final(grande)
+        self._log_episodios([(0.0, 1, [0.001])])
+        _code, err = self._confirma(grande)
+        self.assertIn("no gap to time", err)
+        self.assertIn("MB", err)
+        self.assertIn("--arrived", err)
+
+    def test_a_palavra_da_pessoa_fecha_o_livro(self):
+        """A única evidência de CHEGADA que existe é a pessoa dizendo.
+
+        Sem esta saída, "me dá um clipe" vira um livro que não fecha nunca e um
+        agente reenviando o mesmo arquivo em todo turno -- o achado 11 do 7a,
+        que custou caro. Com ela, quem fecha é quem recebeu.
+        """
+        grande = self._arquivo_grande()
+        self._cita_na_final(grande)
+        self._log_episodios([(0.0, 1, [0.001])])
+        self.assertEqual(self._confirma(grande)[0], 1)
+        err, out = io.StringIO(), io.StringIO()
+        with redirect_stderr(err), redirect_stdout(out):
+            code = warden.cmd_delivered(self._args(grande, arrived=True))
+        texto = err.getvalue() + out.getvalue()
+        self.assertEqual(code, 0, texto)
+        self.assertEqual(warden.entregas_pendentes(), [])
+        self.assertIn("person", texto.lower())
+
+    def test_a_palavra_da_pessoa_precisa_de_um_caminho(self):
+        """`--arrived` sem arquivo esvaziaria o livro inteiro de uma vez."""
+        grande = self._arquivo_grande()
+        self._cita_na_final(grande)
+        self._log_episodios([(0.0, 1, [0.001])])
+        err, out = io.StringIO(), io.StringIO()
+        with redirect_stderr(err), redirect_stdout(out):
+            code = warden.cmd_delivered(self._args(None, arrived=True))
+        self.assertEqual(code, 1, err.getvalue() + out.getvalue())
+        self.assertEqual(len(warden.entregas_pendentes()), 1)
+
+    def test_um_clipe_pequeno_com_um_anexo_so_continua_riscando(self):
+        """Abaixo de 1 MB o cronômetro nunca foi o guarda deste clipe.
+
+        Acusar aqui seria inventar uma física que este projeto não mediu, e o
+        custo seria o livro que não fecha. A borda é a mesma dos dois lados.
+        """
+        self._cita_na_final(self.clipe)
+        self._log_episodios([(0.0, 1, [0.001])])
+        code, err = self._confirma(self.clipe)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(warden.entregas_pendentes(), [])
+
+
+class LogIlegivelNaoRisca(_ComCronometro):
+    """"Não deu para ler" saía do livro pela mesma porta de "chegou".
+
+    O ramo `if log is None` de `verifica_um_envio` dizia a verdade -- "não
+    consigo ler o gateway.log daqui" -- e riscava assim mesmo. O efeito no
+    agente é idêntico ao de uma confirmação: o clipe sai da lista, `warden
+    delivered` sai 0, e o reenvio nunca acontece. Uma frase honesta com o
+    efeito da mentira continua sendo o defeito que esta suíte vigia.
+    """
+
+    def test_sem_gateway_log_o_clipe_continua_devendo(self):
+        grande = self._arquivo_grande()
+        self._cita_na_final(grande)
+        warden.GATEWAY_LOG = os.path.join(self.dir, "nao-existe.log")
+        code, err = self._confirma(grande)
+        self.assertEqual(code, 1, err)
+        self.assertIn("NOT verified", err)
+        self.assertEqual([r["clip"] for r in warden.entregas_pendentes()],
+                         [os.path.abspath(grande)])
+
+    def test_a_recusa_por_log_ilegivel_diz_como_fechar_o_livro(self):
+        grande = self._arquivo_grande()
+        self._cita_na_final(grande)
+        warden.GATEWAY_LOG = os.path.join(self.dir, "nao-existe.log")
+        _code, err = self._confirma(grande)
+        self.assertIn("--arrived", err)
+
+    def test_um_clipe_pequeno_sem_log_tambem_continua_devendo(self):
+        """O tamanho não muda nada aqui: o que falta é a leitura inteira."""
+        self._cita_na_final(self.clipe)
+        warden.GATEWAY_LOG = os.path.join(self.dir, "nao-existe.log")
+        code, err = self._confirma(self.clipe)
+        self.assertEqual(code, 1, err)
+        self.assertEqual(len(warden.entregas_pendentes()), 1)
+
+
+class OPisoDoCronometroContraOSonoDoGateway(_ComCronometro):
+    """O piso de 0,5 s pressupõe um gateway que não dorme entre anexos.
+
+    `base.py:3894-3895` faz `await asyncio.sleep(human_delay)` antes de CADA
+    anexo, e `_get_human_delay` (base.py:3729-3740) devolve 0,8-2,5 s quando
+    `HERMES_HUMAN_DELAY_MODE=natural`. Com esse modo ligado, dois anexos
+    ENGOLIDOS -- `SendResult(success=True)` sem envio -- ficariam espaçados
+    pelo sono, acima do piso, e o cronômetro aprovaria a perda.
+
+    O modo não está ligado nesta imagem (nenhum arquivo deste repositório
+    escreve `HERMES_HUMAN_DELAY_MODE`), então isto é uma DEPENDÊNCIA não
+    registrada, não um defeito ativo. Estes testes são o registro executável:
+    se alguém ligar o modo, o cronômetro tem de saber que o intervalo que ele
+    mede pode ser o sono, e não o upload.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._modo = os.environ.pop("HERMES_HUMAN_DELAY_MODE", None)
+        self.addCleanup(self._repoe_modo)
+
+    def _repoe_modo(self):
+        os.environ.pop("HERMES_HUMAN_DELAY_MODE", None)
+        if self._modo is not None:
+            os.environ["HERMES_HUMAN_DELAY_MODE"] = self._modo
+
+    def test_com_o_modo_ligado_um_intervalo_dentro_do_sono_nao_risca(self):
+        os.environ["HERMES_HUMAN_DELAY_MODE"] = "natural"
+        grande = self._arquivo_grande()
+        self._cita_na_final(grande)
+        self._log_episodios([(0.0, 2, [0.001, 1.501])])   # 1,5 s: cabe no sono
+        code, err = self._confirma(grande)
+        self.assertEqual(code, 1, err)
+        self.assertIn("HERMES_HUMAN_DELAY_MODE", err)
+        self.assertEqual(len(warden.entregas_pendentes()), 1)
+
+    def test_com_o_modo_ligado_um_intervalo_acima_do_sono_risca(self):
+        """2,5 s é o teto do sono; acima dele o que sobra é upload."""
+        os.environ["HERMES_HUMAN_DELAY_MODE"] = "natural"
+        grande = self._arquivo_grande()
+        self._cita_na_final(grande)
+        self._log_episodios([(0.0, 2, [0.001, 4.867])])
+        code, err = self._confirma(grande)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(warden.entregas_pendentes(), [])
+
+    def test_sem_o_modo_o_piso_de_meio_segundo_continua_valendo(self):
+        grande = self._arquivo_grande()
+        self._cita_na_final(grande)
+        self._log_episodios([(0.0, 2, [0.001, 1.501])])
+        code, err = self._confirma(grande)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(warden.entregas_pendentes(), [])
+
+    def test_a_dependencia_esta_registrada_onde_o_piso_e_lido(self):
+        """Um número que depende de um `sleep` de outra equipe tem de dizer.
+
+        Sem esta linha, a próxima pessoa que mexer no piso -- ou que ligar o
+        modo -- não tem como saber que os dois se tocam.
+        """
+        import inspect
+        fonte = inspect.getsource(warden)
+        piso = fonte[:fonte.index("_PISO_UPLOAD_S = 0.5")]
+        registro = piso[piso.rindex("\n\n"):]
+        self.assertIn("HERMES_HUMAN_DELAY_MODE", registro)
+        self.assertIn("base.py:3894", registro)
+
+
+# ---------------------------------------------------------------------------
+# 16/09/2026, o custo do conserto anterior. O cronômetro passou a NÃO RISCAR o
+# que não conseguiu medir, e isso estava certo -- mas a consequência não foi
+# medida. Com UM anexo não existe intervalo entre dois carimbos, então não há
+# medida possível NUNCA, e um clipe que nunca é riscado é um `lote render` que
+# nunca mais roda: `para_por_clipe_devendo` é portão e sai 1. Nos logs reais
+# deste repositório há 13 episódios de um anexo contra 9 de dois, então o caso
+# sem medida é o caso COMUM -- "me dá um corte" --, não a exceção.
+# ---------------------------------------------------------------------------
+
+
+class UmClipeSoNaoPodeTravarOTrabalho(_ComCronometro):
+    """As duas dívidas que eram uma só, e por que só uma delas trava.
+
+    (i)  NUNCA ENTREGUE -- nenhuma linha `MEDIA:` saiu em mensagem final do
+         turno. É o defeito de 15/09 (0 de 5 linhas do meio do turno
+         chegaram), e ele CONTINUA travando: ali há o que fazer, e o que fazer
+         é escrever a linha no lugar certo.
+
+    (ii) ENTREGUE E NÃO VERIFICÁVEL -- a linha saiu na mensagem final e o log
+         não deixa medir. Aqui não há nada que o agente possa fazer para
+         produzir a medida, porque ela não existe: a duração do ÚLTIMO upload
+         não é escrita em lugar nenhum do gateway.log. Esta é DITA, não
+         travada: um reenvio e, depois dele, o livro fecha com uma frase que
+         manda avisar a pessoa -- na língua dela -- que o arquivo foi mandado
+         e que esta máquina não confirma chegada.
+
+    O que estes testes vigiam nas duas pontas: (i) não pode afrouxar, e (ii)
+    não pode travar. Um portão que não abre nunca não é honestidade, é o
+    `--even-if-owed` que alguém vai digitar em duas horas -- e aí não sobra nem
+    a honestidade nem o trabalho.
+    """
+
+    def _um_anexo_so(self, megas=16):
+        """O caso comum: um clipe grande, um anexo, e nenhum intervalo."""
+        grande = self._arquivo_grande(megas=megas)
+        self._cita_na_final(grande)
+        self._log_episodios([(0.0, 1, [0.001])])
+        return grande
+
+    def test_a_primeira_passagem_ainda_e_portao_e_pede_UM_reenvio(self):
+        grande = self._um_anexo_so()
+        code, err = self._confirma(grande)
+        self.assertEqual(code, 1, err)
+        self.assertIn("NOT confirming", err)
+        self.assertEqual([r["clip"] for r in warden.entregas_pendentes()],
+                         [os.path.abspath(grande)])
+
+    def test_o_livro_guarda_que_um_reenvio_ja_foi_pedido(self):
+        """Sem isso a segunda passagem não sabe que não é a primeira."""
+        grande = self._um_anexo_so()
+        self.assertEqual(warden.entregas_reenvios_pedidos(grande), 0)
+        self._confirma(grande)
+        self.assertEqual(warden.entregas_reenvios_pedidos(grande), 1)
+
+    def test_a_segunda_passagem_deixa_de_ser_portao(self):
+        """O teste inteiro: um clipe só não pode travar a gravação do dono."""
+        grande = self._um_anexo_so()
+        self.assertEqual(self._confirma(grande)[0], 1)
+        code, err = self._confirma(grande)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(warden.entregas_pendentes(), [])
+
+    def test_depois_dela_o_lote_render_volta_a_rodar(self):
+        """O portão do `lote render` lê o MESMO livro. Ver `para_por_clipe_devendo`."""
+        grande = self._um_anexo_so()
+        self._confirma(grande)
+        self.assertTrue(warden.entregas_pendentes())
+        self._confirma(grande)
+        self.assertEqual(warden.entregas_pendentes(), [])
+
+    def test_a_segunda_passagem_manda_avisar_a_pessoa_na_lingua_dela(self):
+        """Fechar sem medida só é honesto se a pessoa ficar sabendo."""
+        grande = self._um_anexo_so()
+        self._confirma(grande)
+        _code, saida = self._confirma(grande)
+        self.assertIn("their language", saida.lower())
+        self.assertIn("cannot", saida.lower())
+        self.assertIn("arriv", saida)
+
+    def test_a_segunda_passagem_nunca_diz_confirmado(self):
+        """A palavra da chegada continua sem ter com o que ser dita."""
+        grande = self._um_anexo_so()
+        self._confirma(grande)
+        _code, saida = self._confirma(grande)
+        for antes in saida.lower().split("confirm")[:-1]:
+            self.assertTrue(antes.endswith("not ") or antes.endswith("cannot ")
+                            or antes.endswith("can "), saida)
+
+    def test_o_recado_que_fecha_sem_medida_e_em_ingles(self):
+        """Quem lê a saída é o modelo; a frase da pessoa é o modelo que escreve."""
+        grande = self._um_anexo_so()
+        self._confirma(grande)
+        _code, saida = self._confirma(grande)
+        self.assertEqual(ORecadoDeEntregaNaoFalaPortugues._pt_em(
+            ORecadoDeEntregaNaoFalaPortugues, saida),
+                         [], saida)
+
+    def test_o_livro_deixa_escrito_que_fechou_sem_medida(self):
+        """Riscado não pode virar indistinguível de medido."""
+        grande = self._um_anexo_so()
+        self._confirma(grande)
+        self._confirma(grande)
+        linha = [r for r in warden.entregas_all()
+                 if r["clip"] == os.path.abspath(grande)][0]
+        self.assertTrue(linha.get("sent"))
+        self.assertTrue(linha.get("closed_without_measurement"))
+
+    def test_o_log_ilegivel_tambem_para_de_travar_na_segunda(self):
+        """A outra cegueira: sem gateway.log não há medida, e nunca haverá."""
+        grande = self._arquivo_grande()
+        self._cita_na_final(grande)
+        warden.GATEWAY_LOG = os.path.join(self.dir, "nao-existe.log")
+        self.assertEqual(self._confirma(grande)[0], 1)
+        code, saida = self._confirma(grande)
+        self.assertEqual(code, 0, saida)
+        self.assertEqual(warden.entregas_pendentes(), [])
+
+    def test_o_sono_do_gateway_tambem_para_de_travar_na_segunda(self):
+        os.environ["HERMES_HUMAN_DELAY_MODE"] = "natural"
+        self.addCleanup(os.environ.pop, "HERMES_HUMAN_DELAY_MODE", None)
+        grande = self._arquivo_grande()
+        self._cita_na_final(grande)
+        self._log_episodios([(0.0, 2, [0.001, 1.501])])
+        self.assertEqual(self._confirma(grande)[0], 1)
+        self.assertEqual(self._confirma(grande)[0], 0)
+        self.assertEqual(warden.entregas_pendentes(), [])
+
+    # ---- a outra ponta: (i) não pode afrouxar ----
+
+    def test_nunca_citado_trava_para_sempre(self):
+        """Ninguém escreveu a linha: não é falta de medida, é falta de envio."""
+        grande = self._arquivo_grande()
+        escreve_state_db(self.db, [("assistant", "rendering", "stop")])
+        warden.entregas_registra(grande)
+        self._log_episodios([(0.0, 1, [0.001])])
+        for _ in range(3):
+            code, err = self._confirma(grande)
+            self.assertEqual(code, 1, err)
+            self.assertIn("NOT sent", err)
+        self.assertEqual(len(warden.entregas_pendentes()), 1)
+
+    def test_meio_do_turno_trava_para_sempre(self):
+        """O defeito de 15/09: 0 de 5 linhas do meio do turno chegaram."""
+        grande = self._arquivo_grande()
+        escreve_state_db(self.db, [
+            ("assistant", f"MEDIA:{os.path.abspath(grande)}", "tool_calls")])
+        warden.entregas_registra(grande)
+        self._log_episodios([(0.0, 1, [0.001])])
+        for _ in range(3):
+            code, err = self._confirma(grande)
+            self.assertEqual(code, 1, err)
+            self.assertIn("NOT sent", err)
+        self.assertEqual(len(warden.entregas_pendentes()), 1)
+
+    def test_o_gateway_anunciou_e_nao_mandou_trava_para_sempre(self):
+        """`Delivering 1` e nenhuma linha de anexo é uma medida, não uma cegueira."""
+        grande = self._arquivo_grande()
+        self._cita_na_final(grande)
+        self._log_episodios([(0.0, 1, [])])
+        for _ in range(3):
+            code, err = self._confirma(grande)
+            self.assertEqual(code, 1, err)
+        self.assertEqual(len(warden.entregas_pendentes()), 1)
+
+    def test_o_envio_fantasma_MEDIDO_trava_para_sempre(self):
+        """0 ms entre dois anexos de 16 MB é medida, e ela diz que não subiu.
+
+        Esta é a única coisa que o log acusa sozinho, e afrouxá-la devolveria
+        exatamente a perda de 16/09. O afrouxamento é só para a AUSÊNCIA de
+        medida, nunca para uma medida que reprovou.
+        """
+        grande = self._arquivo_grande()
+        self._cita_na_final(grande)
+        self._log_episodios([(0.0, 2, [0.0, 0.0])])
+        for _ in range(3):
+            code, err = self._confirma(grande)
+            self.assertEqual(code, 1, err)
+            self.assertIn("NOT confirming", err)
+        self.assertEqual(len(warden.entregas_pendentes()), 1)
+
+    def test_a_falha_declarada_pelo_gateway_trava_para_sempre(self):
+        grande = self._arquivo_grande()
+        self._cita_na_final(grande)
+        with open(self.log, "w", encoding="utf-8") as fh:
+            fh.write(self._linha(time.time(),
+                                 "Failed to send media (.mp4): boom"))
+        for _ in range(3):
+            code, err = self._confirma(grande)
+            self.assertEqual(code, 1, err)
+        self.assertEqual(len(warden.entregas_pendentes()), 1)
+
+    def test_o_porque_de_nao_travar_esta_escrito_no_codigo(self):
+        """Uma decisão desta ordem que não diz por quê é desfeita na primeira briga.
+
+        A frase que tem de estar lá: honestidade que trava o trabalho vira
+        `--even-if-owed` em duas horas, e aí não há nem honestidade nem
+        trabalho.
+        """
+        import inspect
+        fonte = inspect.getsource(warden._entregue_mas_sem_medida)
+        self.assertIn("--even-if-owed", fonte)
+        self.assertIn("13", fonte)           # os 13 episódios de um anexo só
+
+
+class OCarimboDeTesteNaoEscreveMilSegundos(unittest.TestCase):
+    """`,1000` não é um milissegundo válido, e o leitor lê os três dígitos.
+
+    Medido nesta suíte: o formatador dos carimbos de mentira fazia
+    `",%03d" % int(round((quando % 1) * 1000))`. Com `quando % 1 >= 0.9995` o
+    arredondamento sobe para 1000, o campo passa a ter QUATRO dígitos, e
+    `warden._carimbo_do_log` lê `linha[20:23]` == `"100"` -- 0,1 s onde deviam
+    ser 1,0 s. O `strftime` acima, esse, trunca os segundos, então os dois
+    campos discordavam por um segundo inteiro.
+
+    Fez `ZeroMilissegundoNaoEUmUpload::test_envios_desde_devolve_o_carimbo_de_cada_tentativa`
+    falhar uma vez em duas rodadas: um flake de ~1 em 2000 por carimbo, que
+    numa suíte com dezenas de carimbos aparece sozinho de vez em quando. Um
+    teste que falha por causa do seu próprio andaime ensina a ignorar a suíte.
+    """
+
+    def test_a_fracao_que_arredondava_para_mil_nao_escreve_quatro_digitos(self):
+        for fracao in (0.9995, 0.99999, 0.9996, 0.99951):
+            carimbo = carimbo_de_log(1_700_000_000 + fracao)
+            self.assertEqual(len(carimbo), 23, carimbo)
+            self.assertEqual(carimbo[20:23], "999", carimbo)
+
+    def test_o_carimbo_volta_pelo_leitor_com_o_mesmo_instante(self):
+        """A prova é a ida e a volta: quem escreve e quem lê têm de concordar."""
+        for fracao in (0.0, 0.001, 0.5, 0.9, 0.9994, 0.9995, 0.99999):
+            quando = 1_700_000_000 + fracao
+            lido = warden._carimbo_do_log(
+                carimbo_de_log(quando) + " INFO x: y")
+            self.assertAlmostEqual(lido, quando, delta=0.002,
+                                   msg=f"{fracao!r} -> {carimbo_de_log(quando)}")

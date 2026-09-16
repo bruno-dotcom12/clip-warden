@@ -876,6 +876,80 @@ def entregas_confirma(clip):
     return achou, entregas_pendentes()
 
 
+# O livro também guarda QUANTOS reenvios ele já pediu sem ter medida nenhuma,
+# e esse número é o que separa a primeira passagem da segunda.
+#
+# Sem ele, "reenvie uma vez" não tem como acontecer: cada `warden delivered` é
+# um processo novo, que não lembra nada do anterior. A memória entre dois
+# turnos deste comando é o `entregas.json` e mais nada -- então é nele que a
+# tentativa fica anotada.
+REENVIOS_SEM_MEDIDA = 1
+
+
+def entregas_reenvios_pedidos(clip):
+    """Quantos reenvios este livro já pediu para este clipe SEM medida. -> int"""
+    alvo = os.path.abspath(os.path.expanduser(clip))
+    for row in entregas_all():
+        if row.get("clip") == alvo and not row.get("sent"):
+            try:
+                return int(row.get("resends_asked") or 0)
+            except (TypeError, ValueError):
+                # Livro escrito por outra versão, ou campo corrompido: conta
+                # como zero. Cobrar um reenvio a mais é barato; travar por não
+                # saber ler o próprio número é o defeito que isto conserta.
+                return 0
+    return 0
+
+
+def entregas_pede_reenvio(clip):
+    """Anota mais um reenvio pedido para este clipe. Devolve o total. -> int"""
+    alvo = os.path.abspath(os.path.expanduser(clip))
+    rows = entregas_all()
+    total = 0
+    for row in rows:
+        if row.get("clip") == alvo and not row.get("sent"):
+            try:
+                total = int(row.get("resends_asked") or 0) + 1
+            except (TypeError, ValueError):
+                total = 1
+            row["resends_asked"] = total
+            row["resend_asked_at"] = datetime.now(timezone.utc).isoformat()
+    if total:
+        try:
+            _entregas_grava(rows)
+        except OSError:
+            # Sem estado gravável não há livro nenhum -- `entregas_registra`
+            # também terá falhado -- e o portão não existe para ser travado.
+            pass
+    return total
+
+
+def entregas_encerra_sem_medida(clip):
+    """Risca um clipe SEM medida nenhuma, e deixa escrito que foi assim. -> bool
+
+    O `sent` é o mesmo que o portão do `lote render` lê, porque o efeito
+    pretendido é o mesmo: destravar o trabalho. O que não pode ser o mesmo é o
+    REGISTRO -- quem abrir o `entregas.json` depois precisa distinguir um clipe
+    cujo envio foi cronometrado de um que só deixou de ser cobrado, e é para
+    isso que serve `closed_without_measurement`.
+    """
+    alvo = os.path.abspath(os.path.expanduser(clip))
+    rows = entregas_all()
+    achou = False
+    for row in rows:
+        if row.get("clip") == alvo and not row.get("sent"):
+            row["sent"] = True
+            row["sent_at"] = datetime.now(timezone.utc).isoformat()
+            row["closed_without_measurement"] = True
+            achou = True
+    if achou:
+        try:
+            _entregas_grava(rows)
+        except OSError:
+            pass
+    return achou
+
+
 # ------------------------------------------------- o livro dos renders que passaram
 
 # Um clipe que PASSOU pelos três portões não muda se for renderizado de novo com
@@ -3149,6 +3223,26 @@ def bloco_da_mensagem_final(liberados, arquivo=None, nao_saiu=None, de_antes=0):
           f"person is writing in, and send nothing else after it: a tool call "
           f"after these lines throws the attachments away, silently.",
           file=sys.stderr)
+    # A outra ponta, medida em 16/09/2026 e que custou a demonstração inteira.
+    #
+    # Às 18:20:21 o agente mandou "On it." pelo `plow_send_sequence`, no MEIO
+    # do turno. Isso marcou `turn["reply_delivered"] = True` (plow_chat:2603) e,
+    # às 18:22:41, o portão anti-duplicata do adaptador (plow_chat:2062-2065)
+    # devolveu `SendResult(success=True)` SEM MANDAR NADA -- para a prosa de
+    # 250 chars e para os dois anexos de 16 MB. As três linhas do gateway
+    # saíram no mesmo milissegundo, o livro de entregas carimbou `delivered`,
+    # e o dono não recebeu clipe nenhum. A única marca que o portão deixa é um
+    # `log.debug`, e o processo roda em INFO.
+    #
+    # O aviso "estou nisso" continua valendo -- mas como mensagem FINAL de um
+    # primeiro turno curto, não como recado no meio deste.
+    print("And do NOT call any tool that sends a message to the chat "
+          "(plow_send_sequence, resume_invite) EARLIER in this same turn: "
+          "measured 16/09/2026, one mid-turn 'On it.' made the chat adapter "
+          "swallow the whole delivery that came after it -- prose and both "
+          "16 MB attachments -- and report success to everything that logs. "
+          "If you want to say 'on it', say it as the FINAL message of a short "
+          "first turn.", file=sys.stderr)
     if de_antes:
         print(f"# {de_antes} of the path(s) above cleared in an EARLIER render "
               f"and was never sent. It is owed, so it goes out in this same "
@@ -5441,24 +5535,91 @@ def cmd_lote(args):
 # modelo, que é o que havia antes.
 GATEWAY_LOG = os.environ.get("WARDEN_GATEWAY_LOG",
                              "/var/lib/hermes/logs/gateway.log")
+# A linha que este comando conta -- e ela é escrita ANTES do envio, o que é a
+# diferença entre este comando e um recibo.
+#
+# base.py:3880-3881, lido do container vivo em 16/09/2026:
+#
+#     3880  logger.info("[%s] Sending video attachment (%s) to %s", ...)
+#     3881  result = await self.send_video(chat_id=chat_id, video_path=path, ...)
+#
+# O log sai antes do `await`. `Delivering N non-image MEDIA` (base.py:3891) sai
+# antes do laço da 3893. As duas dizem "vou tentar", nenhuma diz "subiu" -- por
+# isso nada que se apoie nelas pode usar a palavra da chegada.
 _SAIU = "Sending video attachment"
 
-# ATENÇÃO: esta string NÃO foi confirmada em log nenhum.
+# Esta string ESTÁ confirmada na fonte -- e a rede de segurança dela continua
+# não disparando, por outro motivo.
 #
-# `_SAIU` foi lido de um gateway.log de verdade. `_FALHOU` não: a auditoria
-# deste projeto registra, duas vezes, que "Failed to send media" nunca foi
-# observada -- nem em 15/09 nem depois. Ela entrou junto do bloco "Medido em
-# 15/09" acima e herdou uma autoridade que não tem.
+# O comentário que ficou aqui desde 15/09 dizia que `_FALHOU` "NÃO foi
+# confirmada em log nenhum" e que, se a frase real do gateway fosse outra, esta
+# rede nunca dispararia. A frase foi lida na fonte em 16/09/2026, dentro do
+# container vivo, e ela bate: base.py:3885-3886 formata
 #
-# O que isso significa, exatamente: se a frase real do gateway for outra, esta
-# rede de segurança NUNCA dispara. Ela não gera alarme falso -- uma linha que
-# a contenha é uma linha que está mesmo lá -- mas o silêncio dela não é prova
-# de que nada falhou, e a saída de `warden delivered` não pode dizer que é.
-# Por isso a mensagem que a usa fala em "linha que casa com este padrão", e
-# não em "falha de envio". Quando alguém puser as mãos num log com uma falha
-# de verdade, é esta constante que muda -- e aí o comentário sai.
+#     logger.warning("[%s] Failed to send %s (%s): %s", self.name,
+#                    "media" if media_tag else "local file", ext, result.error)
+#
+# o que produz exatamente `[Plow_Chat] Failed to send media (.mp4): <erro>`.
+#
+# O problema não é o texto, é a CONDIÇÃO que o produz: a linha 3884 é
+# `if not result.success`. No defeito medido em 16/09 o adaptador do Plow
+# devolveu `SendResult(success=True)` sem mandar nada (o portão anti-duplicata
+# de plow_chat:2062-2065), então esta linha não foi escrita, não havia nada a
+# casar, e o silêncio dela confirmou uma entrega que não existiu. Uma rede que
+# só pega a falha declarada não pega a falha silenciosa -- quem pega essa é o
+# cronômetro de `_PISO_UPLOAD_S`, abaixo.
 _FALHOU = "Failed to send media"
 _ANUNCIOU = re.compile(r"Delivering (\d+) non-image MEDIA")
+
+# O cronômetro: a única grandeza do log que separa uma entrega que chegou de
+# uma que não chegou.
+#
+# Medido em 16/09/2026, nos dois logs, no MESMO formato e com as MESMAS
+# palavras -- fora do carimbo, as linhas são iguais caractere por caractere:
+#
+#   7a, que o dono RECEBEU (logs-7a/publicacao/logs/gateway.log:85-87):
+#       15:14:49,518 Sending video attachment (.mp4)
+#       15:14:54,384 Sending video attachment (.mp4)   -> 4,866 s
+#   demonstração, que o dono NÃO recebeu (/var/lib/hermes/logs/gateway.log:49-51):
+#       18:22:41,674 Sending video attachment (.mp4)
+#       18:22:41,674 Sending video attachment (.mp4)   -> 0,000 s
+#
+# Os dois arquivos da demonstração têm 16.564.814 e 16.162.822 bytes. Como a
+# linha é escrita antes do `await` (ver `_SAIU`), o intervalo entre uma linha e
+# a seguinte É a duração do envio anterior. Zero não é um envio rápido: é um
+# envio que não aconteceu -- foi o portão do Plow devolvendo `success=True` sem
+# subir byte nenhum.
+#
+# O piso é 0,5 s e o tamanho mínimo é 1 MB, e os dois vêm da mesma medida: 16 MB
+# em 4,866 s é ~3,4 MB/s, a taxa que esta máquina de fato alcançou; nessa taxa
+# 1 MB leva ~0,3 s. Abaixo de 1 MB este projeto não mediu nada e o comando não
+# acusa -- acusar sem medida devolveria o defeito do 7a (livro que nunca fecha,
+# agente reenviando em todo turno). Acima dele, um intervalo abaixo do piso é
+# uma física que não existe.
+#
+# E ESTE PISO DEPENDE DE UMA COISA QUE NÃO ESTÁ NESTE REPOSITÓRIO, registrada
+# aqui em 16/09/2026 porque ninguém a tinha registrado em lugar nenhum.
+# `base.py:3894-3895` dorme ANTES de cada anexo:
+#
+#     3894  human_delay = self._get_human_delay()
+#     3895  await asyncio.sleep(human_delay)
+#
+# e `_get_human_delay` (base.py:3729-3740) devolve 0,8-2,5 s quando
+# `HERMES_HUMAN_DELAY_MODE=natural`. Esse sono é escrito ENTRE duas linhas de
+# `Sending video attachment`, então ele entra no intervalo que este piso mede:
+# com o modo ligado, dois anexos ENGOLIDOS ficariam de 0,8 a 2,5 s um do outro
+# -- acima do piso de 0,5 s -- e o cronômetro aprovaria a perda em silêncio.
+# O modo NÃO está ligado nesta imagem (nada neste repositório escreve essa
+# variável), e é por isso que isto é uma dependência e não um defeito ativo.
+# Quem a mantém honesta é `cronometro_cego`: enquanto a variável estiver
+# ligada, um intervalo abaixo de `_TETO_SONO_NATURAL_S` mede o sono e não o
+# upload, e o comando diz que não mediu em vez de riscar.
+_PISO_UPLOAD_S = 0.5
+_BYTES_QUE_DEMORAM = 1_000_000
+
+# O teto do sono do modo `natural` (base.py:3729-3740). Acima dele, o que sobra
+# do intervalo é upload; abaixo, pode ser só o `asyncio.sleep`.
+_TETO_SONO_NATURAL_S = 2.5
 
 # O state.db do Hermes é o registro do que ESTE agente escreveu, e é o que o
 # log do gateway não tem: o caminho do arquivo.
@@ -5511,17 +5672,45 @@ def _carimbo_do_log(linha):
 def envios_desde(quando):
     """O que o log do gateway registrou depois de `quando`.
 
-    Devolve {"saiu", "falhou", "anunciados"} -- anexos de vídeo que subiram,
-    falhas de envio, e quantos MEDIA o gateway disse que ia entregar
-    ("Delivering N non-image MEDIA") -- ou None quando não há log para ler.
+    Devolve {"saiu", "falhou", "anunciados", "carimbos"} -- tentativas de anexo
+    de vídeo REGISTRADAS (a linha sai antes do envio: ver `_SAIU`), falhas de
+    envio declaradas, quantos MEDIA o gateway disse que ia entregar
+    ("Delivering N non-image MEDIA"), e o horário de cada tentativa -- ou None
+    quando não há log para ler.
+
+    `carimbos` é o que faltava para distinguir o 7a que chegou do envio da
+    demonstração que não chegou: as contagens são idênticas nos dois, os
+    intervalos não. Ver `_PISO_UPLOAD_S`.
 
     None é diferente de zero, e a diferença é o projeto inteiro: zero é uma
     medida, "não consegui olhar" não é, e tratar os dois como a mesma coisa é
     como este projeto perdeu clipe antes.
+
+    A LEITURA PARA NO FIM DO EPISÓDIO DAQUELA MENSAGEM, e esse teto é o
+    conserto de 16/09/2026 (o anterior lia o log inteiro até o fim do arquivo).
+    Um episódio é o que o gateway escreve por mensagem entregue: uma linha
+    `Delivering N non-image MEDIA attachment(s)` e, depois dela, até N linhas
+    `Sending video attachment`. Em todos os logs reais deste repositório é
+    assim -- logs-7a/publicacao/nuvem-logs/gateway.log:83-91 tem um episódio de
+    2 anexos às 15:14:04 e outro de 1 anexo às 15:17:07.
+
+    Sem esse teto, QUALQUER anexo posterior desarmava o cronômetro: os dois
+    anexos engolidos da mensagem davam intervalo 0,000 s, mas
+    `_maior_intervalo` é um `max` sobre a lista inteira, então bastava a
+    resposta seguinte -- três minutos depois -- para o maior intervalo virar
+    180 s, passar do piso, e o alarme calar sobre o clipe perdido. Medido
+    rodando o comando, não deduzido.
+
+    As duas bordas da janela:
+      - a PRÓXIMA linha de anúncio fecha o episódio (é outra mensagem);
+      - nenhum episódio conta mais anexos do que anunciou, porque a linha N+1
+        é de outra entrega mesmo quando o anúncio dela não foi escrito.
     """
     if not os.path.isfile(GATEWAY_LOG):
         return None
     saiu, falhou, anunciados = 0, 0, 0
+    carimbos = []
+    aberto = False                      # já vimos o começo deste episódio
     try:
         with open(GATEWAY_LOG, encoding="utf-8", errors="replace") as fh:
             for linha in fh:
@@ -5532,17 +5721,225 @@ def envios_desde(quando):
                 if t is None or t < float(quando) - 2:
                     continue
                 if anuncio:
+                    if aberto:
+                        break           # começou o episódio da mensagem seguinte
+                    aberto = True
                     try:
                         anunciados += int(anuncio.group(1))
                     except ValueError:
                         pass
                 elif _FALHOU in linha:
+                    aberto = True
                     falhou += 1
                 else:
+                    if anunciados and saiu >= anunciados:
+                        break           # passou do que este episódio anunciou
+                    aberto = True
                     saiu += 1
+                    carimbos.append(t)
     except OSError:
         return None
-    return {"saiu": saiu, "falhou": falhou, "anunciados": anunciados}
+    return {"saiu": saiu, "falhou": falhou, "anunciados": anunciados,
+            "carimbos": carimbos}
+
+
+def _maior_intervalo(carimbos):
+    """O maior intervalo entre duas tentativas consecutivas, ou None.
+
+    None com menos de duas tentativas, e é uma distinção que importa: com uma
+    linha só não há intervalo NENHUM para medir -- a duração do último upload
+    não é escrita em lugar nenhum --, e "não deu para medir" nunca pode virar
+    "medi e está tudo certo".
+    """
+    ordenados = sorted(t for t in (carimbos or []) if t is not None)
+    if len(ordenados) < 2:
+        return None
+    return max(b - a for a, b in zip(ordenados, ordenados[1:]))
+
+
+def upload_instantaneo(log, caminho):
+    """Este log descreve uploads que não couberam no tempo que ocupam? -> frase|None
+
+    Devolve a frase que descreve a medida quando as tentativas estão todas
+    grudadas -- o caso medido em 16/09, dois anexos de 16 MB na mesma linha do
+    relógio -- e None quando não há o que medir: um anexo só, intervalo acima
+    do piso, arquivo abaixo de `_BYTES_QUE_DEMORAM`, ou tamanho que não deu
+    para ler.
+
+    None é "não acusei", nunca "confirmei".
+    """
+    if not log:
+        return None
+    intervalo = _maior_intervalo(log.get("carimbos"))
+    if intervalo is None or intervalo >= _PISO_UPLOAD_S:
+        return None
+    try:
+        tamanho = os.path.getsize(caminho)
+    except OSError:
+        return None
+    if tamanho < _BYTES_QUE_DEMORAM:
+        return None
+    return (f"the {log['saiu']} attachment line(s) after it are {intervalo:.3f}s "
+            f"apart, and that file is {tamanho / 1000000.0:.1f} MB. The gateway "
+            f"writes that line BEFORE the upload it starts, so the gap between "
+            f"one line and the next IS how long the previous upload took: "
+            f"{intervalo:.3f}s means no upload happened. Measured 16/09/2026: "
+            f"the same two lines, for 16 MB files that DID arrive, sat 4.866s "
+            f"apart")
+
+
+def _modo_de_sono_do_gateway():
+    """O modo de espera do gateway entre um anexo e o outro, como texto.
+
+    Lido do ambiente deste processo, que é o mais longe que este comando
+    alcança: o `sleep` é do gateway e a variável é dele. Quando ela não chega
+    até aqui, o que se lê é o padrão -- sem sono --, e é exatamente por isso
+    que a dependência está escrita por extenso em `_PISO_UPLOAD_S`: um piso que
+    depende de uma variável de OUTRO processo não é um piso, é um acordo, e um
+    acordo que ninguém registrou é o que quebra sozinho.
+    """
+    return (os.environ.get("HERMES_HUMAN_DELAY_MODE") or "").strip().lower()
+
+
+def cronometro_cego(log, caminho):
+    """O cronômetro conseguiu medir ALGUMA COISA sobre este arquivo? -> frase|None
+
+    Devolve a frase que diz por que não mediu, e None quando mediu. É o outro
+    lado de `upload_instantaneo`: aquele acusa, este se recusa a aprovar. As
+    duas cegueiras medidas em 16/09/2026:
+
+      - UM ANEXO SÓ. `_maior_intervalo` devolve None com menos de duas linhas,
+        e o comando riscava assim mesmo: log com uma linha em 0 ms e arquivo de
+        16 MB saíam `EXIT: 0`. A duração do ÚLTIMO upload não é escrita em
+        lugar nenhum do log, então aqui não há medida -- e "me dá um clipe" é
+        um pedido normal, então este é o caso comum, não a exceção.
+      - O SONO DO GATEWAY. Com `HERMES_HUMAN_DELAY_MODE=natural` o gateway
+        dorme 0,8-2,5 s antes de cada anexo (base.py:3894-3895), e esse sono
+        cai dentro do intervalo medido: acima do piso de 0,5 s e ainda assim
+        sem upload nenhum embaixo dele. Ver `_PISO_UPLOAD_S`.
+
+    O piso de tamanho é o MESMO da acusação (`_BYTES_QUE_DEMORAM`): abaixo de
+    1 MB este projeto não mediu física nenhuma, então não acusa e também não se
+    cala -- não é sobre isso. Segurar o livro ali seria o defeito do 7a de
+    volta (livro que nunca fecha, agente reenviando em todo turno) em troca de
+    uma dúvida que nunca foi medida.
+    """
+    try:
+        tamanho = os.path.getsize(caminho)
+    except OSError:
+        return None
+    if tamanho < _BYTES_QUE_DEMORAM:
+        return None
+    megas = tamanho / 1000000.0
+    intervalo = _maior_intervalo((log or {}).get("carimbos"))
+    if intervalo is None:
+        return (f"the gateway logged a single attachment line after that "
+                f"message, and the duration of the LAST upload is written "
+                f"nowhere -- so there is no gap to time, and that file is "
+                f"{megas:.1f} MB, big enough that an instant send is exactly "
+                f"the loss this check exists to catch (16 MB that DID arrive "
+                f"took 4.866s, measured 16/09/2026)")
+    if (_modo_de_sono_do_gateway() == "natural"
+            and intervalo < _TETO_SONO_NATURAL_S):
+        return (f"the widest gap between those attachment lines is "
+                f"{intervalo:.3f}s, and the gateway is sleeping 0.8-2.5s "
+                f"before EACH attachment because HERMES_HUMAN_DELAY_MODE="
+                f"natural (base.py:3894-3895) -- so that gap measures the "
+                f"sleep, not the upload of a {megas:.1f} MB file")
+    return None
+
+
+def _como_fechar_no_lugar_do_cronometro(caminho):
+    """A saída que sobra quando a medida não existe: a palavra de quem recebeu."""
+    return (f"Send it again, in the LAST message of your turn, and say in one "
+            f"line that you are sending it again. Do NOT call any tool that "
+            f"sends to the chat earlier in that same turn. If the person tells "
+            f"you it arrived, close the book on THEIR word -- that is the only "
+            f"proof of arrival that exists here: `warden delivered "
+            f"{os.path.abspath(caminho)} --arrived`.")
+
+
+def _entregue_mas_sem_medida(caminho, nome, primeira, porque):
+    """A dívida (ii): a linha SAIU na mensagem final e o log não deixa medir.
+
+    DUAS DÍVIDAS, E SÓ UMA DELAS TRAVA. Escrito por extenso porque a separação
+    é a decisão inteira, e uma decisão desta ordem que não diz por quê é
+    desfeita na primeira briga.
+
+      (i)  NUNCA ENTREGUE -- nenhuma linha `MEDIA:` saiu numa mensagem final do
+           turno: `ausente` e `meio-do-turno` acima. É o defeito de 15/09/2026
+           (0 de 5 linhas escritas no meio do turno chegaram, 8 de 8 das finais
+           chegaram) e ele CONTINUA travando o `lote render`, sem contagem de
+           reenvio e sem prazo. Trava porque ali existe uma ação que resolve, e
+           ela é exata: escrever a linha na ÚLTIMA mensagem do turno.
+
+      (ii) ENTREGUE E NÃO VERIFICÁVEL -- esta função. A linha saiu na mensagem
+           final e o gateway.log não permite medir o envio. Aqui NÃO existe
+           ação que produza a medida, porque a medida não existe: com um anexo
+           só não há intervalo entre dois carimbos, e a duração do ÚLTIMO
+           upload não é escrita em lugar nenhum do log. Um portão que só abre
+           com uma evidência que não existe não é um portão, é uma parede.
+
+    E NÃO DÁ PARA MEDIR MELHOR. A saída óbvia -- cronometrar até a PRÓXIMA
+    linha do log, qualquer que seja -- foi conferida contra o caso que falhou
+    em 16/09: a linha seguinte ao anexo veio 5,1 s depois e era a notificação
+    de um processo de fundo, sem relação nenhuma com o upload. Essa medida
+    teria APROVADO o envio-fantasma. Uma medida inventada é pior que a
+    ausência, porque ela risca.
+
+    POR QUE A PAREDE É CARA. `para_por_clipe_devendo` é portão: com um clipe
+    devendo, `warden lote render` não baixa e não renderiza, e sai 1. E o
+    episódio de UM anexo é MAIORIA nos logs reais deste repositório -- 13
+    contra 11, contados assim:
+
+        grep -ohE "Delivering [0-9]+" logs-7a/publicacao/*/gateway.log \\
+          | sort | uniq -c
+
+    ou seja, o caso em que não há medida possível é o caso COMUM -- "me dá um
+    corte" é o pedido normal --, não a exceção. Sem esta saída, o pedido normal
+    deixa o agente reenviando o mesmo arquivo e sem renderizar, para sempre,
+    até alguém digitar `--arrived`.
+
+    E é aí que está o custo verdadeiro: uma honestidade que trava o trabalho
+    vira `--even-if-owed` em duas horas -- a primeira vez que a gravação do
+    dono parar por causa dela, alguém desliga o portão inteiro --, e aí não
+    sobra nem a honestidade nem o trabalho. Uma trava que as pessoas desligam
+    protege menos que uma frase que elas leem.
+
+    O QUE ESTA FUNÇÃO FAZ, então: pede UM reenvio (`REENVIOS_SEM_MEDIDA`) e
+    anota no livro que pediu. Na passagem seguinte, com o reenvio já pedido,
+    ela para de ser portão: risca a linha com `closed_without_measurement` e
+    manda o agente dizer à pessoa, NA LÍNGUA DELA, que o arquivo foi mandado e
+    que esta máquina não tem como confirmar a chegada. O que ela nunca faz é
+    dizer que o envio foi confirmado: isso continua sem ter com o que ser dito
+    (ver `cmd_delivered` -- as quatro candidatas a prova de chegada foram lidas
+    dentro do container em 16/09 e nenhuma serve).
+
+    Um reenvio e não zero porque reenviar custa uma linha de chat contra um
+    clipe perdido; um e não dois porque o segundo reenvio tem exatamente a
+    mesma chance de ser medido que o primeiro -- nenhuma -- e o que ele
+    acrescenta é só mais um turno de atraso para a pessoa.
+    """
+    if entregas_reenvios_pedidos(caminho) < REENVIOS_SEM_MEDIDA:
+        entregas_pede_reenvio(caminho)
+        print(primeira + " This is asked ONCE: if the next run of this command "
+                         "still has no measurement, this clip stops holding "
+                         "the book and you will be told what to say instead.",
+              file=sys.stderr)
+        return False
+    entregas_encerra_sem_medida(caminho)
+    print(f"handed off, NOT confirmed, and no longer holding the batch: "
+          f"{nome} -- {porque} You have already been asked once to send it "
+          f"again, and nothing here is ever going to measure that send, so "
+          f"this stops being a gate: a lock that only opens on evidence this "
+          f"machine cannot produce would stop the person's work instead of "
+          f"protecting it. Crossed off so the next render can run. Nothing on "
+          f"this machine says that file reached the person, and nothing on it "
+          f"can. Tell them in ONE line, in THEIR language: you sent the file, "
+          f"and this machine cannot verify that it arrived -- ask them to say "
+          f"so if it is not there. Do not say it arrived, and do not say "
+          f"anything here proved it.")
+    return True
 
 
 def _carimbo_da_mensagem(valor):
@@ -5720,6 +6117,14 @@ def verifica_um_envio(caminho, varredura=False):
     onde este processo espera, e o livro vazio é o que desliga a trava do
     pedido 4 sem dizer nada a ninguém.
 
+    AS DUAS DÍVIDAS QUE ESTA FUNÇÃO SEPARA, e a separação é de 16/09/2026:
+    nenhuma linha `MEDIA:` em mensagem final do turno (`ausente`,
+    `meio-do-turno`, e o gateway que anunciou e não mandou) trava o `lote
+    render` sem prazo -- é o defeito de 15/09 e ali existe o que fazer. A linha
+    que SAIU na final e que o log não deixa medir é outra coisa: um reenvio, e
+    depois dele ela deixa de travar e vira uma frase para a pessoa. Ver
+    `_entregue_mas_sem_medida`, que carrega o porquê por escrito.
+
     Tudo o que ela imprime vai para stderr menos a confirmação, e tudo em
     INGLÊS: quem lê é o modelo, e é exatamente aqui -- quando a entrega já
     falhou -- que uma frase em português o faz trocar de idioma com a pessoa.
@@ -5787,41 +6192,72 @@ def verifica_um_envio(caminho, varredura=False):
     # velha, até uma delas ter anexo depois. A duplicata que o gateway grava é
     # idêntica e não leva anexo nenhum; a original levou. Ver o comentário em
     # `mensagem_que_citou`.
-    log = None
+    log, instantaneo = None, None
     for tentativa in (citou.get("candidatas") or [citou]):
         if tentativa.get("estado") != "final":
             continue
         lida = envios_desde(tentativa.get("at_ts") or registro["at_ts"])
         if lida is None:
-            log = None
+            log, instantaneo = None, None
             break
-        if lida["saiu"] >= 1 and not lida["falhou"]:
-            log = lida
+        # Uma leitura em que os anexos saíram todos no mesmo instante não conta
+        # como leitura boa: ela é a assinatura do envio que não aconteceu.
+        rapido_demais = upload_instantaneo(lida, caminho)
+        if lida["saiu"] >= 1 and not lida["falhou"] and not rapido_demais:
+            log, instantaneo = lida, None
             break
         if log is None or not log.get("saiu"):
-            log = lida
+            log, instantaneo = lida, rapido_demais
     if log is None:
-        # Metade lida é melhor que nenhuma, e ela é dita como metade.
-        entregas_confirma(caminho)
-        print(f"confirmed: {nome} -- the message carrying its MEDIA: line was "
-              f"the final one of a turn, which is what attaches. NOT verified "
-              f"beyond that: {GATEWAY_LOG} is not readable from here, so "
-              f"nothing independent says the attachment actually left the "
-              f"machine.", file=sys.stderr)
-        return True
+        # NÃO RISCA, e isto mudou em 16/09/2026.
+        #
+        # Este ramo dizia a verdade -- "não consigo ler o gateway.log daqui" --
+        # e riscava assim mesmo. O efeito no agente era o mesmo de uma
+        # confirmação: o clipe saía da lista, o comando saía 0, e o reenvio
+        # nunca acontecia. Uma frase honesta com o efeito de uma mentira
+        # continua entregando o clipe a ninguém.
+        #
+        # A meia-leitura que sobra -- a linha MEDIA: estava na mensagem final
+        # do turno -- é metade do caminho, e a metade que falta é justamente a
+        # que pegou o defeito de 16/09: no dia da demonstração as duas linhas
+        # `MEDIA:` estavam no lugar certo e nenhum dos dois arquivos chegou.
+        #
+        # E NÃO TRAVA PARA SEMPRE: a linha saiu na mensagem final do turno,
+        # então esta é a dívida (ii) -- entregue e não verificável. Um reenvio,
+        # e depois dele o livro fecha com a frase que manda avisar a pessoa.
+        # Ver `_entregue_mas_sem_medida`.
+        return _entregue_mas_sem_medida(
+            caminho, nome,
+            f"NOT verified, and NOT crossed off: {nome} -- the message "
+            f"carrying its MEDIA: line was the final one of a turn, which is "
+            f"what attaches, and that is ALL this could read. {GATEWAY_LOG} "
+            f"is not readable from here, so nothing independent says the "
+            f"attachment ever left the machine, and nothing here can tell "
+            f"this apart from the 16/09 loss. "
+            + _como_fechar_no_lugar_do_cronometro(caminho),
+            f"{GATEWAY_LOG} is not readable from here, so there is no "
+            f"independent reading of that send at all.")
     if log["falhou"]:
-        # Não afirma "o envio falhou" nem "a pessoa não tem o arquivo": o
-        # padrão que casou (`_FALHOU`) nunca foi visto num log real, então ele
-        # é uma pista e não um veredito. O que esta saída pode dizer com
-        # segurança é que nada aqui confirma a chegada -- e reenviar custa uma
-        # linha.
+        # O padrão (`_FALHOU`) foi lido na FONTE em 16/09/2026 -- base.py:3885-3886
+        # o formata palavra por palavra --, então uma linha que case com ele é o
+        # gateway dizendo que um envio falhou. O que continua sendo verdade é o
+        # outro lado: o gateway só escreve essa linha quando `result.success` é
+        # falso, e o portão do Plow devolve `success=True` sem mandar nada, então
+        # o SILÊNCIO dela não prova entrega nenhuma.
         print(f"NOT confirming {nome}: {log['falhou']} line(s) after the "
-              f"message that carried it match the send-failure pattern this "
-              f"check looks for ({_FALHOU!r}) -- a wording this project has "
-              f"never seen in a real gateway log, so treat it as a lead, not "
-              f"a verdict. Nothing here says the file arrived either. Send it "
-              f"again, in the LAST message of your turn, and say in one line "
-              f"that you are resending.", file=sys.stderr)
+              f"message that carried it match the gateway's send-failure "
+              f"wording ({_FALHOU!r}), which is written whenever a send comes "
+              f"back unsuccessful. Send it again, in the LAST message of your "
+              f"turn, and say in one line that you are sending it again.",
+              file=sys.stderr)
+        return False
+    if instantaneo:
+        # O defeito de 16/09, e o único ponto em que o log do gateway acusa
+        # sozinho um envio que não aconteceu. Não risca: é o que faz o agente
+        # reenviar, e reenviar custa uma linha contra um clipe perdido.
+        print(f"NOT confirming {nome}: {instantaneo}. Nothing here says that "
+              f"file reached the person. "
+              + _como_fechar_no_lugar_do_cronometro(caminho), file=sys.stderr)
         return False
     if log["saiu"] < 1:
         print(f"NOT confirming {nome}: the message carrying its MEDIA: line "
@@ -5832,11 +6268,53 @@ def verifica_um_envio(caminho, varredura=False):
               + ". Send it again in the LAST message of a turn.",
               file=sys.stderr)
         return False
+    cego = cronometro_cego(log, caminho)
+    if cego:
+        # Não riscar quando o cronômetro não mediu, e isto mudou em 16/09/2026.
+        #
+        # A ESCOLHA, escrita aqui porque é uma escolha e não uma dedução: das
+        # duas saídas possíveis -- (a) não riscar, e o livro continuar cobrando
+        # até haver evidência; (b) riscar com alguma OUTRA evidência que não o
+        # cronômetro -- esta é a (a), porque a (b) não tem com o que ser feita.
+        # As quatro candidatas a prova de chegada foram lidas dentro do
+        # container em 16/09 e nenhuma serve (ver `cmd_delivered`), e a palavra
+        # do próprio modelo já foi medida valendo zero: o caso que se quer
+        # pegar é justamente aquele em que ele acha que entregou.
+        #
+        # O que sobra de evidência fora do cronômetro é a da PESSOA, e ela tem
+        # um lugar: `warden delivered <clipe> --arrived`. Quem fecha o livro
+        # sem medida é quem recebeu o arquivo, não quem o mandou.
+        #
+        # O QUE MUDOU DEPOIS, e é o outro lado da mesma decisão: a (a) valia
+        # "até haver evidência", e aqui evidência NUNCA vai haver -- com um
+        # anexo só não existe intervalo entre dois carimbos, e é este o caso
+        # comum (13 episódios de um anexo contra 9 de dois nos logs deste
+        # repositório). "Até haver evidência" virava "para sempre", e para
+        # sempre é o `lote render` que não roda mais. Então: um reenvio, e
+        # depois dele a cobrança vira uma frase. Ver `_entregue_mas_sem_medida`.
+        return _entregue_mas_sem_medida(
+            caminho, nome,
+            f"NOT confirming {nome}: {cego}. This is not an accusation, it "
+            f"is the absence of a measurement -- and an absence cannot cross "
+            f"a clip off a book that exists because a clip was lost. "
+            + _como_fechar_no_lugar_do_cronometro(caminho),
+            f"{cego}.")
     entregas_confirma(caminho)
-    print(f"confirmed: {nome} -- its MEDIA: line was in a final message"
+    # O cronômetro só diz alguma coisa com DUAS tentativas ou mais: a duração
+    # do último upload não é escrita em lugar nenhum, então com uma linha só
+    # não há intervalo a medir. Dizer "nenhuma instantânea" aí seria a mesma
+    # afirmação sem medida que esta saída existe para não repetir.
+    cronometro = (" none of them instant"
+                  if _maior_intervalo(log.get("carimbos")) is not None
+                  else " a single attempt, so there is no gap to time")
+    print(f"handed off: {nome} -- its MEDIA: line was in a final message"
           + (f", the gateway announced {log['anunciados']} MEDIA"
              if log["anunciados"] else "")
-          + f" and {log['saiu']} video attachment(s) left after it.")
+          + f" and logged {log['saiu']} send attempt(s) after it,{cronometro}. "
+            f"NOT verified as arrived: every one of those log lines is written "
+            f"BEFORE the upload it starts, so what they prove is a handover to "
+            f"the gateway, never a delivery. Crossing it off so the batch can "
+            f"close. If the person has not said they got it, ask.")
     return True
 
 
@@ -5862,7 +6340,51 @@ def cmd_delivered(args):
     clipe 1 confirmava o clipe 2 -- o comando riscava como entregue exatamente
     o clipe que se perdeu. Por isso a pergunta é por ARQUIVO: em qual mensagem
     sua este caminho apareceu, e essa mensagem foi a FINAL do turno?
+
+    O QUE ESTE COMANDO NÃO SABE, e por que ele parou de dizer "confirmed".
+
+    Procurei, em 16/09/2026, uma prova de CHEGADA acessível de onde este
+    comando roda. Há quatro candidatas e nenhuma serve hoje:
+
+      - `messages.platform_message_id` no state.db: é a coluna certa -- o Plow
+        devolve um `uid` por mensagem criada (`_post_message` ->
+        `SendResult(message_id=...)`, plow_chat:2482) -- e está NULL nas 31
+        mensagens do assistente da sessão da demonstração. O Hermes não
+        persiste o uid.
+      - `delivery_obligations` no state.db: diz `delivered` para a prosa da
+        msg 63, que o dono não recebeu. Ela é carimbada com
+        `SendResult.success`, e o adaptador do Plow devolve `success=True` sem
+        mandar nada em quatro pontos (plow_chat:2065, :2160, :2202, :2459).
+      - `response_store.db`: cache de resposta do modelo, não tem entrega.
+      - os logs: um grep por `msg_` ou `message_id` no gateway.log e no
+        agent.log do container não devolve um único uid de plataforma.
+
+    A única prova de chegada que existe é a thread como o Plow a guarda:
+    `GET {BASE}/v1/chats/{chat_uid}/messages?limit=50` (plow_chat:2974). Ela
+    exige o bearer das credenciais do Plow, que este comando não tem e não
+    deve ter. Então, da posição em que ele roda, CHEGADA não é verificável --
+    e o que ele pode dizer, ele diz: `handed off`, com a medida que fez.
     """
+    if getattr(args, "arrived", False):
+        # A única prova de chegada que existe nesta máquina é a pessoa dizendo
+        # que chegou. `--arrived` é onde ela entra, e ela entra por ARQUIVO: em
+        # varredura, "a pessoa disse que chegou" esvaziaria o livro inteiro de
+        # uma vez, que é o contrário do que ela disse.
+        if not args.clip:
+            print("`--arrived` needs the path of the clip the person said "
+                  "they got. Without it this would close the book on every "
+                  "clip at once, and the person spoke about one.",
+                  file=sys.stderr)
+            return 1
+        if entregas_registro(args.clip) is None:
+            print(f"nothing was owing for {args.clip}.", file=sys.stderr)
+            return 1 if entregas_pendentes() else 0
+        entregas_confirma(args.clip)
+        print(f"crossed off on the person's word: "
+              f"{os.path.basename(args.clip)} -- nothing on this machine "
+              f"verified it, and nothing on this machine could. Say so if you "
+              f"report it.")
+        return 0 if not entregas_pendentes() else 1
     if args.clip:
         if entregas_registro(args.clip) is None:
             print(f"nothing was owing for {args.clip}. Either it was already "
@@ -5877,8 +6399,13 @@ def cmd_delivered(args):
             verifica_um_envio(row["clip"], varredura=True)
     pendentes = entregas_pendentes()
     if not pendentes:
-        print("nothing is owing. Every clip cleared in this window came back "
-              "confirmed.")
+        # "came back confirmed" era a mesma palavra da chegada sobre a mesma
+        # evidência de tentativa: o que o livro fecha é o que foi ENTREGUE AO
+        # GATEWAY, e nada nesta máquina sabe o que a pessoa recebeu.
+        print("nothing is owing. Every clip cleared in this window was handed "
+              "off to the gateway. That is the most this machine can read: no "
+              "receipt from the chat platform reaches here, so if the person "
+              "has not said they got the clips, ask.")
         return 0
     print(f"{len(pendentes)} clip(s) rendered and cleared, and NOT confirmed "
           f"as sent:", file=sys.stderr)
@@ -6368,6 +6895,11 @@ def main(argv=None):
                    help="the path `warden cut` printed, confirmed AFTER the "
                         "attachment left the machine. Omit to ask what is "
                         "still owing; exits 1 while anything is.")
+    p.add_argument("--arrived", action="store_true",
+                   help="the PERSON said this clip arrived. The only proof of "
+                        "arrival that reaches this machine; use it only when "
+                        "they said so, never to close a check you could not "
+                        "make.")
     p.set_defaults(func=cmd_delivered)
 
     args = parser.parse_args(argv)

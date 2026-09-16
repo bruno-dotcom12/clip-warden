@@ -254,6 +254,81 @@ da ferramenta que está rodando naquele instante.
 Que um `docker compose up` esquecido volte junto com a VM. Isso é do host, não
 da imagem. O que o aviso muda é que, quando acontecer, está escrito.
 
+## 6. O curador de fundo vinha ligado por omissão, e agora a imagem o desliga
+
+O Hermes traz um **curador de fundo**: terminado um turno, ele abre um segundo
+turno de modelo, relê a conversa inteira e reescreve a biblioteca de skills.
+Ninguém pede, e ele é cobrado.
+
+### A chave é fail-open, então "não declarar" não desliga
+
+`/opt/hermes/agent/background_review.py:187-199`:
+
+```python
+def load_background_review_settings() -> tuple[bool, Dict[str, Any]]:
+    """Single config read -> ``(enabled, task_cfg)``. Fail-open
+    (``enabled=True``) so a broken config never silently disables reviews..."""
+    ...
+        return is_truthy_value(task.get("enabled"), default=True), task
+```
+
+`default=True` é a frase inteira: **chave ausente é chave ligada**. E esta
+instalação nunca declarou nada — medido em 16/09/2026 no `warden-demo-agent-1`,
+o `/var/lib/hermes/config.yaml` não tem seção `auxiliary` nenhuma (as chaves de
+topo são `mcp_servers, agent, cron, tools, model, providers, display, memory,
+platforms, terminal, group_sessions_per_user, onboarding, plugins,
+_config_version, compression, approvals`). Logo, ligado o tempo todo.
+
+`false` desliga de fato porque `is_truthy_value` (`/opt/hermes/utils.py:24-30`)
+faz `bool(value)` num não-string: o booleano do YAML chega como `False` e vence
+o `default=True`. Por isso o que se escreve é um booleano, e não a string `'no'`,
+cuja coerção depende do conjunto TRUTHY do runtime.
+
+### Ele estava rodando no meio da demo
+
+Dois registros do dia, na sessão `20260916_181828_6e588b67`:
+
+- `agent.log:219`, **18:22:41,518** — `conversation turn: ...
+  msg='Review the conversation above and update the skill library. Be ACTIVE —
+  most ses...'`. É o curador começando **125 ms antes** de o gateway montar a
+  entrega dos dois clipes (`gateway.log:48`, 18:22:41,665).
+- `agent.log:247`, **18:23:37,833** — `Tool skill_manage returned error:
+  {"success": false, "error": "Refusing background curator patch for bundled
+  skill 'warden-clip'."}`. Ele tentou remendar uma skill empacotada da imagem, e
+  só não conseguiu porque o runtime recusa patch de curador em skill empacotada.
+
+### E ele NÃO foi quem perdeu a entrega
+
+Vale dizer isto com todas as letras, porque a coincidência de 125 ms convida ao
+erro. O curador roda numa thread daemon (`bg-review:...`) sobre um `AIAgent`
+forkado e não toca no caminho de envio; `cancel_background_review_for_live_turn`
+(`background_review.py:119`) cancela a **revisão** para um turno vivo começar,
+nunca o contrário. A entrega foi engolida pelo portão anti-duplicata do
+adaptador Plow, `/opt/hermes/plugins/plow_chat/__init__.py:2062-2065`, que
+devolve `SendResult(success=True)` sem enviar nada quando o turno já marcou
+`reply_delivered`.
+
+O curador é desligado pelo motivo dele próprio: um turno de modelo não pedido
+que escreve na biblioteca de skills.
+
+### Onde isso é feito
+
+`image/s6-overlay/scripts/warden-curador`, um oneshot do s6 irmão do
+`warden-context` e do `warden-linha`, com `dependencies.d/plow-init` e
+`with-contenv` no `up`, rodando como o agente e nunca como root. Ele escreve
+`enabled: false` sob `auxiliary:` no `config.yaml` da instalação — na imagem,
+para todo mundo, e não à mão num container.
+
+Ele é idempotente, faz cirurgia de linha em vez de round-trip de YAML (um
+`safe_dump` jogaria fora o bloco de comentários anotado do seed), relê o
+resultado antes de gravar e escreve por `os.replace`. E **cede ao dono**: uma
+chave já escrita no arquivo, qualquer que seja o valor, fica como está — é assim
+que alguém religa o curador. Mesma regra do `warden-context` com
+`proactive_prune_tokens`.
+
+`tests/test_ambiente_7a.py` cobra a chave, o booleano, a idempotência, a saída
+do dono e o fato de este arquivo não culpar o curador pela entrega perdida.
+
 ## Onde mora o "porquê"
 
 As personas e as SKILL.md deste repo carregam **regra curta**, porque tudo o que

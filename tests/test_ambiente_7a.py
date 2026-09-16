@@ -566,3 +566,335 @@ class AvisoDeLinhaCompartilhada(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CuradorDeFundoDesligadoPelaImagem(unittest.TestCase):
+    """`auxiliary.background_review.enabled: false`, escrito pela IMAGEM em toda
+    instalação -- nunca à mão num container.
+
+    O QUE FOI MEDIDO, em 16/09/2026, no container `warden-demo-agent-1`:
+
+      * O curador é FAIL-OPEN. `/opt/hermes/agent/background_review.py:187-199`,
+        `load_background_review_settings()`, devolve
+        `is_truthy_value(task.get("enabled"), default=True)`. Chave ausente é
+        chave LIGADA. Não declarar nada não é desligar.
+      * Esta instalação não declarava nada: `/var/lib/hermes/config.yaml` não
+        tem a seção `auxiliary` -- as chaves de topo são `mcp_servers, agent,
+        cron, tools, model, providers, display, memory, platforms, terminal,
+        group_sessions_per_user, onboarding, plugins, _config_version,
+        compression, approvals`. Logo, ligado.
+      * E ele estava RODANDO durante a entrega da demo. `agent.log:219`,
+        18:22:41,518: `conversation turn: session=20260916_181828_6e588b67 ...
+        msg='Review the conversation above and update the skill library...'` --
+        125 ms antes de `gateway.log:48` (18:22:41,665) montar a entrega. E
+        `agent.log:247`, 18:23:37,833: `Tool skill_manage returned error:
+        {"success": false, "error": "Refusing background curator patch for
+        bundled skill 'warden-clip'."}` -- ele tentou reescrever a skill.
+      * `is_truthy_value` (`/opt/hermes/utils.py:24-30`) devolve `bool(value)`
+        para um não-string: o `false` do YAML vira `False` e desliga de fato.
+
+    O QUE NÃO SE AFIRMA AQUI: que o curador causou a entrega perdida da demo.
+    NÃO causou -- ele roda numa thread daemon sobre um AIAgent forkado, e a
+    perda foi o portão anti-duplicata do adaptador Plow
+    (`plow_chat/__init__.py:2062-2065`, que devolve `SendResult(success=True)`
+    sem enviar). O que se cobra neste bloco é só o que está medido: um turno de
+    modelo não pedido, que escreve na biblioteca de skills, ligado por omissão
+    em toda instalação que puxa esta imagem.
+    """
+
+    DIR_SERVICO = os.path.join(
+        RAIZ, "image", "s6-overlay", "s6-rc.d", "warden-curador")
+    SCRIPT = os.path.join(
+        RAIZ, "image", "s6-overlay", "scripts", "warden-curador")
+    CONTENTS = os.path.join(
+        RAIZ, "image", "s6-overlay", "s6-rc.d", "user", "contents.d",
+        "warden-curador")
+
+    # A chave, escrita aqui por extenso de propósito: se ela sumir do script,
+    # ou se alguém trocar o caminho dela, estes testes falham.
+    CAMINHO_CHAVE = ("auxiliary", "background_review", "enabled")
+
+    # ---- a ferramenta de rodar o script como o s6 o roda ----------------
+
+    def _roda(self, texto_config, extra_env=None):
+        """Escreve `texto_config` num arquivo temporário, roda o oneshot
+        apontado para ele, e devolve (rc, stderr, texto_final, yaml_final).
+
+        `texto_config=None` significa "o arquivo não existe"."""
+        import subprocess
+        import sys
+        import tempfile
+
+        import yaml as _yaml
+
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+        env.update(extra_env or {})
+        with tempfile.TemporaryDirectory() as tmp:
+            alvo = os.path.join(tmp, "config.yaml")
+            if texto_config is not None:
+                with open(alvo, "w", encoding="utf-8") as fh:
+                    fh.write(texto_config)
+            env.setdefault("HERMES_CONFIG", alvo)
+            saida = subprocess.run(
+                [sys.executable, self.SCRIPT], env=env, cwd=tmp,
+                capture_output=True, text=True, timeout=30)
+            final = None
+            if os.path.exists(env["HERMES_CONFIG"]):
+                with open(env["HERMES_CONFIG"], encoding="utf-8") as fh:
+                    final = fh.read()
+            sobrou = sorted(os.listdir(tmp))
+        carregado = None
+        if final is not None:
+            try:
+                carregado = _yaml.safe_load(final) or {}
+            except Exception:
+                # Um dos casos de `test_nunca_falha_o_boot` entrega YAML
+                # quebrado de propósito: o que se cobra ali é o rc e o arquivo
+                # intacto, não o parse.
+                carregado = None
+        return saida.returncode, saida.stderr, final, carregado, sobrou
+
+    def _valor(self, carregado):
+        no = carregado
+        for parte in self.CAMINHO_CHAVE:
+            if not isinstance(no, dict) or parte not in no:
+                return ("AUSENTE", parte)
+            no = no[parte]
+        return no
+
+    # Um config.yaml com a MESMA forma do que esta instalação tem: sem
+    # `auxiliary` nenhum, e com o bloco que o warden-context já apendou.
+    CONFIG_COMO_ESTA = (
+        "agent:\n"
+        "  name: clip-warden\n"
+        "plugins:\n"
+        "  enabled:\n"
+        "    - plow-chat-platform\n"
+        "_config_version: 44\n"
+        "\n"
+        "compression:\n"
+        "  proactive_prune_tokens: 48000\n"
+        "  proactive_prune_min_reclaim_tokens: 4096\n"
+    )
+
+    # ---- o encaixe no boot ----------------------------------------------
+
+    def test_o_oneshot_existe_e_esta_ligado_no_boot(self):
+        self.assertTrue(
+            os.path.isfile(self.SCRIPT),
+            "falta image/s6-overlay/scripts/warden-curador: sem ele, "
+            "`auxiliary.background_review.enabled` continua ausente em toda "
+            "instalação, e ausente é LIGADO "
+            "(background_review.py:187-199, fail-open).")
+        self.assertEqual(
+            "oneshot",
+            _le(os.path.join(self.DIR_SERVICO, "type")).strip(),
+            "warden-curador tem de ser oneshot, irmão do warden-context: ele "
+            "escreve uma chave no boot e sai.")
+        self.assertTrue(
+            os.path.isfile(
+                os.path.join(self.DIR_SERVICO, "dependencies.d", "plow-init")),
+            "sem `dependencies.d/plow-init` o oneshot corre antes de o "
+            "config.yaml da instalação existir, e sai sem nada para editar.")
+        self.assertTrue(
+            os.path.isfile(self.CONTENTS),
+            "o serviço não está em s6-rc.d/user/contents.d/, então o s6 nunca "
+            "o roda -- um oneshot fora do bundle é um arquivo, não um boot.")
+
+    def test_o_up_nao_roda_como_root(self):
+        up = _le(os.path.join(self.DIR_SERVICO, "up"))
+        self.assertIn(
+            "s6-setuidgid hermes", up,
+            "este oneshot escreve dentro do $HERMES_HOME; root escrevendo ali "
+            "é como a contabilidade de uso desta instalação morreu em 15/09.")
+        self.assertIn(
+            "with-contenv", up,
+            "sem `with-contenv` o oneshot não enxerga HERMES_CONFIG nem o "
+            "resto de /run/s6/container_environment.")
+
+    def test_o_dockerfile_copia_a_pasta_inteira_do_s6(self):
+        self.assertIn(
+            "COPY image/s6-overlay/ /etc/s6-overlay/",
+            _le(os.path.join(RAIZ, "Dockerfile")),
+            "o Dockerfile deixou de copiar image/s6-overlay/ inteiro; um "
+            "COPY arquivo-a-arquivo esquece o próximo serviço em silêncio.")
+
+    # ---- a chave, que é o ponto ------------------------------------------
+
+    def test_declara_a_chave_como_false_num_config_sem_auxiliary(self):
+        """O caso desta instalação, e o teste que falha se a chave sumir."""
+        rc, err, _, carregado, _ = self._roda(self.CONFIG_COMO_ESTA)
+        self.assertEqual(0, rc, "saiu %d; stderr=%r" % (rc, err))
+        valor = self._valor(carregado)
+        self.assertIs(
+            valor, False,
+            "`%s` não ficou `false` no config.yaml (ficou %r). Ausente é "
+            "LIGADO: `is_truthy_value(task.get('enabled'), default=True)` em "
+            "background_review.py:194. Não basta não declarar."
+            % (".".join(self.CAMINHO_CHAVE), valor))
+
+    def test_o_false_escrito_e_um_booleano_que_o_runtime_desliga(self):
+        """`is_truthy_value` (/opt/hermes/utils.py:24-30) faz `bool(value)`
+        para não-string e testa a string contra o conjunto TRUTHY. Um `false`
+        de YAML vira `False` nos dois caminhos; um `'no'` entre aspas, não
+        necessariamente. Então o que se escreve tem de ser booleano."""
+        _, _, texto, carregado, _ = self._roda(self.CONFIG_COMO_ESTA)
+        valor = self._valor(carregado)
+        self.assertIsInstance(
+            valor, bool,
+            "o valor escrito é %r (%s), não um booleano de YAML."
+            % (valor, type(valor).__name__))
+        self.assertRegex(
+            texto or "",
+            r"(?m)^\s+enabled:\s*false\s*$",
+            "a linha escrita não é `enabled: false`; um valor entre aspas ou "
+            "capitalizado depende de como o runtime coage a string.")
+
+    def test_escreve_dentro_de_um_auxiliary_que_ja_existe(self):
+        """Uma base futura pode passar a escrever `auxiliary:` com outra coisa
+        dentro. Apender um segundo `auxiliary:` no fim faria o YAML perder o
+        primeiro inteiro."""
+        config = self.CONFIG_COMO_ESTA + (
+            "auxiliary:\n"
+            "  outra_tarefa:\n"
+            "    enabled: true\n")
+        rc, err, _, carregado, _ = self._roda(config)
+        self.assertEqual(0, rc, "saiu %d; stderr=%r" % (rc, err))
+        self.assertIs(
+            self._valor(carregado), False,
+            "com um `auxiliary:` já no arquivo, a chave não foi escrita "
+            "dentro dele.")
+        self.assertEqual(
+            {"enabled": True},
+            (carregado.get("auxiliary") or {}).get("outra_tarefa"),
+            "a escrita comeu o que já estava em `auxiliary:` -- foi o que um "
+            "append cego faria.")
+
+    def test_escreve_dentro_de_um_background_review_que_ja_existe(self):
+        """O caso mais traiçoeiro: a subseção existe com OUTRAS chaves e sem
+        `enabled`. Sem `enabled` ali, `task.get("enabled")` é None e o
+        `default=True` de background_review.py:194 vale igual -- o curador está
+        ligado apesar de a seção existir."""
+        config = self.CONFIG_COMO_ESTA + (
+            "auxiliary:\n"
+            "  background_review:\n"
+            "    max_input_tokens: 100\n"
+            "  outra_tarefa: 1\n")
+        rc, err, _, carregado, _ = self._roda(config)
+        self.assertEqual(0, rc, "saiu %d; stderr=%r" % (rc, err))
+        self.assertIs(
+            self._valor(carregado), False,
+            "a subseção já existia sem `enabled` e a chave não foi escrita "
+            "dentro dela.")
+        aux = carregado.get("auxiliary") or {}
+        self.assertEqual(
+            100, (aux.get("background_review") or {}).get("max_input_tokens"),
+            "a escrita comeu o que já estava na subseção.")
+        self.assertEqual(1, aux.get("outra_tarefa"))
+
+    def test_idempotente(self):
+        """Todo boot roda isto. Dois boots não podem render duas seções."""
+        _, _, texto1, _, _ = self._roda(self.CONFIG_COMO_ESTA)
+        rc, err, texto2, carregado, _ = self._roda(texto1)
+        self.assertEqual(0, rc, "saiu %d; stderr=%r" % (rc, err))
+        self.assertIs(self._valor(carregado), False)
+        self.assertEqual(
+            1, (texto2 or "").count("background_review:"),
+            "a segunda passada duplicou o bloco:\n%s" % texto2)
+
+    def test_respeita_uma_decisao_explicita_do_dono(self):
+        """Quem escreveu `true` ali escreveu de propósito. A imagem preenche a
+        omissão; ela não desfaz a escolha de alguém -- que é a mesma regra do
+        warden-context com `proactive_prune_tokens`."""
+        config = self.CONFIG_COMO_ESTA + (
+            "auxiliary:\n"
+            "  background_review:\n"
+            "    enabled: true\n")
+        rc, err, texto, carregado, _ = self._roda(config)
+        self.assertEqual(0, rc, "saiu %d; stderr=%r" % (rc, err))
+        self.assertIs(
+            self._valor(carregado), True,
+            "o oneshot sobrescreveu um `enabled: true` posto à mão. Sem uma "
+            "saída, quem quiser o curador de volta não tem como pedi-lo.")
+        self.assertEqual(config, texto, "o arquivo foi reescrito à toa")
+
+    # ---- e ele não derruba nada ------------------------------------------
+
+    def test_nunca_falha_o_boot(self):
+        """`A oneshot that fails is a boot that fails`."""
+        casos = [
+            ("arquivo ausente", None, {}),
+            ("YAML quebrado", "isto: [nao\n  fecha:\n", {}),
+            ("topo não é mapa", "- um\n- dois\n", {}),
+            ("auxiliary é string", self.CONFIG_COMO_ESTA + "auxiliary: nada\n",
+             {}),
+            ("background_review é string",
+             self.CONFIG_COMO_ESTA + "auxiliary:\n  background_review: nada\n",
+             {}),
+            ("vazio", "", {}),
+            ("caminho impossível", self.CONFIG_COMO_ESTA,
+             {"HERMES_CONFIG": "/proc/1/nao/existe/config.yaml"}),
+        ]
+        for nome, config, env in casos:
+            rc, err, _, _, _ = self._roda(config, extra_env=env)
+            self.assertEqual(
+                0, rc, "caso %r saiu %d; stderr=%r" % (nome, rc, err))
+
+    def test_um_config_ilegivel_fica_intacto(self):
+        """Não adivinhar é melhor que adivinhar errado: o config.yaml é o único
+        arquivo sem o qual o agente não sobe."""
+        quebrado = "isto: [nao\n  fecha:\n"
+        _, _, texto, _, _ = self._roda(quebrado)
+        self.assertEqual(quebrado, texto)
+
+    def test_nao_deixa_arquivo_temporario_para_tras(self):
+        _, _, _, _, sobrou = self._roda(self.CONFIG_COMO_ESTA)
+        self.assertEqual(
+            ["config.yaml"], sobrou,
+            "sobrou lixo ao lado do config.yaml: %r" % sobrou)
+
+    # ---- o porquê, escrito onde alguém lê --------------------------------
+
+    def test_o_porque_esta_no_proprio_arquivo_com_a_medicao(self):
+        """A regra da casa: um arquivo que desliga algo diz o que mediu."""
+        texto = _le(self.SCRIPT)
+        for agulha, porque in (
+                ("fail-open", "sem isto, 'não declarar' parece desligar"),
+                ("background_review.py:187", "a linha que decide"),
+                ("18:22:41,518", "o turno de curador dentro da demo"),
+                ("Refusing background curator patch",
+                 "a prova de que ele estava ativo e escrevendo"),
+                ("16/09/2026", "a data da medição")):
+            self.assertIn(
+                agulha, texto,
+                "warden-curador não cita %r (%s)." % (agulha, porque))
+
+    def test_o_arquivo_nao_culpa_o_curador_pela_entrega_perdida(self):
+        """A causa medida da perda é o portão anti-duplicata do plow_chat
+        (`plow_chat/__init__.py:2062-2065`). Escrever aqui que o curador comeu
+        a entrega seria pôr no boot da imagem uma causa refutada -- e a próxima
+        pessoa a investigar pararia nela."""
+        texto = " ".join(_le(self.SCRIPT).split()).lower()
+        self.assertIn(
+            "2062-2065", texto,
+            "o arquivo não nomeia a causa REAL da perda; sem isso ele deixa "
+            "implícito que desligar o curador conserta a entrega.")
+        for frase in ("o curador comeu", "o curador engoliu",
+                      "causou a perda", "curador causou"):
+            self.assertNotIn(
+                frase, texto,
+                "warden-curador afirma %r, e a frente A refutou isso." % frase)
+
+    def test_docs_dizem_que_a_imagem_desliga_o_curador(self):
+        """Um agente que NÃO se auto-revisa é uma diferença de comportamento
+        entre esta instalação e um Hermes de fábrica. Quem instala tem de poder
+        descobrir isso sem ler o s6."""
+        faltando = [nome for nome, caminho in
+                    (("docs/AMBIENTE.md", AMBIENTE_MD),
+                     ("docs/INSTALL.md", INSTALL_MD))
+                    if "background_review" not in _le(caminho)]
+        self.assertEqual(
+            [], faltando,
+            "%s não citam `background_review`: quem instala não fica sabendo "
+            "que esta imagem desliga a auto-revisão, nem como religá-la."
+            % ", ".join(faltando))
