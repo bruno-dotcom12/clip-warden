@@ -144,6 +144,14 @@ services:
     volumes:
       # `.host`, not the path the agent reads: a bind carries this machine's
       # ownership in, and the image copies the file into place as root itself.
+      #
+      # Essa última oração era FALSA até 16/09/2026 e agora é verdadeira. Nem
+      # esta imagem nem a base tinham a cópia; `plow-init` procurava
+      # `/var/lib/plow/credentials`, não achava, esperava 60s e ESTACIONAVA
+      # sem gateway -- uma instalação local nova subia sem erro na tela e não
+      # respondia a ninguém. Quem funcionava tinha o arquivo posto à mão, numa
+      # camada de escrita que morre no primeiro `--force-recreate`. O passo
+      # está em `image/cont-init.d/005-plow-credential`, com o relato inteiro.
       - ./plow-credentials:/var/lib/plow/credentials.host:ro
       # The agent's home, kept across up/down for its sessions, its campaigns
       # and the footage it has already pulled.

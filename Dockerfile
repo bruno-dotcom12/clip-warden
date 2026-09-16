@@ -310,6 +310,14 @@ RUN ln -sf /usr/local/bin/warden /usr/bin/warden
 
 COPY image/s6-overlay/ /etc/s6-overlay/
 
+# O passo que copia a credencial da Plow do bind para o caminho que o runtime
+# lê. Ele não existia -- nem aqui nem na imagem base -- e sem ele uma instalação
+# LOCAL nova sobe inteira e não responde a ninguém. O porquê está escrito no
+# próprio arquivo; aqui fica só o que decide a POSIÇÃO: `cont-init.d` roda como
+# root antes de qualquer serviço, e `005-` ordena depois do `00-plow-sanitize`
+# da base e antes do `plow-init`, que é quem espera o arquivo.
+COPY --chmod=0755 image/cont-init.d/005-plow-credential /etc/cont-init.d/005-plow-credential
+
 # State and working room: agent-owned, 0700, empty until a campaign is stored.
 # Footage lands under here, so the host's disk is where a long source goes.
 #
