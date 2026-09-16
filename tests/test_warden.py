@@ -5812,12 +5812,28 @@ class UmPortaoQueQuemPassaPorEleContornaNaoEUmPortao(unittest.TestCase):
         self.assertEqual(len(achadas), 1)
         self.assertIn("repeats a word", achadas[0][1])
 
-    def test_marca_de_locutor_e_suspeita(self):
-        """`>>` VAI para a tela, então quem assina tem de tê-la lido."""
-        texto = ">> para gravação. Vamos respirar."
-        achadas = self.W.linhas_suspeitas([self._linha(texto)])
-        self.assertEqual(len(achadas), 1, texto)
-        self.assertIn("auto-subtitle marker", achadas[0][1])
+    def test_marca_de_locutor_some_na_limpeza_e_nao_e_suspeita(self):
+        """`>>` NÃO vai mais para a tela, então não há o que aprovar nela.
+
+        Medido em 16/09/2026 na legenda publicada em português de uma live do
+        YouTube: `>>` em 184 das 706 cues. Enquanto ela sobrevivia à limpeza,
+        um quarto das linhas era "suspeita" e a legenda inteira do clipe caía.
+        Agora a seta some junto com `[Música]` e `[risadas]`, e o que resta é
+        a frase.
+        """
+        self.assertEqual(
+            self.W.linhas_suspeitas(
+                [self._linha(">> para gravação. Vamos respirar.")]), [])
+
+    def test_o_palavrao_censurado_do_youtube_com_espaco_duro_tambem_some(self):
+        r"""`[\h__\h]` é o `[ __ ]` do YouTube com o espaço duro dele dentro.
+
+        Medido no mesmo arquivo: o padrão de `[ __ ]` não casava com ele, então
+        o marcador chegava À TELA e à lista de suspeitas.
+        """
+        self.assertEqual(
+            self.W.linhas_suspeitas(
+                [self._linha(r"Que música é essa, mano? Aí se [\h__\h]")]), [])
 
     def test_marcacao_decorativa_NAO_e_suspeita_porque_nao_chega_a_tela(self):
         """`[risadas]` some antes de virar cue, então travar a legenda por

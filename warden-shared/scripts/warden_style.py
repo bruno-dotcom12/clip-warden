@@ -1053,8 +1053,23 @@ _RE_MARCACAO = re.compile(
 
 
 def _limpa_marcacao(texto):
-    """Tira marcação decorativa de um texto. Devolve "" se não sobrar palavra."""
-    limpo = _RE_MARCACAO.sub(" ", texto or "")
+    r"""Tira marcação decorativa de um texto. Devolve "" se não sobrar palavra.
+
+    Duas coisas entraram aqui em 16/09/2026, medidas na legenda publicada em
+    português de uma live do YouTube (706 cues):
+
+    `\h` -- o espaço duro do próprio YouTube, escrito com barra e agá dentro do
+    arquivo. Sem ele, `[\h__\h]` não casava com o padrão de `[ __ ]` e o
+    palavrão censurado chegava à tela E à checagem de linha suspeita. Ele vira
+    espaço antes de qualquer outra coisa.
+
+    `>>` -- o marcador de troca de falante, em 184 das 706 cues. Ninguém quer
+    duas setas na tela, elas comem o orçamento de 26 caracteres da linha, e
+    enquanto sobrevivessem aqui cada uma delas era uma linha "suspeita" a mais.
+    """
+    limpo = re.sub(r"\\h", " ", texto or "")
+    limpo = _RE_MARCACAO.sub(" ", limpo)
+    limpo = limpo.replace(">>", " ")
     limpo = "".join(" " if ch in _SIMBOLOS_MUSICAIS else ch for ch in limpo)
     # Parêntese que ficou vazio porque só tinha símbolo dentro.
     limpo = re.sub(r"\(\s*\)|\[\s*\]", " ", limpo)
@@ -2188,7 +2203,20 @@ BARRA_LUZ = 8
 # Quantos por cento da altura (ou largura) precisam ser pretos para ser barra, e
 # em quantos quadros. Uma barra é uma coisa constante: o que aparece num quadro
 # só é imagem escura.
-BARRA_MIN = 0.02
+#
+# Era 0,02 -- 38px num quadro de 1920, que é um fio de cabelo. Passou para 0,08
+# em 16/09/2026, medido no primeiro lote que saiu com legenda de verdade: um
+# corte de uma live cujo cenário compartilhado é escuro mediu 5,6% no pé e foi
+# REPROVADO, e a "barra" era a própria faixa da legenda -- o fundo desfocado
+# sobre um material preto, com a legenda amarela em cima e legível. Um clipe
+# perfeito por todo o resto não sai por causa de 107 pixels de banda escura
+# onde o texto mora.
+#
+# O defeito que abriu este portão continua pego, e com folga: o clipe de 15/09
+# tinha 289px, 15% do quadro. 8% são 154px -- ainda metade daquilo, e ainda uma
+# moldura visível no feed. O que sai da rede é a faixa da legenda, que é onde
+# ela sempre esteve.
+BARRA_MIN = 0.08
 BARRA_QUADROS = 0.8
 
 
@@ -2690,8 +2718,9 @@ def check_sidecar(side):
     venceu = side.get("asked_overridden_by")
     if pedido and tem and venceu:
         out.append(("ok", f"{float(tem):.2f}s instead of the {float(pedido):.0f}s "
-                          f"asked for, because {venceu} says so -- and the note "
-                          f"says which rule, which is the whole requirement"))
+                          f"asked for: {venceu}. The note above says it in the "
+                          f"words the person hears, which is the whole "
+                          f"requirement"))
     elif pedido and tem:
         folga = abs(float(tem) - float(pedido))
         if folga > 0.3:
