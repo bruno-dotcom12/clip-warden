@@ -1713,7 +1713,8 @@ def _histogram_density(edges):
     return sum(hist[70:]) / total
 
 
-def legenda_do_acervo(frames, recorte=None, min_ratio=2.2, min_largura=0.12):
+def legenda_do_acervo(frames, recorte=None, min_ratio=2.2, min_largura=0.12,
+                      max_altura=0.07):
     """Texto queimado EM QUALQUER ALTURA do quadro, não só nas duas bordas.
 
     LEIA ISTO ANTES DE MEXER NO DETECTOR DE LEGENDA DUPLA.
@@ -1772,7 +1773,25 @@ def legenda_do_acervo(frames, recorte=None, min_ratio=2.2, min_largura=0.12):
                 break
         else:
             faixas.append({"y0": a, "y1": z, "span": larg, "frames": 1})
-    return faixas
+    # Uma legenda é uma LINHA, e uma linha é fina.
+    #
+    # Medido em 16/09/2026, nos dois casos que existem:
+    #   a legenda de verdade do vlog de 14/09 ficava em y 747-774 de 1080 --
+    #   2,5% da altura, e juntar três quadros dela não passa de 3%;
+    #   o falso positivo de 16/09 -- a camisa de estampa geométrica de um
+    #   corretor, com o microfone de lapela preto encostado no branco dela --
+    #   juntou 0,600 a 0,683, 8,3% da altura, a partir de trechos espalhados
+    #   em alturas diferentes a cada quadro. Legenda não anda de altura; o
+    #   peito de quem fala, sim.
+    #
+    # Esse falso positivo custou a legenda INTEIRA de um clipe entregue: o
+    # corte saiu mudo porque a ferramenta achou que o vídeo já vinha legendado,
+    # e não vinha. A regra do dono é nunca entregar sem legenda, então o
+    # equilíbrio deste detector vira para o outro lado: duas legendas no mesmo
+    # quadro é feio e o mosaico obrigatório mostra; um clipe mudo é o produto
+    # faltando. Sete por cento deixa passar uma legenda de duas linhas e mata
+    # uma camisa.
+    return [f for f in faixas if (f["y1"] - f["y0"]) <= max_altura]
 
 
 def burned_text_bands(frames, band=0.16):

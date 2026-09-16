@@ -4609,8 +4609,9 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                     f"{length + _sobra:.1f}s, because the cut landed in the middle "
                     f"of a sentence and that sentence closes there."
                     + (f" Say it to the person in ONE clause about what they "
-                       f"will see -- \"ficou {_sobra:.0f} segundos mais longo "
-                       f"para não cortar a frase no meio\" -- and never with the "
+                       f"will see -- \"ficou {_sobra:.0f} segundo"
+                       f"{'s' if round(_sobra) != 1 else ''} mais longo para "
+                       f"não cortar a frase no meio\" -- and never with the "
                        f"word cue in it." if _sobra >= 1.0 else
                        " Under a second: say NOTHING about it. A person does not "
                        "want to read that a clip is 0.4s longer than they asked."))
@@ -4635,8 +4636,10 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                             f"in this window to reach its end. This one closes "
                             f"the last whole sentence instead."
                             + (f" Say it to the person in ONE clause -- \"ficou "
-                               f"{_corta:.0f} segundos mais curto para não cortar "
-                               f"a frase no meio\"." if _corta >= 1.0 else
+                               f"{_corta:.0f} segundo"
+                               f"{'s' if round(_corta) != 1 else ''} mais curto "
+                               f"para não cortar a frase no meio\"."
+                               if _corta >= 1.0 else
                                " Under a second: say NOTHING about it."))
                         length = _novo
                         venceu_o_pedido = ("the cut was splitting a sentence and "
