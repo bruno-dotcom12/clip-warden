@@ -5043,15 +5043,34 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
             f"strip above it. Two texts, two places -- look at the contact "
             f"sheet anyway.")
     elif source_text.get("top") and hook:
-        # Era um pedido para olhar o mosaico, e o mosaico é justamente o portão
-        # que falha quando ninguém olha. Com texto do acervo no topo E hook
-        # nosso, são dois textos no mesmo lugar: não é gosto, é ilegível.
-        raise RuntimeError(
-            f"this footage already carries burned text along the TOP "
+        # NÃO mata mais o clipe, e o motivo é uma medição.
+        #
+        # Isto levantava RuntimeError: texto do acervo no topo mais o nosso hook
+        # são dois textos no mesmo lugar, e isso é ilegível quando é verdade. O
+        # problema é o "quando é verdade". Medido em 16/09/2026, num pedido
+        # real: uma janela de rua -- fila de telhados escuros contra céu branco,
+        # com esquadrias de janela -- votou em 4 dos 8 quadros e o clipe inteiro
+        # foi RECUSADO. Não havia texto nenhum lá.
+        #
+        # E não existe limiar que separe os dois. Na mesma escala: letras de
+        # verdade dão 5,71x, aqueles telhados deram 1,96x e 2,43x, e UMA linha
+        # de texto no topo dá 2,71x. Telhado e legenda dividem a faixa.
+        #
+        # Então a consequência vira a do lado de baixo, que este mesmo arquivo
+        # já escolheu: o clipe SAI, com o aviso alto, e quem decide é o mosaico
+        # -- que é obrigatório abrir antes de entregar. O preço de errar para
+        # este lado é um clipe com dois textos no topo, visível na imagem que
+        # ninguém pula. O preço de errar para o outro era o clipe não existir, e
+        # foi o que aconteceu: o agente teve de renderizá-lo de novo sozinho,
+        # 100 segundos a mais num pedido que o dono já achava longo demais.
+        notes.append(
+            f"this footage MAY already carry burned text along the TOP "
             f"({source_text['evidence']}), and this cut puts a hook there too. "
-            f"Two texts in the same band is not a judgement call, it is "
-            f"unreadable. Cut without --hook, or choose a window whose top is "
-            f"clean.")
+            f"The clip is rendered anyway -- this detection also fires on a "
+            f"roofline against a bright sky, measured 16/09 -- so LOOK AT THE "
+            f"TOP BAND of the contact sheet before you deliver. If there really "
+            f"are two texts up there, re-cut without --hook or on another "
+            f"window, and say in one line which you did.")
     if source_text.get("top"):
         notes.append("this footage carries burned text along the TOP "
                      f"({source_text['evidence']}). No hook was asked for, so "

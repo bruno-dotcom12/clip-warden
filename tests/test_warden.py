@@ -4506,17 +4506,20 @@ class ContagemDeEntregas(unittest.TestCase):
         warden.STATE_DB = self.db
         self.addCleanup(setattr, warden, "STATE_DB", self._db_antigo)
 
-    def _citou(self, caminho, final=True):
+    def _citou(self, caminho, final=True, segundos=-60):
         """Escreve no state.db a mensagem do agente que carregou este MEDIA:.
 
         `final=True` é a mensagem que o gateway lê (finish_reason 'stop');
         `final=False` é a do meio do turno, cujo anexo é descartado.
+        `segundos` desloca o carimbo em relação a agora -- o log falso do setUp
+        está em "agora", então um valor negativo põe a mensagem ANTES dos
+        anexos e um positivo, depois deles.
         """
         con = sqlite3.connect(self.db)
         con.execute("INSERT INTO messages (role, content, timestamp, "
                     "finish_reason) VALUES ('assistant', ?, ?, ?)",
                     (f"Aqui está.\nMEDIA:{os.path.abspath(caminho)}",
-                     time.time() - 60, "stop" if final else "tool_calls"))
+                     time.time() + segundos, "stop" if final else "tool_calls"))
         con.commit()
         con.close()
 
@@ -4561,6 +4564,31 @@ class ContagemDeEntregas(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("corte-02.mp4", erro.getvalue())
         self.assertEqual(warden.main(["delivered", dois]), 0)
+
+    def test_a_mensagem_de_entrega_gravada_duas_vezes_ainda_confirma(self):
+        """O gateway grava a MESMA mensagem final duas vezes, e a segunda não
+        leva anexo nenhum -- porque não há nada a levar.
+
+        Medido em 16/09/2026 no state.db real: a entrega de dois cortes aparece
+        às 10:11:00 e de novo às 10:17:31, as duas com `finish_reason: stop` e
+        conteúdo idêntico. O log do gateway diz o porquê na mesma hora:
+        "Normal final-send NOT suppressed despite active stream consumer (...)
+        possible duplicate send". Os anexos saíram depois da PRIMEIRA.
+
+        A verificação olhava só a mais recente, não achava anexo depois dela, e
+        respondia `NOT confirming` para dois clipes que o dono tinha na mão --
+        mandando o agente reenviar. É o defeito de reabrir a conversa
+        reenviando o que já chegou, visto pela outra ponta.
+        """
+        clipe = self._clipe("corte-01.mp4")
+        warden.entregas_registra(clipe)
+        # A que levou os anexos vem ANTES deles; a duplicata, depois -- que é
+        # a ordem real: o gateway regrava a mensagem quando o envio já
+        # aconteceu.
+        self._citou(clipe, segundos=-60)
+        self._citou(clipe, segundos=+30)
+        self.assertEqual(warden.main(["delivered", clipe]), 0)
+        self.assertEqual(warden.main(["delivered"]), 0)
 
     def test_a_clip_whose_file_is_gone_is_not_a_debt(self):
         clipe = self._clipe("corte-01.mp4")

@@ -1838,6 +1838,13 @@ def burned_text_bands(frames, band=0.16):
             ratios[name].append(ratio)
             # 1,9x a densidade do miolo: medido para separar uma faixa de letras
             # de um horizonte ou de uma borda de cenário, que ficam perto de 1.
+            #
+            # E ele NÃO separa tudo. Medido em 16/09/2026, na mesma escala: uma
+            # faixa de letras de verdade dá 5,71x, mas uma fila de telhados
+            # escuros contra céu branco dá 1,96x e 2,43x -- e uma linha só de
+            # texto no topo dá 2,71x. Não há corte que separe os dois com folga,
+            # então o número fica onde estava e quem mudou foi a CONSEQUÊNCIA:
+            # ver `cut`, onde um texto achado no topo deixou de matar o clipe.
             if ratio > 1.9:
                 votes[name] += 1
         # Até onde a faixa de baixo sobe. Um limiar fixo não serve: arte densa

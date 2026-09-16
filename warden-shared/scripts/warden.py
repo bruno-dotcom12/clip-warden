@@ -5165,14 +5165,38 @@ def mensagem_que_citou(caminho):
                 con.close()
             except Exception:
                 pass
+    # TODAS as mensagens que citam o caminho, não só a última.
+    #
+    # Medido em 16/09/2026: a MESMA mensagem de entrega aparece DUAS vezes no
+    # state.db, 10:11:00 e 10:17:31, as duas com `finish_reason: stop` e o
+    # conteúdo idêntico. O log do gateway explica -- "Normal final-send NOT
+    # suppressed despite active stream consumer (...) possible duplicate send"
+    # -- e a duplicata é gravada com o carimbo de quando foi regravada.
+    #
+    # A versão anterior devolvia a mais recente e parava. Os anexos saíram
+    # depois da PRIMEIRA (10:11:01 e 10:11:05); depois da segunda não saiu
+    # nada, porque não havia nada a sair. Resultado: dois clipes que o dono
+    # tinha na mão voltaram como "NOT confirming (...) the gateway logged no
+    # video attachment leaving after it", e a instrução ao agente era reenviar.
+    # É o defeito de "abriu conversa nova reenviando os cortes de ontem",
+    # pela outra ponta.
+    #
+    # Então a pergunta deixa de ser "qual foi a última" e passa a ser "alguma
+    # delas foi seguida de anexo" -- e quem responde isso é quem lê o log, que
+    # é `cmd_delivered`. Aqui saem todas, da mais nova para a mais velha.
+    candidatas = []
     for content, quando, finish in linhas:
         texto = content if isinstance(content, str) else str(content or "")
         if ("MEDIA:" + alvo) not in texto and ("MEDIA:" + str(caminho)) not in texto:
             continue
-        ts = _carimbo_da_mensagem(quando)
-        estado = "final" if (finish or "") == "stop" else "meio-do-turno"
-        return {"estado": estado, "at_ts": ts, "finish_reason": finish}
-    return {"estado": "ausente"}
+        candidatas.append({
+            "estado": "final" if (finish or "") == "stop" else "meio-do-turno",
+            "at_ts": _carimbo_da_mensagem(quando),
+            "finish_reason": finish})
+    if not candidatas:
+        return {"estado": "ausente"}
+    # A mais nova continua sendo a resposta, para quem só quer uma.
+    return dict(candidatas[0], candidatas=candidatas)
 
 
 def cmd_delivered(args):
@@ -5229,7 +5253,23 @@ def cmd_delivered(args):
                   f"15/09: 0 of 5 mid-turn lines arrived, 8 of 8 final ones "
                   f"did).", file=sys.stderr)
         elif estado == "final":
-            log = envios_desde(citou.get("at_ts") or registro["at_ts"])
+            # Cada mensagem final que citou este arquivo, da mais nova para a
+            # mais velha, até uma delas ter anexo depois. A duplicata que o
+            # gateway grava é idêntica e não leva anexo nenhum; a original
+            # levou. Ver o comentário em `mensagem_que_citou`.
+            log = None
+            for tentativa in (citou.get("candidatas") or [citou]):
+                if tentativa.get("estado") != "final":
+                    continue
+                lida = envios_desde(tentativa.get("at_ts") or registro["at_ts"])
+                if lida is None:
+                    log = None
+                    break
+                if lida["saiu"] >= 1 and not lida["falhou"]:
+                    log = lida
+                    break
+                if log is None or not log.get("saiu"):
+                    log = lida
             if log is None:
                 # Metade lida é melhor que nenhuma, e ela é dita como metade.
                 entregas_confirma(args.clip)

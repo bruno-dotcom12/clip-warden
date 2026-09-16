@@ -25,6 +25,23 @@ gate -> WORDS (--text-first) -> chosen windows -> --windows -> render -> sheet -
 points here, `warden-run` points here, and neither carries a second version. If
 you find one somewhere, it is stale and this section wins.
 
+## Run `prep` and `render` IN THE BACKGROUND. Always. No exception.
+
+Your terminal kills any foreground command at **300 seconds**, and both of these
+routinely pass it: `prep` downloads and transcribes, `render` cuts and burns.
+
+Measured 16/09/2026, on a real request: `lote prep` was run in the foreground,
+was killed at 301.58s with `[Command timed out after 300s]`, and produced
+nothing. The same command, re-run in the background straight after, finished in
+about twenty seconds — because the download the killed run had already paid for
+was in the cache. **Five minutes of the person's eleven were that one mistake,
+and the work was done the whole time.**
+
+So: `background=true` on the call, then wait on the session id, then read the
+log file. Never the foreground, not even "just this once because the video looks
+short" — you cannot see the length before you pull it, and the cost of being
+wrong is five minutes of somebody watching a screen with nothing on it.
+
 **The video is the last thing you pull.** Any instruction anywhere that reads
 "pull the footage, then find the moment" is the old order and it is wrong. How
 MUCH of the video to pull, once the moment is chosen, is decided in 4c and

@@ -123,6 +123,13 @@ second one carries both files** -- see "Handing the file over":
 >  Segundo corte. <legenda para colar> É só subir.
 >  MEDIA:<caminho 2>"
 
+**`warden lote prep` and `warden lote render` go in the BACKGROUND, always.**
+Your terminal kills a foreground command at 300s and both pass it. Measured
+16/09: a foreground `prep` was killed at 301.58s having produced nothing, and
+the same command in the background finished in about twenty seconds right after.
+Five of that request's eleven minutes were that. The rule and the measurement
+live in `warden-clip`, at the top.
+
 **Your FIRST message goes out before you run anything at all.** The moment you
 have the link and know what they want, answer `Em produção.` and nothing else --
 no number of clips, no minutes, no plan. Then work without stopping. Measured

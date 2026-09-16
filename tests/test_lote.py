@@ -481,13 +481,30 @@ class LoteRenderFazTudoODepois(_ComLoteFalso):
         with open(queimado, encoding="utf-8") as fh:
             self.assertIn("a palavra desta janela", fh.read())
 
-    def test_um_render_por_vez(self):
-        """`WARDEN_RENDER_PARALELO` continua 1, e não é gosto: é memória.
+    def test_dois_renders_por_vez_e_o_padrao_do_compose(self):
+        """`WARDEN_RENDER_PARALELO=2`, e agora ele é medido.
 
-        Paralelo ganha 9% (64s contra 70s) e o pico bate em 3035 MiB de um
-        teto de 3072. Velocidade que o OOM killer interrompe não é velocidade.
+        A versão anterior deste teste exigia 1 e citava "paralelo ganha 9%
+        (64s contra 70s) e o pico bate em 3035 MiB de um teto de 3072". Nenhum
+        dos dois números era de dois renders simultâneos -- o 3035 MiB era um
+        render COM transcrição junto, que é outra coisa.
+
+        Medido de verdade em 16/09/2026, o mesmo lote de dois clipes de 20s
+        neste container:
+
+          sequencial   105s    pico 1815 MiB
+          paralelo=2    54,7s  pico 1584 MiB
+
+        Metade do tempo, e o pico ABAIXO do sequencial. O teto do container
+        subiu de 3g para 4g junto, por folga e não por necessidade.
+
+        O que este teste protege é o valor chegar ao processo: ele vem do
+        `compose.yml`, e um agente que renderiza em fila porque a variável se
+        perdeu é o defeito voltando calado.
         """
-        self.assertEqual(int(os.environ.get("WARDEN_RENDER_PARALELO") or 1), 1)
+        self.assertEqual(int(os.environ.get("WARDEN_RENDER_PARALELO") or 1), 2,
+                         "WARDEN_RENDER_PARALELO não chegou ao processo; "
+                         "confira o bloco `environment:` do compose.yml")
 
     def test_as_linhas_media_saem_todas_no_bloco_do_fim(self):
         self._prep()
