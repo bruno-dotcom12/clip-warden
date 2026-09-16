@@ -1147,9 +1147,15 @@ class ALegendaSegueALinguaDoVIDEO(unittest.TestCase):
             if "en" in chegaram:
                 self.assertEqual(escolhida, "en", f"chegaram={chegaram}")
             else:
-                # Só a tradução chegou: ela serve, e a linha de aviso diz que é
-                # tradução. Melhor uma legenda marcada do que transcrever.
-                self.assertEqual(escolhida, "pt-br", f"chegaram={chegaram}")
+                # Só a tradução chegou: ela NÃO serve mais, e esta é a metade
+                # que mudou em 16/09/2026, por decisão do dono -- "se o vídeo
+                # for ingles quero legenda em ingles". Até ontem esta linha
+                # afirmava o contrário ("ela serve, melhor uma legenda marcada
+                # do que transcrever"), e foi assim que um pedido real de hoje,
+                # com `SOURCE_LANG:en-US`, saiu com legenda queimada em
+                # português. `_pull_subs` devolve None com o porquê, e quem
+                # chama vai buscar o áudio para transcrever na língua da fonte.
+                self.assertIsNone(escolhida, f"chegaram={chegaram}")
 
     def test_O_CAMINHO_REAL_com_vtt_nao_convertido_escolhe_EN(self):
         """O teste que teria pego o defeito do Rick Astley, e ele olha o DISCO.

@@ -193,7 +193,21 @@ Those are the numbers the Definition of Done is checked against, and `cut`
 refuses to print `MEDIA:` when one of them fails, which is also why a clip that
 fails one of them has no path to put in a final message.
 
-## And none of it replaces looking
+## And none of it replaces looking — but looking is no longer yours to do
 
-Every number here can pass on a clip that is still wrong. The contact sheet is
-the gate; this file is how you avoid needing a second one.
+Every number here can pass on a clip that is still wrong. That is not a
+theory: a clip once went out with the hook cropped at both edges and a six-line
+caption over the speaker's face, with every numeric check green. Until
+16/09/2026 the answer to that was the contact sheet, and it was the gate.
+
+**The owner took that gate out on 16/09/2026.** Asked whether the mosaic should
+stay mandatory before delivery, when the two vision calls of one request had
+cost 31s of 706s: *"2 = entrega sem olhar, sua unica obrigacao = hook e
+legenda"*. Same day: *"quero o mais rapido possivel com o minimo de qualidade"*.
+
+So the sheet is still written — it costs about 1.3s and it is the only visual
+evidence that exists later — and nothing waits on it. What is lost is exactly
+the defect above: a fault only the picture shows now reaches the owner's hands.
+He chose that. What did NOT change is this file: the hook and the caption are
+still the two things that have to be right, and every number here is how they
+get right BEFORE the render rather than after it.

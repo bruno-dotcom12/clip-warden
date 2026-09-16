@@ -1322,10 +1322,18 @@ class ContactSheet(unittest.TestCase):
                                f"e mostra o segundo {visto}")
         self.assertEqual(errados, [], "; ".join(errados))
 
-    def test_a_render_without_a_sheet_is_not_delivered(self):
-        """O MEDIA: é o que anexa o arquivo. Sem mosaico ninguém olhou o clipe,
-        e a linha não sai -- foi assim que um arquivo com o hook cortado e uma
-        legenda de seis linhas foi relatado como aprovado."""
+    def test_a_render_without_a_sheet_is_delivered_anyway_since_16_09(self):
+        """O `MEDIA:` é o que anexa o arquivo, e ele sai mesmo sem mosaico.
+
+        Até 16/09/2026 não saía: sem mosaico ninguém tinha olhado o clipe, e a
+        regra nasceu de um arquivo com o hook cortado e uma legenda de seis
+        linhas relatado como aprovado. O dono trocou esse portão pelo tempo
+        dele em 16/09 -- "entrega sem olhar, sua unica obrigacao = hook e
+        legenda" -- depois de medir 31s de visão num pedido de 706s.
+
+        O que sobra, e que este teste também protege: a saída DIZ que não há
+        mosaico, em vez de entregar calada.
+        """
         import io
         from contextlib import redirect_stdout, redirect_stderr
         r = rules(video={"duration_min_s": 1, "duration_max_s": 5, "width": 1080,
@@ -1338,9 +1346,9 @@ class ContactSheet(unittest.TestCase):
         saida, erro = io.StringIO(), io.StringIO()
         with redirect_stdout(saida), redirect_stderr(erro):
             code = warden.deliver(result, r, "test", [])
-        self.assertEqual(code, 1)
-        self.assertNotIn("MEDIA:", saida.getvalue())
-        self.assertIn("nothing has looked at it", erro.getvalue())
+        self.assertEqual(code, 0, erro.getvalue())
+        self.assertIn("MEDIA:", erro.getvalue())
+        self.assertIn("no contact sheet was written", erro.getvalue())
 
     def test_delivery_prints_the_sheet_and_the_checklist_before_the_media_line(self):
         """A ordem na tela é a ordem do trabalho: abrir a imagem, conferir os

@@ -708,12 +708,26 @@ class UmClipeREPROVADONaoDeixaCaminhoNenhumNoStdout(unittest.TestCase):
         self.assertEqual(saida, "", saida)
         self.assertIn("does not clear the campaign", erro)
 
-    def test_reprovado_sem_contact_sheet_tambem_nao_imprime_nada(self):
+    def test_sem_contact_sheet_ENTREGA_do_mesmo_jeito_desde_16_09(self):
+        """O mosaico deixou de ser portão, por decisão do dono em 16/09/2026.
+
+        Ele recusava a entrega sem a imagem, e nasceu de um clipe com o hook
+        cortado e legenda de seis linhas que passou por toda a verificação
+        numérica. O que mudou foi o preço: as duas chamadas de visão de um
+        pedido real custaram 31s de 706s, e o dono roda isto numa chamada de
+        tela compartilhada. A frase dele: "entrega sem olhar, sua unica
+        obrigacao = hook e legenda".
+
+        Então sem mosaico o clipe SAI, e a saída diz em voz alta que não há
+        nada visual guardado se ele voltar errado. O que continua recusando é
+        hook e legenda -- os dois que ele nomeou.
+        """
         code, saida, erro = self._entrega(self._regras(),
                                           self._resultado(com_mosaico=False))
-        self.assertEqual(code, 1, erro)
-        self.assertEqual(saida, "", saida)
-        self.assertIn("nothing has looked at it", erro)
+        self.assertEqual(code, 0, erro)
+        self.assertIn("MEDIA:", erro + saida)
+        self.assertIn("no contact sheet was written", erro)
+        self.assertIn("Not a blocker", erro)
 
     def test_o_caminho_do_clipe_reprovado_nao_aparece_em_lugar_nenhum_do_stdout(self):
         result = self._resultado()

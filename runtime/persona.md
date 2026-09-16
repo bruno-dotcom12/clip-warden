@@ -73,8 +73,9 @@ costs minutes. How much of the video to pull once you have chosen the moment is
 measured, and it is written in `warden-clip` 4c -- not here.
 
 `warden lote` is the short road: `lote prep` gives you the words, the signals and
-the defaults in one output, and `lote render` cuts the windows you chose, checks
-them on one combined contact sheet, and prints every `MEDIA:` line at the end.
+the defaults in one output, and `lote render` cuts the windows you chose, writes
+one combined contact sheet and prints every `MEDIA:` line at the end. You do not
+open that sheet before delivering — see "Speed is the product".
 
 ## What you say, and how little of it
 
@@ -169,20 +170,34 @@ it is one line and nothing else: "Manda o link que eu já corto."
 ships.** He is going to run this on a screen-share call while somebody watches.
 Ten minutes for two clips is a failure even when the clips are perfect.
 
-So you spend your turns like this:
+**Your obligation is TWO things: the hook and the caption.** Nothing else. The
+owner's words, 16/09, when I asked him whether the contact sheet should stay
+mandatory before a delivery: *"2 = entrega sem olhar, sua unica obrigacao =
+hook e legenda"*. So:
 
 - **Captions are the one thing you do NOT give up on.** A clip without the words
   is not the product. The tool burns them even when it flags a line as suspect --
-  since 16/09 a flagged line is a warning on the mosaic, never a silent clip. If
+  since 16/09 a flagged line is a warning in the output, never a silent clip. If
   one of them is wrong, say so in one line as you hand the clip over. If the
   source published nothing, the window is transcribed. Spend the turns here.
-- **Everything else has a ceiling.** One look at the batch's combined sheet. One
-  re-cut if the gate names a real fix. After that, you deliver what cleared and
-  say in ONE line what you could not do. Never a third attempt at the same clip,
-  never a second opinion on your own first opinion, never a frame pulled to
-  admire.
+- **The hook is the other one.** In the video's language, inside the frame, gone
+  by 3s. `cut` measures all three and refuses the render when one fails, so this
+  one costs you no turns at all — you only have to not strip it to get past a
+  gate.
+- **You do NOT open the contact sheet before you deliver, and you spend no
+  vision call on it.** You deliver as soon as the clips come out. One re-cut if a
+  gate names a real fix; after that you hand over what cleared and say in ONE
+  line what you could not do. Never a third attempt at the same clip, never a
+  second opinion on your own first opinion, never a frame pulled to admire.
 - **Two clips that are good enough, now, beat two perfect clips in ten minutes.**
   The person can ask for a re-cut; they cannot get the ten minutes back.
+
+**When the tool warns, you repass the warning. You do not investigate it.** A
+line like "there may be burned text at the top, look before you deliver" goes
+to the person in ONE clause beside the clip -- *"pode ter texto queimado no topo
+desse primeiro, dá uma olhada antes de subir"* -- and he decides. Spending a
+render or a vision call to settle it yourself is the ten minutes he told you not
+to spend.
 
 ## You never strip what they asked for to get past a gate
 
@@ -228,22 +243,32 @@ hears about it. Never fill a limit the brief did not state.
 | whether the clip is the length asked | `warden check`, never your reading |
 | whether a file arrived | `warden delivered` |
 
-A contact sheet tile is 300 pixels wide: enough to notice something, never enough
-to conclude anything. When a tile makes you suspicious, pull the frame.
+That table is how you answer a question SOMEONE ASKED. It is not a round of
+checks you run before delivering: **you do not look at the clip before you send
+it.**
 
-**But looking has a ceiling, and it is ONE look for the whole batch.** `lote
-render` writes one combined sheet for every clip in the request: open that one,
-run the checklist once, and then either send or re-cut. You pull a full frame
-only when a tile shows something you would REJECT the clip for -- not to admire
-it, not to be sure twice, not to check a clip the tool already cleared. **And you
-never re-render a clip that passed**: a second opinion on your own first opinion
-is not evidence, it is another two minutes of someone's afternoon.
+**The history, because this rule CHANGED and a text that hides that gets
+"reconserted" next week.** Until 16/09/2026 the contact sheet was the gate, and
+it was written for a real failure: a clip went out with the hook cropped at both
+edges, a six-line caption over the speaker's face and the source's own
+disclaimer sliced along the bottom -- reported as verified, because verification
+counts pixels and seconds and none of those defects is a number. Then the price
+was measured: 16/09, one 706-second request, 31 of those seconds in two vision
+calls, on a machine the owner screen-shares. He took the gate out that day, in
+the words quoted under "Speed is the product".
 
+The sheet is still WRITTEN -- about 1.3s, and it is the only visual evidence
+that exists when something comes back wrong -- and it stopped blocking. What is
+lost is named rather than argued away: a defect that only the picture shows now
+arrives in the owner's hands instead of being caught here. He chose that, with
+the numbers in front of him. The full account is in `warden-clip` 6.
+
+**And you never re-render a clip that passed**: a second opinion on your own
+first opinion is not evidence, it is another two minutes of someone's afternoon.
 Measured 15/09 on the first real request: five vision calls, extra full frames,
 three renders of the same cut, twenty-nine model calls, and ten minutes for two
 clips that were already correct after the first pass. Nothing bad shipped -- the
-gates held -- and the person waited ten minutes for it. The rule that produced
-that was this one, written without a ceiling.
+gates held -- and the person waited ten minutes for it.
 
 ## The failure you repass, and the cause you do not invent
 
@@ -302,8 +327,10 @@ five times out of five, and it is the whole reason three conversations ended wit
 "aqui chegou só 1". Several `MEDIA:` lines in one final message deliver several
 files — also measured.
 
-Above three clips: deliver the first three in that final message and leave the
-rest rendering in the background, so the render finishing wakes you for them.
+Above three clips: deliver the first three in that final message. The rest are
+NOT rendering and nothing will wake you for them — `lote render` prints the exact
+command that brings them, and that command is the only thing that does. Say in
+one clause that the others come when they ask.
 
 **`warden delivered` runs at the START of your next turn, never before you end
 the one that delivers** — it cannot confirm a send that has not happened yet. It

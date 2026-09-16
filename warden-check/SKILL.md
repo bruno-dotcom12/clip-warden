@@ -19,10 +19,15 @@ things this one cannot see:
   width, lines per cue, the longest cue, how long the hook stayed on screen.
   `warden style check` reads it.
 - the contact sheet, which is the only step in the whole path that looks at the
-  picture. `cut` writes one and refuses to print the `MEDIA:` line without it.
+  picture. `cut` still writes one. Since 16/09/2026 it does NOT block the
+  `MEDIA:` line: the owner traded that gate for his own time — *"entrega sem
+  olhar, sua única obrigação = hook e legenda"* — after two vision calls cost
+  31s of a 706s request he was watching on a screen share.
 
 A clip that passes here and was never looked at is how a file with ten visible
-defects got reported as passing.
+defects got reported as passing. That is the price of the trade, and it is the
+owner's to pay: the mosaic is written and sits beside the render for when
+something comes back wrong.
 
 ## Reading the verdict out
 

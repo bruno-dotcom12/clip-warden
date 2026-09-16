@@ -79,8 +79,13 @@ Render the moments you chose. There is no approval round trip.
 
 `warden lote` is the short road and it is the default one: `lote prep <url>`
 gives you the words, the signals and the defaults in one output, and `lote render`
-cuts the windows, checks them on one combined contact sheet, and prints every
+cuts the windows, writes one combined contact sheet and prints every
 `MEDIA:` line at the end. Use `warden cut` directly only for a single odd clip.
+
+**Both of them go in the BACKGROUND, always.** The rule, and the 16/09
+measurement behind it, are in `warden-clip` at the top of that file and nowhere
+else. This line exists only so nobody reaches this section and runs them here
+the other way.
 
 The length rule: when THEY said a number of seconds it goes on the command line
 as `--seconds <n>`. When nobody named one, `cut` uses the stored default and
@@ -106,9 +111,18 @@ the product. That happened on 15/09 and both clips went out with no captions and
 no hook. If you cannot satisfy the gate with everything they asked for, say which
 one you could not do, in one line, and hand over what you have.
 
-Open the combined contact sheet ONCE, before you send. `cut` will not print a `MEDIA:` line
-without one. The checklist, and why it rejects a clip every check passed, is in
-`warden-clip` 6.
+**You do NOT open the contact sheet before you send.** That was the rule until
+16/09/2026 and the owner took it out that day, in these words, when I asked him
+whether the mosaic should stay mandatory: *"2 = entrega sem olhar, sua unica
+obrigacao = hook e legenda"*. The two vision calls of that request cost 31s of
+706s, on a screen-share call. So `cut` still writes the sheet, still prints
+`SHEET:`, and no longer withholds `MEDIA:` for it.
+
+Your obligation is two things: the hook and the caption. When the tool WARNS
+about something else in its output — a suspect caption line, possible text the
+footage already carries — you repass that warning in ONE line in the same
+message as the clip, and the person decides. You do not investigate it yourself.
+What that costs, and the checklist for whoever does look, is in `warden-clip` 6.
 
 **How a file is handed over is written in the persona, under "Handing the file
 over", and it is written there and nowhere else.** Read it there before you end

@@ -672,7 +672,7 @@ def render(findings, rules, media):
                      "do not say this clip passes anything.")
         lines.append("Whether the words are on screen is not in this list: a "
                      "burned caption is pixels, and ffprobe reads tracks. The "
-                     "contact sheet is what answers that.")
+                     "contact sheet, written beside each render, is where it shows.")
     else:
         lines.append("Nothing blocks this clip. The CHECK lines are yours to confirm.")
     return "\n".join(lines)
@@ -956,17 +956,20 @@ def renders_all():
 
 
 def renders_liberado(impressao):
-    """A linha deste corte, se ele já passou E os arquivos ainda estão lá.
+    """A linha deste corte, se ele já passou E o mp4 ainda está lá.
 
-    Os dois arquivos, não só o mp4. Sem o contact sheet `deliver` recusa a
-    entrega -- e com razão, é ele que prova que alguém olhou -- então uma linha
-    sem mosaico em disco não serve para nada e o corte tem de ser refeito.
+    O MP4, e só ele, desde 16/09/2026. Esta função exigia o contact sheet
+    também, porque `deliver` recusava a entrega sem ele. `deliver` não recusa
+    mais -- o dono trocou esse portão pelo tempo dele -- e a exigência que
+    sobrou aqui mandava RENDERIZAR TUDO DE NOVO quando só o mosaico tinha
+    sumido do disco. Um clipe pronto, aprovado e no lugar, refeito do zero por
+    causa de um JPEG ausente.
     """
     for row in renders_all():
         if row.get("fingerprint") != impressao or not _recente_render(row):
             continue
-        clip, sheet = row.get("clip"), row.get("sheet")
-        if clip and sheet and os.path.isfile(clip) and os.path.isfile(sheet):
+        clip = row.get("clip")
+        if clip and os.path.isfile(clip):
             return row
     return None
 
@@ -1713,15 +1716,17 @@ def _link_incompleto(texto, link):
 # palavras dele "não posso esperar tanto tempo assim". Sessenta segundos de
 # silêncio na frente de um avaliador é pior que uma pergunta.
 #
-# Doze cobre o caso real: ele manda o link no MESMO segundo do texto, e o app
-# dele entrega como uma segunda mensagem um instante depois. A espera não é
-# tempo gasto -- o laço devolve no instante em que o link aparece, e agora
-# confere sete vezes por segundo em vez de duas, então um link que chega em
-# 300ms custa 300ms.
+# 14s desde 16/09/2026, e o motivo é uma medição de duas vezes.
 #
-# O que se perde: quem digita o link devagar, em vinte segundos, volta a ouvir
-# a pergunta. É a troca certa para quem está sendo avaliado ao vivo.
-INBOX_ESPERA_S = 12.0
+# Em DOIS pedidos reais no mesmo dia o dono mandou o link UM SEGUNDO depois de a
+# espera acabar -- 11:29:35 a desistência, 11:29:36 o link; e 10:07:26 contra
+# 10:07:27. As duas vezes custaram uma mensagem ("manda o link que eu já corto")
+# que não precisava existir.
+#
+# Dois segundos a mais custam dois segundos nos pedidos em que o link já veio
+# junto, e economizam uma volta inteira quando ele vem logo atrás. O dono
+# escolheu o número: "sobe para 14 segundos".
+INBOX_ESPERA_S = 14.0
 
 
 def _espera_do_inbox(pedida=None):
@@ -2753,30 +2758,45 @@ def deliver(result, rules, campaign, ledger):
                  if not any(m.startswith(prefix) for prefix, _ in groups)]
         for message in loose:
             print(f"  CHECK  {message}", file=sys.stderr)
+    # O MOSAICO DEIXOU DE SER PORTÃO EM 16/09/2026, POR DECISÃO DO DONO.
+    #
+    # Ele nasceu de um clipe entregue com o hook cortado e uma legenda de seis
+    # linhas, aprovado por toda a verificação numérica porque nenhum dos dez
+    # defeitos era um número. A resposta foi exigir que alguém OLHASSE a imagem
+    # antes de entregar, e `deliver` recusava sem ela.
+    #
+    # O que mudou é o preço. Medido em 16/09 num pedido real: as duas chamadas
+    # de visão custaram 31s de 706s, e o dono roda isto numa chamada de tela
+    # compartilhada. A frase dele, quando perguntei se o mosaico continuava
+    # obrigatório: "entrega sem olhar, sua unica obrigacao = hook e legenda".
+    #
+    # Então o mosaico continua sendo ESCRITO -- ele custa ~1,3s e é a única
+    # prova visual que existe depois, quando algo sai errado -- e deixou de
+    # BLOQUEAR. A lista de conferência continua saindo, como lista do que olhar
+    # se alguém for olhar, e não como portão.
+    #
+    # O que se perde está dito aqui para quem for mexer nisso depois: um defeito
+    # que só a imagem mostra agora sai na mão do dono. Os portões que continuam
+    # de pé são os dois que ele nomeou -- hook e legenda -- e esses `deliver`
+    # ainda recusa, logo acima.
     sheet = result.get("sheet")
-    if not sheet or not os.path.isfile(sheet):
-        print("no contact sheet was written for this render, so nothing has "
-              "looked at it. Not delivering: a clip nobody saw is how a file "
-              "with a cropped hook and a six-line caption got reported as "
-              "passing.", file=sys.stderr)
-        return 1
-    # Impresso antes do MEDIA: de propósito. A ordem na tela é a ordem do
-    # trabalho -- abrir a imagem, conferir a lista, e só então entregar. O
-    # número de itens sai da própria lista: escrito à mão, ele descolou dela
-    # assim que a lista cresceu, e "confira os cinco" sobre oito itens é um
-    # convite a parar no quinto.
     import warden_style as S
     # A primeira linha do stdout de uma ENTREGA, e só de uma entrega: passou
-    # pelos três portões. Ver o comentário lá em cima sobre por que ela não
-    # sai antes deles.
+    # pelos portões que sobraram. Ver o comentário lá em cima sobre por que ela
+    # não sai antes deles.
     print(result["out"])
-    print(f"SHEET:{sheet}")
-    print(f"open that image and check all {len(S.CHECKLIST)} before you send "
-          f"the clip:", file=sys.stderr)
-    for item in S.CHECKLIST:
-        print(f"  [ ] {item}", file=sys.stderr)
-    print("  any one of them failing rejects the clip, even with every check "
-          "green.", file=sys.stderr)
+    if sheet and os.path.isfile(sheet):
+        print(f"SHEET:{sheet}")
+        print(f"the mosaic is written and NOT a gate any more (owner, 16/09): "
+              f"deliver without opening it. It is here for when something comes "
+              f"back wrong. If you do look, these are the {len(S.CHECKLIST)}:",
+              file=sys.stderr)
+        for item in S.CHECKLIST:
+            print(f"  [ ] {item}", file=sys.stderr)
+    else:
+        print("no contact sheet was written for this render. Not a blocker "
+              "since 16/09 -- deliver anyway -- but nothing visual exists for "
+              "this clip if it comes back wrong.", file=sys.stderr)
     # A linha que realmente entrega o arquivo. Impressa pela ferramenta e não
     # composta pelo modelo, pelo mesmo motivo que todo número aqui vem da
     # ferramenta: um caminho digitado de memória é um caminho que não existe, e a
@@ -3373,12 +3393,15 @@ def cmd_style(args):
             print(f"  {rotulo[lv]} {m}", file=sys.stderr)
         if piores:
             print(f"\nthis render is outside the approved range on "
-                  f"{len(piores)} count(s). Look at the contact sheet: a number "
+                  f"{len(piores)} count(s). The contact sheet shows it, if you "
+                  f"want to look: a number "
                   "out of band is usually visible.", file=sys.stderr)
             return 1
         print("\ninside the approved range on every enforced metric. That is not "
               "the same as good -- it is the same as not obviously broken. The "
-              "contact sheet is still the gate.", file=sys.stderr)
+              "contact sheet is written beside the render, and since 16/09 "
+              "it is not a gate: pass the warning on in one line instead "
+              "of investigating it.", file=sys.stderr)
         return 0
     die(f"unknown style action {args.action!r}")
 
@@ -3844,12 +3867,13 @@ def conta_do_lote(liberados, failed, asked, sheet=None, depois=None,
               f"exists to stop.", file=sys.stderr)
     if sheet:
         # UM mosaico para o lote inteiro. Cada clipe já tem o seu -- `deliver`
-        # não entrega sem ele -- e este não substitui nenhum: ele é a
+        # desde 16/09 não bloqueia -- e este não substitui nenhum: ele é a
         # conferência única do lote, para que olhar dois clipes não custe dois
         # `vision_analyze` de ~14s cada.
         print(f"SHEET:{sheet}")
-        print(f"# one image for the whole batch: open it once and check every "
-              f"clip on it, instead of one look per clip.", file=sys.stderr)
+        print(f"# one image for the whole batch. Since 16/09 you do NOT have to "
+              f"open it before delivering -- it is here for when a clip "
+              f"comes back wrong.", file=sys.stderr)
     if depois:
         # Em voz alta, e com o comando na mão. A frase anterior aqui dizia
         # "still rendering in the background (...) when that render finishes it
@@ -4251,7 +4275,26 @@ def _lote_prep(args):
     # `jokovic jokovic` foi para a tela. Aprovar o que o detentor dos direitos
     # publicou é outra coisa.
     srt = None
-    publicada = "published subtitle" in str(transcricao.get("source") or "")
+    # E "publicada" deixa de valer quando ela está FORA DA LÍNGUA DA FONTE.
+    #
+    # Medido em 16/09/2026, num pedido real: o vídeo era `en-US`, o YouTube não
+    # entregou a faixa em inglês, e a tradução automática em português entrou
+    # como legenda publicada -- assinada sozinha, queimada na tela. A regra do
+    # dono, textual: "se o video for ingles quero legenda em ingles, se o vídeo
+    # for em português, quero legenda em português".
+    #
+    # `fora_da_lingua_da_fonte` vem de `warden_media.transcribe` e traz o motivo
+    # escrito. Com ela, esta ficha sai com `published: False` e o `lote render`
+    # cai no ramo que já existe: transcrever a janela com o modelo bom, NA
+    # língua da fonte, em vez de assinar uma tradução de máquina como se fosse
+    # o que o detentor dos direitos escreveu.
+    fora_da_lingua = transcricao.get("fora_da_lingua_da_fonte")
+    publicada = ("published subtitle" in str(transcricao.get("source") or "")
+                 and not fora_da_lingua)
+    if fora_da_lingua:
+        print(f"# a legenda publicada NÃO está na língua da fonte: "
+              f"{fora_da_lingua}. Ela não vale como publicada, então as janelas "
+              f"vão ser transcritas na língua do vídeo.", file=sys.stderr)
     texto_srt = _media().to_srt(transcricao.get("segments") or [])
     if texto_srt.strip():
         srt = safe_out(os.path.join(out, "lote.srt"), "subtitles")
@@ -4447,7 +4490,7 @@ def _aviso_de_linha_suspeita(pendentes):
     e ele roda isto numa chamada de tela compartilhada, onde a volta extra do
     `--keep` custa mais um render inteiro. Então a linha suspeita deixa de
     calar o clipe e passa a ser o que sempre pôde ser: um aviso, ao lado do
-    mosaico que é obrigatório abrir antes de entregar. As palavras estão na
+    mosaico que o render escreve. As palavras estão na
     tela do mosaico; ler é olhar.
 
     `--keep` continua valendo, e agora quer dizer "eu já li esta, pare de
@@ -4461,8 +4504,8 @@ def _aviso_de_linha_suspeita(pendentes):
     return (f"CAPTIONS BURNED, {len(pendentes)} line(s) worth a second look "
             f"(a number, a word repeated back to back, or an auto-subtitle "
             f"marker -- what a transcription gets wrong most often). They are "
-            f"ON the contact sheet you have to open anyway: read them there "
-            f"against the picture. If one is wrong, say so in one line when "
+            f"they are on the contact sheet the render wrote, if you want "
+            f"to look. If one is wrong, say so in one line when "
             f"you hand the clip over; do NOT re-render for it unless the "
             f"person asks. To silence this warning on a re-run, append: "
             f"\n#     {colar}\n"
@@ -4470,7 +4513,7 @@ def _aviso_de_linha_suspeita(pendentes):
             + " | ".join(r["text"].strip() for r in pendentes))
 
 
-def _legenda_da_janela(out, resultados, janelas, guardadas):
+def _legenda_da_janela(out, resultados, janelas, guardadas, lingua=None):
     """Transcreve CADA janela e assina o que der.
 
     Devolve ({janela: srt}, {janela: porquê}, língua ouvida ou None, se ela
@@ -4510,7 +4553,14 @@ def _legenda_da_janela(out, resultados, janelas, guardadas):
     for i, ((caminho, dentro), (de, ate)) in enumerate(zip(resultados, janelas), 1):
         queimar[(de, ate)] = None
         try:
-            transcricao = _media().transcribe(caminho, proposito="janela")
+            # A LÍNGUA DO VÍDEO vai junto, e ela é a do vídeo e não a da
+            # legenda. Sem ela o Whisper detecta o idioma em alguns segundos de
+            # áudio e às vezes erra; com ela, ouve na língua que a fonte
+            # declarou. É a regra do dono de 16/09: "se o video for ingles
+            # quero legenda em ingles".
+            transcricao = _media().transcribe(caminho, proposito="janela",
+                                              prefer_lang=([lingua] if lingua
+                                                           else None))
         except Exception as exc:
             # Uma janela que não transcreveu não derruba as outras: ela sai
             # muda, e a conta final do lote diz qual e por quê.
@@ -4629,7 +4679,7 @@ def _mosaico_do_lote(mosaicos, destino):
     """Empilha os contact sheets dos clipes num só. O caminho, ou None.
 
     UMA conferência visual por lote. Cada clipe continua tendo o seu -- o
-    `deliver` não entrega sem ele, e essa regra não se toca -- mas olhar dois
+    `deliver` o escreve e desde 16/09 não bloqueia por ele -- mas olhar dois
     clipes custava duas chamadas de visão de ~14s cada. Esta imagem é as duas
     numa, e não é um render novo: são os mosaicos que já foram escritos, um
     embaixo do outro.
@@ -4668,7 +4718,8 @@ def _mosaico_do_lote(mosaicos, destino):
 
 
 def _ficha_da_legenda(out, url, passado=None):
-    """(srt, veio_publicada, língua da fonte, se ela foi MEDIDA).
+    """(srt, veio_publicada, língua da legenda, se ela foi MEDIDA, segundos,
+    língua do VÍDEO).
 
     O quarto valor existe porque o `render` reconstrói o anúncio a partir desta
     ficha, e uma ficha que só carrega a tag faz o `render` afirmar o que o
@@ -4691,17 +4742,18 @@ def _ficha_da_legenda(out, url, passado=None):
     if passado:
         # Passado à mão é uma decisão de quem passou, inclusive sobre a língua:
         # quem escolheu o arquivo leu o que tem dentro dele.
-        return (passado if os.path.isfile(passado) else None), True, None, None, None
+        return ((passado if os.path.isfile(passado) else None),
+                True, None, None, None, None)
     ficha = os.path.join(out, "lote.legenda.json")
     if not os.path.isfile(ficha):
-        return None, False, None, None, None
+        return None, False, None, None, None, None
     try:
         with open(ficha, encoding="utf-8") as fh:
             carregado = json.load(fh)
     except (OSError, ValueError):
-        return None, False, None, None, None
+        return None, False, None, None, None, None
     if not isinstance(carregado, dict):
-        return None, False, None, None, None
+        return None, False, None, None, None, None
     if carregado.get("source_id") != _marca_da_fonte(url):
         die(f"the caption card in {ficha} is not this link's and will not be "
             f"burned: it was written for "
@@ -4714,7 +4766,14 @@ def _ficha_da_legenda(out, url, passado=None):
     if srt and not os.path.isfile(srt):
         srt = None
     return (srt, bool(carregado.get("published")), carregado.get("language"),
-            bool(carregado.get("language_measured")), carregado.get("seconds"))
+            bool(carregado.get("language_measured")), carregado.get("seconds"),
+            # A língua do VÍDEO, que não é a mesma coisa que a da legenda. Elas
+            # só divergem quando a legenda é tradução -- e desde 16/09/2026 uma
+            # tradução não conta como publicada, então a divergência agora leva
+            # à transcrição da janela. É ESTA que o Whisper tem de ouvir: pedir
+            # a língua da legenda ali seria transcrever um áudio em inglês
+            # mandando o modelo ouvir português.
+            carregado.get("source_language"))
 
 
 def _lote_render(args):
@@ -4743,7 +4802,7 @@ def _lote_render(args):
     # ponto: é dela que sai a língua da fonte, e a língua é metade do que o
     # anúncio tem de dizer. Anunciar primeiro e descobrir o idioma depois era
     # anunciar um idioma que ninguém tinha lido.
-    srt, publicada, lingua_da_fonte, lingua_medida, seg_da_ficha = (
+    srt, publicada, lingua_da_fonte, lingua_medida, seg_da_ficha, lingua_do_video = (
         _ficha_da_legenda(out, url, args.subtitles))
 
     # A duração vem, em ordem: do `--seconds` desta linha de comando, depois do
@@ -4797,7 +4856,8 @@ def _lote_render(args):
         # essa transcrição é o que queima -- com o portão da linha suspeita
         # intacto.
         queimar, porques, ouvida, ouvida_medida = _legenda_da_janela(
-            out, resultados, janelas, getattr(args, "keep", None))
+            out, resultados, janelas, getattr(args, "keep", None),
+            lingua=lingua_do_video or lingua_da_fonte)
         # A língua só apareceu AGORA, depois de o anúncio já ter saído dizendo
         # que ela não tinha sido lida. Refazer a conta e dizer o que mudou é a
         # única resposta honesta: calar deixaria o gancho ser escrito no escuro,

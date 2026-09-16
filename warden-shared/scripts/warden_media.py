@@ -1538,6 +1538,42 @@ def _sub_langs_para(url, lingua=_NAO_DITO):
     return ",".join(pedidos[:SUB_LANGS_MAX])
 
 
+def _fora_da_lingua_da_fonte(tag, lingua_fonte):
+    """O porquê de esta legenda NÃO estar na língua da fonte, ou None.
+
+    A regra do dono, dita por ele em 16/09/2026: *se o vídeo for inglês quero
+    legenda em inglês, se o vídeo for em português, quero legenda em
+    português*. É a mesma regra de 15/09 -- a língua é a da FONTE, seja ela
+    qual for -- levada até a consequência que faltava: quando a legenda na
+    língua da fonte não existe, a resposta não é usar a de outra língua.
+
+    O que custou, medido hoje (16/09/2026) num pedido real: o vídeo era
+    `en-US` e a única legenda que desceu foi `source-810777f3f7aa.pt.srt`, a
+    tradução automática do YouTube. A ficha do lote registrou os dois fatos
+    lado a lado -- `"language": "pt"`, `"source_language": "en-US"` -- e o
+    clipe foi queimado assim mesmo. Ou seja: o código SABIA e seguiu. A
+    escolha entre as legendas em disco já estava certa (`_prefere_idioma`); o
+    defeito era aceitar o plano B como se fosse legenda.
+
+    Compara pela RAIZ, então `pt-BR` casa com `pt` e `en-US` com `en`: uma
+    variante regional é a mesma língua, e recusá-la mandaria transcrever um
+    áudio que já tem legenda publicada boa.
+
+    Sem tag no nome ou sem língua da fonte lida, devolve None: não dá para
+    afirmar que está fora do que não se sabe, e parar aqui deixaria o dono sem
+    clipe por causa de um fato que ninguém mediu.
+    """
+    if not tag or not lingua_fonte:
+        return None
+    raiz = str(tag).split("-")[0].split("_")[0].lower()
+    raiz_fonte = str(lingua_fonte).split("-")[0].split("_")[0].lower()
+    if not raiz or not raiz_fonte or raiz == raiz_fonte:
+        return None
+    return (f"this video is in {lingua_fonte} and the only published subtitle "
+            f"is tagged {tag}, which is a machine translation on top of "
+            f"machine transcription and not what was said")
+
+
 def _pull_subs(url, out_dir, stem, template, playlist_args):
     """(caminho do .srt, motivo de não ter vindo). Falhar aqui não é fatal.
 
@@ -1646,6 +1682,20 @@ def _pull_subs(url, out_dir, stem, template, playlist_args):
         # `langs`, não `SUB_LANGS`: a frase tem de dizer o que foi PEDIDO nesta
         # corrida, senão ela mente justamente quando a língua original entrou.
         return None, "this video publishes no subtitle in " + langs
+    # A LEGENDA DE OUTRA LÍNGUA NÃO SERVE, e este é o portão que faltava.
+    #
+    # `achadas[0]` é a preferida por `_prefere_idioma`, que já põe a língua da
+    # fonte na frente: se ela não está aqui, nenhuma das outras está. Devolver
+    # None faz `_pull_text_first` baixar o ÁUDIO e transcrever -- o caminho que
+    # já existe para a fonte que não publica legenda --, e é ele que produz
+    # texto na língua da fonte em vez de tradução de máquina.
+    #
+    # Não apaga os arquivos: eles são a prova do que a fonte publicou, e
+    # `transcribe` os recusa de novo pelo mesmo motivo se alguém os encontrar
+    # ao lado do áudio. Ver `_fora_da_lingua_da_fonte` para o caso medido.
+    fora = _fora_da_lingua_da_fonte(_tag_do_nome(achadas[0]), lingua)
+    if fora:
+        return None, fora
     _conta_a_legenda(achadas, lingua)
     return os.path.join(out_dir, achadas[0]), None
 
@@ -2421,6 +2471,12 @@ def transcribe(path, model_size=None, window=None, prefer_lang=None,
     When the archive shipped subtitles, using them is not a shortcut, it is the
     better text: it is what the rights holder wrote, and it costs nothing.
 
+    MENOS quando elas estão em OUTRA LÍNGUA que o vídeo, e aí elas não são o
+    texto do detentor dos direitos: são tradução de máquina em cima de
+    transcrição de máquina. Desde 16/09/2026 (decisão do dono, e um clipe em
+    português queimado sobre um vídeo `en-US`) esse caso vai para o whisper, na
+    língua da fonte. Ver `_fora_da_lingua_da_fonte`.
+
     `window` is (start, end) in source seconds: only that slice is transcribed,
     and the timings come back on the SOURCE's clock so the rest of the pipeline
     does not have to know. That is the second pass of the two-pass plan -- a
@@ -2438,8 +2494,37 @@ def transcribe(path, model_size=None, window=None, prefer_lang=None,
         chamador que já existe.
     """
     say = progress or (lambda line: print(line, file=sys.stderr, flush=True))
+    # A língua da FONTE, como fato: o `--lang` de quem pediu, ou a anotação que
+    # o download deixou ao lado. É ela que decide se a legenda publicada serve
+    # e, quando não serve, em que língua o whisper ouve.
+    lingua_marcada = _lingua_marcada(path)
+    lingua_da_fonte = None
+    if prefer_lang:
+        lingua_da_fonte = str(prefer_lang[0] or "") or None
+    lingua_da_fonte = lingua_da_fonte or lingua_marcada
     if window is None:
         sidecar, lang = _subtitle_beside(path, prefer=prefer_lang)
+        # A recusa mede contra a língua ANOTADA NO DOWNLOAD, não contra
+        # `prefer_lang`: `--lang` é o dono falando, e ele decide -- inclusive
+        # decidir por uma legenda que não é a da fonte. O que ele não pode é
+        # receber essa troca sem ter pedido, que é o defeito de 16/09/2026.
+        fora = (_fora_da_lingua_da_fonte(lang, lingua_marcada)
+                if sidecar and not prefer_lang else None)
+        # Traduzida, e existe áudio para ouvir: o whisper na língua da fonte
+        # custa minutos e é o texto certo; a tradução custa zero e é o texto de
+        # outro vídeo. Ver `_fora_da_lingua_da_fonte` para o caso medido em
+        # 16/09/2026, em que o clipe saiu em português sobre um vídeo `en-US`.
+        #
+        # Quando o próprio `path` É a legenda (o caminho `--text-first` devolve
+        # o `.srt` como fonte) não há áudio aqui para transcrever. Aí ela volta
+        # como está, MARCADA -- quem chama decide, e é por isso que o campo
+        # existe em vez de uma recusa: recusar aqui deixaria o comando sem
+        # texto nenhum, e o texto ainda serve para escolher o momento.
+        da_para_ouvir = not str(path).lower().endswith((".srt", ".vtt"))
+        if fora and da_para_ouvir:
+            say(f"warden: {fora}. Listening to the audio in "
+                f"{lingua_da_fonte} instead of burning the translation.")
+            sidecar = None
         if sidecar:
             # `language_measured` diz se a língua da FONTE foi lida do material
             # ou se saiu de desempate. Quem imprime a frase para o dono precisa
@@ -2447,11 +2532,15 @@ def transcribe(path, model_size=None, window=None, prefer_lang=None,
             # pode ser dito quando alguém leu a língua do vídeo. Em 15/09/2026
             # essa frase foi impressa sobre um vídeo em inglês com legenda
             # auto-traduzida para pt-BR, e a mentira tinha cara de medição.
-            medida = bool(prefer_lang) or _lingua_marcada(path) is not None
+            medida = bool(prefer_lang) or lingua_marcada is not None
             return {"source": f"published subtitles ({lang or 'no language tag'})",
                     "path": sidecar, "language": lang,
                     "language_measured": medida,
-                    "source_language": _lingua_marcada(path),
+                    "source_language": lingua_marcada,
+                    # O SINAL. Presente só quando esta legenda não está na
+                    # língua da fonte, e com o porquê escrito: quem for
+                    # aprová-la automaticamente tem de poder perguntar antes.
+                    "fora_da_lingua_da_fonte": fora,
                     "segments": _read_srt(sidecar)}
     try:
         from faster_whisper import WhisperModel
@@ -2518,9 +2607,31 @@ def transcribe(path, model_size=None, window=None, prefer_lang=None,
         # declara `mem_limit: 3g`. 3608 > 3072: o ganho de velocidade seria um
         # OOM kill no meio da transcrição, que é a falha mais cara que existe
         # aqui -- silenciosa, e depois de já ter gasto o tempo todo.
-        segments, _info = model.transcribe(audio, vad_filter=True,
-                                           word_timestamps=True,
-                                           beam_size=1)
+        # `language`: o whisper transcreve NA LÍNGUA DA FONTE quando ela foi
+        # lida, em vez de detectar sozinho. Detectar não é de graça -- ele
+        # decide por uns segundos de áudio, e um vídeo em inglês que começa com
+        # vinheta ou com uma saudação em outra língua sai transcrito errado do
+        # primeiro segmento em diante. A língua da fonte é fato sobre o link, e
+        # este caminho só existe porque a legenda publicada nessa língua não
+        # estava lá.
+        pedida = (lingua_da_fonte or "").split("-")[0].split("_")[0].lower() or None
+        try:
+            segments, _info = model.transcribe(audio, vad_filter=True,
+                                               word_timestamps=True,
+                                               beam_size=1, language=pedida)
+        except ValueError:
+            # Uma tag que o whisper não conhece (o campo vem do outro lado e
+            # nada garante que seja uma das línguas dele) não pode matar uma
+            # transcrição que já custou o download. Ele detecta, e o campo
+            # `language` abaixo deixa de afirmar o que não foi imposto.
+            if not pedida:
+                raise
+            say(f"warden: faster-whisper does not know the language "
+                f"{pedida!r}, so it will detect one instead.")
+            pedida = None
+            segments, _info = model.transcribe(audio, vad_filter=True,
+                                               word_timestamps=True,
+                                               beam_size=1)
         rows = []
         # Dez minutos de silêncio num chat lê como agente morto. O whisper
         # devolve um gerador, então dá para contar o que já saiu enquanto sai --
@@ -2543,6 +2654,14 @@ def transcribe(path, model_size=None, window=None, prefer_lang=None,
                 pass
     return {"source": f"faster-whisper {size} ({why})", "path": None,
             "segments": rows, "duration_s": seconds,
+            # A língua sai daqui só quando ela foi LIDA e IMPOSTA ao modelo --
+            # não a detectada. Quem lê este campo escreve o gancho com ele, e
+            # `cut` recusa gancho e legenda em línguas diferentes: repassar um
+            # palpite seria a mesma afirmação sem medição que o `prep` teve o
+            # cuidado de não fazer.
+            "language": pedida,
+            "language_measured": bool(pedida),
+            "source_language": lingua_marcada,
             "window": list(window) if window else None}
 
 
@@ -2639,8 +2758,13 @@ def _prefere_idioma(caminhos, prefer=None):
     signifique alguma coisa, mas porque duas execuções iguais têm de dar o
     mesmo resultado.
     """
-    ordem = [str(p).lower() for p in (prefer or []) if p]
+    pedidas = [str(p).lower() for p in (prefer or []) if p]
+    ordem = list(pedidas)
     ordem += [l.lower() for l in SUBTITLE_LANGS if l.lower() not in ordem]
+    n = len(pedidas)
+
+    def _raiz(tag):
+        return tag.split("-")[0].split("_")[0]
 
     def _chave(caminho):
         nome = os.path.basename(caminho)
@@ -2648,17 +2772,32 @@ def _prefere_idioma(caminhos, prefer=None):
         if tag is None:
             # Sem tag no nome: nem preferida nem recusada. Fica depois das
             # conhecidas e antes de um idioma que ninguém pediu.
-            return (len(ordem), "", nome)
+            return (n + len(ordem), "", nome)
+        # A LÍNGUA DA FONTE ANTES DE TUDO, e pela raiz -- inclusive antes de um
+        # acerto exato no desempate. Esta separação em dois blocos é de
+        # 16/09/2026 e quem a encontrou foi um teste, não um clipe: com
+        # `prefer=['en-US']` e os arquivos `.en.srt` e `.pt.srt` lado a lado,
+        # `en` casava exatamente com o último item de `SUBTITLE_LANGS` (índice
+        # 4) e `pt` com o penúltimo (índice 3), então a TRADUÇÃO vencia a
+        # legenda da própria fonte. A lista única misturava "a língua do vídeo"
+        # com "a preferência deste dono", e `en-US` -- que é como o YouTube
+        # marcou o vídeo do pedido de hoje -- não casava exatamente com nada.
+        #
+        # Importa mais agora do que antes: desde hoje uma tradução escolhida
+        # aqui não é mais queimada, é RECUSADA, então perder a legenda inglesa
+        # que estava em disco mandaria transcrever de graça.
+        for i, pedida in enumerate(pedidas):
+            if pedida == tag or _raiz(pedida) == _raiz(tag):
+                return (i, tag, nome)
         if tag in ordem:
-            return (ordem.index(tag), "", nome)
+            return (n + ordem.index(tag), "", nome)
         # Variante regional conta pela raiz: `pt-PT` vale como `pt`. É assim que
         # um vídeo em espanhol usa a legenda em espanhol dele sem que `es-419`
         # precise estar escrito em lugar nenhum.
-        raiz = tag.split("-")[0].split("_")[0]
         for i, conhecido in enumerate(ordem):
-            if conhecido.split("-")[0].split("_")[0] == raiz:
-                return (i, tag, nome)
-        return (len(ordem) + 1, tag, nome)
+            if _raiz(conhecido) == _raiz(tag):
+                return (n + i, tag, nome)
+        return (n + len(ordem) + 1, tag, nome)
 
     return sorted(caminhos, key=_chave)
 

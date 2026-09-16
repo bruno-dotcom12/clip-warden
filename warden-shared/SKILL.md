@@ -49,7 +49,7 @@ you did not get.
 | `warden discover` | the public campaign directories, as text |
 | `warden prefs ask --group search\|edit` / `set` / `show` | what this owner wants |
 | `warden lote prep <url> [--campaign <id>] [--n 2] [--seconds 20]` | **start here.** the gate, the words, the digest and the signals in ONE output, with the defaults it will use printed. No questions |
-| `warden lote render <url> --windows <a>-<b>,<c>-<d> --hooks 'x\|y'` | the other half: pulls the windows, renders the clips, ONE combined contact sheet, and every `MEDIA:` line printed together at the end |
+| `warden lote render <url> --windows <a>-<b>,<c>-<d> --hooks 'x\|y'` | the other half: pulls the windows, renders the clips, ONE combined contact sheet (written, not a gate since 16/09), and every `MEDIA:` line printed together at the end |
 | `warden archive --campaign <id> --text-first` | the words only, by hand: published subtitle, or audio. No video |
 | `warden archive --trusted <url> --text-first` (or `--link`) | the same, for a bare link. **The link having been sent IS the authorisation** -- there is no list to check and nothing to ask |
 | `warden archive … --windows <a>-<b>,<c>-<d>` | the whole batch of windows in one run: 31s against 38s for two |

@@ -435,5 +435,194 @@ class DizEmVozAlta(unittest.TestCase):
                           or "signs of its own" in m], [], r["style_breaches"])
 
 
+# ─────────────────────────────────── a legenda tem de estar na língua da fonte
+
+class _WhisperQueSoAnota:
+    """Um faster-whisper que não transcreve nada e guarda como foi chamado."""
+
+    ultima = None
+
+    def __init__(self, size, **kwargs):
+        self.size = size
+
+    def transcribe(self, audio, **kwargs):
+        _WhisperQueSoAnota.ultima = dict(kwargs, audio=audio)
+
+        class _Seg:
+            start, end, text = 0.0, 1.0, "what he actually said"
+        return iter([_Seg()]), None
+
+
+class ATraducaoNaoSubstituiALinguaDaFonte(unittest.TestCase):
+    """O defeito de 16/09/2026, e ele não tem nada de sutil.
+
+    Num pedido real de hoje o vídeo era `en-US` -- o `prep` imprimiu
+    `SOURCE_LANG:en-US` -- e a única legenda que desceu foi
+    `source-810777f3f7aa.pt.srt`, a tradução automática do YouTube. A ficha
+    `lote.legenda.json` registrou os dois fatos lado a lado
+    (`"language": "pt"`, `"source_language": "en-US"`) e o clipe foi queimado
+    em português assim mesmo.
+
+    A escolha ENTRE as legendas já estava certa desde 15/09 (`_prefere_idioma`
+    põe a língua da fonte na frente). O que faltava era a consequência: quando
+    a legenda na língua da fonte não existe, a resposta não é a de outra
+    língua -- é ouvir o áudio.
+
+    A decisão do dono, textual: "eu sempre vou usar portugues e ingles como
+    lingua entao se o video for ingles quero legenda em ingles, se o vídeo for
+    em português, quero legenda em português".
+    """
+
+    def setUp(self):
+        self.dir = _temp(self, prefix="warden-lingua-fonte-")
+        self.stem = "source-810777f3f7aa"
+        self.url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        self._guardados = []
+        M._FACTS.clear()
+        self.addCleanup(M._FACTS.clear)
+
+    def _troca(self, nome, valor):
+        antigo = getattr(M, nome)
+        setattr(M, nome, valor)
+        self.addCleanup(setattr, M, nome, antigo)
+
+    def _legenda(self, tag, texto="isso ele nao disse"):
+        caminho = os.path.join(self.dir, f"{self.stem}.{tag}.srt")
+        with open(caminho, "w", encoding="utf-8") as fh:
+            fh.write(f"1\n00:00:00,000 --> 00:00:02,000\n{texto}\n\n")
+        return caminho
+
+    def _puxa(self, lingua_do_video, tags):
+        """Roda `_pull_subs` de verdade, dublando só a rede."""
+        self._troca("_host_is_public", lambda host: True)
+        # E devolvida como estava: um teste que muda o ambiente do processo e
+        # não o repõe faz outro módulo falhar longe daqui, onde ninguém
+        # relaciona as duas coisas.
+        antigo = os.environ.pop("WARDEN_SUB_LANGS", None)
+        if antigo is not None:
+            self.addCleanup(os.environ.__setitem__, "WARDEN_SUB_LANGS", antigo)
+        campos = {"title": "T", "channel_id": "UC", "uploader_id": "@c",
+                  "channel_url": "u", "uploader_url": "u",
+                  "language": lingua_do_video}
+        linha = "\t".join(campos[c] for c in M._FACTS_CAMPOS)
+
+        def _run(args, timeout, label):
+            if "metadata" in label:
+                return linha + "\n"
+            for tag in tags:
+                self._legenda(tag)
+            return ""
+        self._troca("run", _run)
+        return M._pull_subs(self.url, self.dir, self.stem,
+                            os.path.join(self.dir, self.stem + ".%(ext)s"),
+                            ["--no-playlist"])
+
+    def test_so_a_traducao_em_disco_NAO_vira_legenda(self):
+        """O caso medido, pelo caminho de verdade."""
+        caminho, porque = self._puxa("en-US", ["pt"])
+        self.assertIsNone(caminho, "queimaria a tradução de novo")
+        # E o porquê nomeia as DUAS línguas: sem isso quem lê a saída não tem
+        # como saber que houve uma troca, que é exatamente como o defeito
+        # sobreviveu a uma ficha que já trazia os dois campos.
+        self.assertIn("en-US", porque)
+        self.assertIn("pt", porque)
+        self.assertIn("machine translation", porque)
+
+    def test_a_legenda_da_propria_fonte_continua_sendo_usada(self):
+        """A metade que não pode quebrar: a legenda publicada na língua do
+        vídeo é o melhor texto que existe e não custa nada."""
+        caminho, porque = self._puxa("en-US", ["en", "pt"])
+        self.assertIsNotNone(caminho, porque)
+        self.assertEqual(M._tag_do_nome(caminho), "en")
+
+    def test_uma_variante_regional_e_a_mesma_lingua(self):
+        """`pt-BR` não é outra língua que `pt`. Recusá-la mandaria transcrever
+        um áudio que já tem legenda publicada boa."""
+        caminho, porque = self._puxa("pt-BR", ["pt"])
+        self.assertIsNotNone(caminho, porque)
+        self.assertEqual(M._tag_do_nome(caminho), "pt")
+
+    # ------------------------------------------------------------- transcribe
+
+    def _whisper_de_mentira(self):
+        import sys
+        import types
+        _WhisperQueSoAnota.ultima = None
+        falso = types.ModuleType("faster_whisper")
+        falso.WhisperModel = _WhisperQueSoAnota
+        antigo = sys.modules.get("faster_whisper")
+        sys.modules["faster_whisper"] = falso
+
+        def _restaura():
+            if antigo is None:
+                sys.modules.pop("faster_whisper", None)
+            else:
+                sys.modules["faster_whisper"] = antigo
+        self.addCleanup(_restaura)
+        self._troca("duration_of", lambda p: 150.0)
+        self._troca("model_wait_note", lambda s: None)
+
+    def test_o_audio_e_ouvido_NA_LINGUA_DA_FONTE_e_nao_traduzido(self):
+        """O segundo portão, e ele existe porque os arquivos ficam em disco.
+
+        `_pull_subs` recusa a tradução mas NÃO a apaga -- ela é a prova do que
+        a fonte publicou. Então ela continua ao lado do áudio, e
+        `_subtitle_beside` a encontra. Sem esta recusa o conserto acima não
+        chegaria a lugar nenhum.
+        """
+        self._whisper_de_mentira()
+        audio = os.path.join(self.dir, self.stem + ".webm")
+        with open(audio, "wb") as fh:
+            fh.write(b"\0")
+        self._legenda("pt")
+        M._marca_lingua(self.dir, self.stem, "en-US")
+
+        r = M.transcribe(audio, progress=lambda linha: None)
+
+        self.assertIn("faster-whisper", r["source"])
+        self.assertEqual(r["segments"][0]["text"], "what he actually said")
+        # E o whisper ouviu EM INGLÊS, não detectando sozinho: a língua da
+        # fonte é fato sobre o link, e a detecção decide por poucos segundos
+        # de áudio.
+        self.assertEqual(_WhisperQueSoAnota.ultima["language"], "en")
+        self.assertEqual(r["language"], "en")
+        self.assertEqual(r["source_language"], "en-US")
+
+    def test_quando_o_proprio_arquivo_E_a_legenda_ela_volta_MARCADA(self):
+        """Não há áudio aqui para ouvir -- o caminho `--text-first` devolve o
+        `.srt` COMO fonte. Então ela volta, porque o texto ainda serve para
+        escolher o momento, e volta com o campo que faz quem queima perguntar
+        antes."""
+        srt = self._legenda("pt")
+        M._marca_lingua(self.dir, self.stem, "en-US")
+        r = M.transcribe(srt, progress=lambda linha: None)
+        self.assertEqual(r["path"], srt)
+        self.assertTrue(r["fora_da_lingua_da_fonte"], r)
+        self.assertIn("en-US", r["fora_da_lingua_da_fonte"])
+
+    def test_a_legenda_na_lingua_certa_NAO_e_marcada(self):
+        """A outra metade do sinal: marcá-la sempre seria um alarme que
+        ninguém lê."""
+        srt = self._legenda("en")
+        M._marca_lingua(self.dir, self.stem, "en-US")
+        r = M.transcribe(srt, progress=lambda linha: None)
+        self.assertEqual(r["path"], srt)
+        self.assertIsNone(r["fora_da_lingua_da_fonte"], r)
+
+    def test_o_lang_do_dono_continua_ganhando(self):
+        """`--lang` é o dono falando, e ele decide -- inclusive decidir por uma
+        legenda que não é a da fonte. O que ele não pode é receber essa troca
+        sem ter pedido."""
+        pt = self._legenda("pt")
+        self._legenda("en")
+        video = os.path.join(self.dir, self.stem + ".mp4")
+        with open(video, "wb") as fh:
+            fh.write(b"v")
+        M._marca_lingua(self.dir, self.stem, "en-US")
+        r = M.transcribe(video, prefer_lang=["pt"], progress=lambda linha: None)
+        self.assertEqual(r["path"], pt)
+        self.assertIsNone(r["fora_da_lingua_da_fonte"], r)
+
+
 if __name__ == "__main__":
     unittest.main()

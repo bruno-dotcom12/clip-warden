@@ -18,8 +18,11 @@ road is the same order by hand, and it is what the numbered sections below
 describe:
 
 ```
-gate -> WORDS (--text-first) -> chosen windows -> --windows -> render -> sheet -> deliver
+gate -> WORDS (--text-first) -> chosen windows -> --windows -> render -> deliver
 ```
+
+The sheet is written and it is not a step you wait on: since 16/09/2026 you
+deliver without opening it. Section 6 has the owner's decision and what it cost.
 
 **This is the only copy of the order of work in this repository.** The persona
 points here, `warden-run` points here, and neither carries a second version. If
@@ -236,13 +239,15 @@ source's clock. The two do not line up on their own, and when they did not,
 two clips went out with the OPENING of the video as their caption — hook about
 one thing, caption about another, in both — while every gate said fine: hook
 fitting, karaoke on, no hanging cue, letter in range, duration as asked, 273
-tests green. The contact sheet caught it, because a person looked.
+tests green. The contact sheet caught it, back when opening it was mandatory,
+because a person looked.
 
 So the window carries a `.origem.json` beside it, and `cut` **requires** it:
 given a window-derived file without that file, it REFUSES to burn captions
 rather than burn the wrong ones. If you ever build another path that produces a
 cut-out of a video, it has to write the same origin file. That refusal is the
-feature.
+feature, and since 16/09 it is also the only thing standing there: nobody opens
+the sheet before a delivery any more (section 6).
 
 The format selector on this path pins `[protocol^=http]` on purpose. Without it
 yt-dlp picks the HLS stream, and `--download-sections` over HLS writes an mp4
@@ -296,9 +301,10 @@ words nobody read. Who signs depends on which road you took:
 | `warden cut` on its own | YOU sign, first: `warden captions review <srt> --start <s> --end <s> --approve` |
 
 **A suspect line is a warning now, not a refusal.** A number, a repeated word,
-an auto-caption `>>` marker: the tool names the line, burns the caption anyway,
-and the words are on the contact sheet you have to open before you deliver.
-Read them there, against the picture.
+an auto-caption `>>` marker: the tool names the line, prints it as it appears on
+screen, and burns the caption anyway. You read the line the tool printed -- in
+its output, not on a mosaic you open -- and if it is wrong you say so in ONE
+line when you hand the clip over.
 
 Until 16/09 one suspect line rendered the whole clip WITHOUT captions until the
 line was repeated back in `--keep`. Measured that day on a real YouTube live:
@@ -314,8 +320,10 @@ whether the clip has captions at all.
 
 Reading is still the point: whisper mishears, and "Em 1826" went to the screen
 on 15/09 because a line was flagged and signed in the same breath. The place you
-read it is the mosaic. This is YOUR check, never a question to the person -- you
-never ask permission to caption.
+read it is the tool's own output, which prints each flagged line as it appears
+on screen -- that costs you no vision call and no extra turn. This is never a
+question to the person: you repass what was flagged, you never ask permission to
+caption.
 
 ### What the footage already carries
 
@@ -337,9 +345,10 @@ bottom was left uncovered under our caption.
 
 `cut` prints a line about the footage **every time it burns a caption**, with the
 numbers, including when it found nothing -- before this, "clean" and "nobody
-looked" were the same empty output. Read that line, look at the first clip, and
-if the source shows text and you do not want it covered, do not pass
-`--subtitles`.
+looked" were the same empty output. Read that line. When it says it found or
+suspected text, that is a warning you repass in ONE clause beside the clip and
+the person decides; you do not open a frame to settle it. Only if HE says the
+source's own text should stay do you re-cut without `--subtitles`.
 
 A landscape source does not fit 9:16, so a vertical band of it is kept and the
 rest is dropped. `--crop` chooses the band, and a side name follows the subject's
@@ -351,9 +360,10 @@ fell back to the centre; read that line.
 
 Detection is not sight. It follows a face, so a shot with no clear face -- a wide
 plate, a creature, an object -- falls back to the centre and says so, and there
-`--crop <percentage>` is how you place the band by hand. Look at the first clip
-before a batch: a comparison video with the subject off to one side is exactly
-what a fixed centre crop gets wrong.
+`--crop <percentage>` is how you place the band by hand. When `cut` prints that
+it fell back to the centre, that is the warning you repass in one clause -- a
+comparison video with the subject off to one side is exactly what a fixed centre
+crop gets wrong, and the person is the one who knows which video that is.
 
 ### The edit, and what it actually is
 
@@ -470,29 +480,70 @@ then 178.3-201.6, then 181-201.6 — at ~30s a render. Two minutes went into
 changing your mind with the video open. Choose the window on the text, in
 `--text-first`, where changing your mind is free.
 
-## 6. Look at the clip before you send it
+## 6. The mosaic stopped being the gate on 16/09/2026
 
-**This is not optional and it is not a review step you may skip when the checks
-are green.** A clip was once delivered with the hook cropped off at both edges,
-a six-line English caption covering the speaker's face, and the source's own
-disclaimer sliced in half along the bottom -- and it was reported as having
-passed verification, because verification counts pixels and seconds and every
-one of those defects is invisible to arithmetic.
+**Do not open the contact sheet before you deliver.** Your obligation is two
+things, the hook and the caption, and `cut` refuses on both of them by itself.
+Everything else, you deliver and repass.
 
-So `warden cut` now writes a contact sheet of its own render and prints it:
+### Why this rule existed, so nobody rebuilds it by accident
+
+A clip was once delivered with the hook cropped off at both edges, a six-line
+English caption covering the speaker's face, and the source's own disclaimer
+sliced in half along the bottom -- and it was reported as having passed
+verification, because verification counts pixels and seconds and every one of
+those defects is invisible to arithmetic. That is real, it is why `warden cut`
+started writing a contact sheet of its own render, and until 16/09/2026 opening
+that image was a condition of sending: `deliver` refused to print `MEDIA:`
+without it.
+
+### Why it changed, and what it cost
+
+Then the price was measured. **16/09/2026, on a real 706-second request: the two
+vision calls of that request cost 31 seconds**, and the owner runs this on a
+screen-share call while somebody watches. Asked directly whether the mosaic
+should stay mandatory before a delivery, his answer was:
+
+> "2 = entrega sem olhar, sua unica obrigacao = hook e legenda"
+
+Same day, same person: *"quero o mais rapido possivel com o minimo de
+qualidade"*, *"Velocidade acima de tudo"*.
+
+**What is lost is the defect in the paragraph above.** A fault that only the
+picture shows -- a cropped hook on a bright plate, a second caption from the
+source -- is no longer caught here. It reaches the owner's hands, and he is the
+one who sees it. He decided that with the 31 seconds in front of him. Do not
+quietly put the gate back because a clip came out wrong: that is his call to
+reopen, not yours, and if it is reopened it gets a new date and a new
+measurement in this section.
+
+### What the tool does now
+
+`warden cut` still writes and prints the sheet, and `lote render` still stacks
+one combined sheet for the whole batch:
 
 ```
 SHEET:/var/lib/hermes/cache/videos/clip-01-contato.jpg
 MEDIA:/var/lib/hermes/cache/videos/clip-01.mp4
 ```
 
-**Open that image with `vision_analyze` before you put that clip's `MEDIA:` line in
-a final message** -- the sheet is what stands between a render and a delivery, and section 7
-is where the delivery happens. Then say, in your own words, what you saw -- in
-your THINKING, which is the only place in this runtime that is private. Not in
-prose between tool calls -- that is delivered as a message, measured. Looking at
-the sheet is a condition of sending, never news. Eight
-things, and every one of them rejects the clip on its own:
+`MEDIA:` is printed with or without it. The sheet costs about 1.3s to write and
+it stays because it is the only visual evidence that exists later, when
+something comes back wrong and somebody asks what shipped. **You do not spend a
+vision call on it**, and a render with no sheet is delivered like any other.
+
+**A warning in the output is repassed, not investigated.** When `cut` says a
+caption line is suspect, that the footage may already carry burned text, or that
+the crop fell back to the centre with no face found, that goes to the person in
+ONE clause beside the clip -- *"pode ter texto queimado no topo desse, olha
+antes de subir"* -- and he decides. Pulling a frame or re-rendering to settle it
+yourself is the ten minutes he told you not to spend.
+
+### If somebody does look, this is the list
+
+This is no longer a gate and no item here rejects a clip on its own. It is what
+to check when the owner asks you to look at a clip, or when one comes back
+wrong and you are finding out why:
 
 - [ ] the hook fits inside the frame, uncropped, in at most two lines
 - [ ] the hook **left**: it is on the first tiles of the sheet and not the last
@@ -502,27 +553,17 @@ things, and every one of them rejects the clip on its own:
 - [ ] there are not two captions in the same frame
 - [ ] no frame edge, source border or third party's text is sliced at the margin
 - [ ] the subject's face is not covered by text
-- [ ] no black bar along any edge -- `warden check` rejects one now, but the
-      sheet is where you see it first
+- [ ] no black bar along any edge -- `warden check` rejects one now
 
-**When a tile makes you suspicious, pull the frame.** A tile is 300px wide:
-enough to notice, never enough to conclude. **Once per clip, and only for
-something you would REJECT the clip for** -- the persona's ceiling on looking is
-the rule, and it is there because five vision calls and three renders of one
-correct cut cost ten minutes on 15/09. `ffmpeg -ss <t> -i <clip>
--frames:v 1 -update 1 /tmp/q.png` and look at that. Reading the `.ass` to
-settle a question about two captions is the one thing that cannot work -- only
-ours is in it.
+A tile is 300px wide: enough to notice, never enough to conclude, so a tile that
+makes you suspicious is settled with `ffmpeg -ss <t> -i <clip> -frames:v 1
+-update 1 /tmp/q.png`. Reading the `.ass` to settle a question about two
+captions is the one thing that cannot work -- only ours is in it. And **you
+never re-render a clip that passed**: five vision calls and three renders of one
+correct cut cost ten minutes on 15/09, and nothing bad had shipped.
 
-A clip that fails any of them is rejected **even if every check passed**. Re-cut
-it -- a different window, `--crop`, no `--subtitles` -- and look again. Never
-send a clip whose sheet you did not open, and never write "it passed
-verification" about a file you have not seen.
-
-If `warden cut` says it could not build the sheet, that is not a detail to
-mention in passing: nothing has looked at that clip, so it does not ship. It
-withholds the `MEDIA:` path itself in that case, so there is no path to put in a
-`MEDIA:` line, and that clip is not one of the ones you deliver.
+What you still never write is "it passed verification" about a file nobody has
+seen. Nobody has seen it, and that is now the normal case.
 
 ## 7. Send, and deliver the number that was asked for
 
@@ -590,9 +631,12 @@ with every `MEDIA:` line in it. Copy that block and end your turn with it.
 
 **Above three clips, use `warden lote render`, not `cut --plan`.** Only `lote
 render` splits the batch: it delivers the first three in the final message and
-leaves the rest rendering in the background, so their finishing wakes you.
-`cut --plan` prints every `MEDIA:` line it rendered, however many, and a final
-message with six attachments is not what the persona's rule asks for.
+names the ones it did not render. **Those are not rendering anywhere and nothing
+will wake you for them** — the command says so itself and prints the exact
+`warden cut --plan <file>` that brings them. Do not write that they are on the
+way; say they come when the person asks. `cut --plan` prints every `MEDIA:` line
+it rendered, however many, and a final message with six attachments is not what
+the persona's rule asks for.
 
 `--plan` exits non-zero when a clip is missing and names which and why. A clip it
 did not clear has no `MEDIA:` path, so it is not sent and it does not count: say
