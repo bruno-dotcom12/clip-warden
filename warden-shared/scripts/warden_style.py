@@ -2004,9 +2004,17 @@ def contact_sheet(video, out_png, tiles=8, cols=4, label=None):
         #
         # Amostra no meio de cada fatia: o primeiro e o último quadro de um
         # render costumam ser transição, e um mosaico de transições não conta o
-        # que o clipe mostra. Os mesmos instantes de antes -- `dur*(i+0.5)/tiles`
-        # é uma progressão regular, então um `-ss` de meia fatia mais um `fps`
-        # de uma amostra por fatia cai exatamente neles.
+        # que o clipe mostra.
+        #
+        # `select` e não `fps`, e o motivo está medido em `_quadros_coloridos`:
+        # `-ss` de meia fatia mais `fps=1/passo` NÃO cai nos instantes que o
+        # rótulo diz. O `fps` sintetiza uma grade e ela sai MEIO PASSO adiantada
+        # -- num mosaico de 20s com oito casas isso é 1,25s de erro por ladrilho.
+        # O portão é uma imagem com um segundo escrito embaixo; um segundo errado
+        # é uma reprovação apontando para o lugar errado, e o primeiro ladrilho
+        # caindo depois dos 3s é o hook já fora do quadro quando ele deveria
+        # estar nele. `showinfo` diz o `pts_time` de cada quadro escolhido, e o
+        # custo continua sendo uma passada só.
         #
         # Medido em 15/09/2026 no container: oito `-ss` separados custavam
         # 4,3-8,0s; a passada única custa 1,2-1,6s. É o mesmo conserto que
@@ -2017,29 +2025,44 @@ def contact_sheet(video, out_png, tiles=8, cols=4, label=None):
         # determinístico, então o índice de saída volta a ser instante, e um
         # quadro que não saiu continua sendo nomeado pelo segundo dele.
         passo = dur / tiles
+        zero = passo / 2
         instantes = [dur * (i + 0.5) / tiles for i in range(tiles)]
-        subprocess.run(["ffmpeg", "-y", "-loglevel", "error",
-                        "-ss", f"{passo / 2:.3f}", "-i", video,
-                        "-vf", f"fps=1/{passo:.6f}", "-frames:v", str(tiles),
-                        "-fps_mode", "passthrough",
-                        os.path.join(tmp, "f%02d.png")],
-                       capture_output=True, timeout=120)
-        for i, t in enumerate(instantes):
-            png = os.path.join(tmp, "f%02d.png" % (i + 1))   # ffmpeg conta de 1
-            if os.path.isfile(png) and os.path.getsize(png) > 0:
-                try:
-                    shots.append((t, Image.open(png).convert("RGB")))
-                except Exception as exc:
-                    perdidos.append(f"{t:.1f}s ({type(exc).__name__})")
-            else:
-                perdidos.append(f"{t:.1f}s")
+        saiu = subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "info",
+                               "-ss", f"{zero:.3f}", "-i", video,
+                               "-vf", (f"select='isnan(prev_selected_t)+"
+                                       f"gte(t-prev_selected_t,{passo:.6f})',"
+                                       f"showinfo"),
+                               "-frames:v", str(tiles),
+                               "-fps_mode", "passthrough",
+                               os.path.join(tmp, "f%02d.png")],
+                              capture_output=True, timeout=120)
+        texto = (saiu.stderr or b"").decode("utf-8", "replace")
+        medidos = [float(v) for v in re.findall(r"pts_time:([0-9.]+)", texto)]
+        saidas = sorted(n for n in os.listdir(tmp)
+                        if n.startswith("f") and n.endswith(".png")
+                        and os.path.getsize(os.path.join(tmp, n)) > 0)
+        for i, nome in enumerate(saidas):
+            # O carimbo é o `pts_time` do quadro que SAIU, não a casa da grade
+            # que pedimos. `-ss` antes do `-i` zera o relógio, então o instante
+            # no clipe é `zero + pts`. Sem showinfo -- outro ffmpeg, outra build
+            # -- vale a grade, aproximada como antes e nunca pior.
+            t = zero + medidos[i] if i < len(medidos) else instantes[min(i, tiles - 1)]
+            try:
+                shots.append((round(t, 3),
+                              Image.open(os.path.join(tmp, nome)).convert("RGB")))
+            except Exception as exc:
+                perdidos.append(f"{t:.1f}s ({type(exc).__name__})")
+        # O `select` trunca no fim, nunca no meio: o que faltou são as últimas
+        # casas da grade, e são elas que voltam pelo caminho de um `-ss` cada.
+        for t in instantes[len(saidas):]:
+            perdidos.append(f"{t:.1f}s")
         # O que a passada não trouxe, buscado um a um.
         #
-        # O filtro `fps` não emite a última amostra quando o intervalo dela não
-        # cabe inteiro no arquivo: medido em 15/09 num clipe de 15,00s, a
-        # oitava amostra (14,1s) existia no vídeo e não saía. Sete de oito
-        # enfraquece o portão -- e um portão que some por otimização é pior que
-        # um portão lento.
+        # Uma passada só, seja `fps` ou `select`, pode devolver menos quadros
+        # do que se pediu: medido em 15/09 num clipe de 15,00s, a oitava
+        # amostra (14,1s) existia no vídeo e não saía. Sete de oito enfraquece
+        # o portão -- e um portão que some por otimização é pior que um portão
+        # lento.
         #
         # Então a passada única é o caminho rápido, não o único: o que faltar
         # volta pelo caminho antigo. No caso comum isso é zero ou uma chamada,

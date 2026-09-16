@@ -1264,6 +1264,63 @@ class ContactSheet(unittest.TestCase):
                  for r_ in range(2) for c in range(4)}
         self.assertGreater(len(cores), 4, "o mosaico repetiu o mesmo quadro")
 
+    def test_o_segundo_escrito_no_ladrilho_e_o_segundo_do_quadro(self):
+        """O carimbo tem de apontar para o quadro que está embaixo dele.
+
+        Medido em 15/09/2026 num vídeo de 20s que mostra o próprio segundo: a
+        versão com `-ss passo/2` + `fps=1/passo` errou os OITO rótulos, sempre
+        para mais e sempre por perto de meio passo (o ladrilho rotulado 1,25s
+        mostrava 2s; o de 13,75s mostrava 14s). Num mosaico de 20 segundos meio
+        passo é 1,25s, e 1,25s é a diferença entre "o hook ainda está no quadro"
+        e "o hook já saiu". Com `select` + `showinfo` os oito acertaram.
+
+        Aqui o relógio é de cor: um segundo, uma cor. O ladrilho é lido pelo
+        centro e a cor diz de que segundo ele veio. As oito casas caem em ,25 e
+        ,75 de segundo, então um quadro no segundo certo tem um quarto de
+        segundo de folga de cada lado e meio passo põe o ladrilho noutro
+        segundo -- o teste distingue os dois sem depender de precisão de quadro.
+        """
+        import colorsys
+        import subprocess
+        from PIL import Image
+        cores = [tuple(int(255 * c) for c in
+                       colorsys.hsv_to_rgb(i / 20.0, 0.95, 0.35 + 0.6 * (i % 2)))
+                 for i in range(20)]
+        quadros = os.path.join(self.dir, "relogio")
+        os.makedirs(quadros, exist_ok=True)
+        for i, cor in enumerate(cores):
+            Image.new("RGB", (540, 960), cor).save(
+                os.path.join(quadros, "q%02d.png" % i))
+        relogio = os.path.join(self.dir, "relogio.mp4")
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", "1",
+                        "-i", os.path.join(quadros, "q%02d.png"), "-r", "30",
+                        "-c:v", "libx264", "-preset", "ultrafast",
+                        "-pix_fmt", "yuv420p", relogio],
+                       capture_output=True, timeout=120)
+        self.assertTrue(os.path.isfile(relogio), "não deu para montar o relógio")
+
+        folha = self.S.contact_sheet(relogio, os.path.join(self.dir, "rel.jpg"),
+                                     tiles=8, cols=4)
+        self.assertTrue(folha, "contact_sheet não montou a folha do relógio")
+        im = Image.open(folha).convert("RGB")
+        th = (im.height - 46) // 2
+
+        def segundo_da_cor(px):
+            return min(range(len(cores)),
+                       key=lambda i: sum((a - b) ** 2
+                                         for a, b in zip(px, cores[i])))
+
+        errados = []
+        for i in range(8):
+            linha, coluna = divmod(i, 4)
+            px = im.getpixel((coluna * 300 + 150, 46 + linha * th + th // 2))
+            instante = 20.0 * (i + 0.5) / 8
+            visto = segundo_da_cor(px)
+            if visto != int(instante):
+                errados.append(f"ladrilho {i} diz {instante:.2f}s "
+                               f"e mostra o segundo {visto}")
+        self.assertEqual(errados, [], "; ".join(errados))
+
     def test_a_render_without_a_sheet_is_not_delivered(self):
         """O MEDIA: é o que anexa o arquivo. Sem mosaico ninguém olhou o clipe,
         e a linha não sai -- foi assim que um arquivo com o hook cortado e uma
