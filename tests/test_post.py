@@ -329,7 +329,12 @@ class Publica(Base):
         self.assertEqual(campos["platform[]"], b"youtube")
         self.assertEqual(campos["title"], "Clipe de teste".encode("utf-8"))
         self.assertEqual(campos["privacyStatus"], b"public")
-        self.assertEqual(campos["async_upload"], b"true")
+        # `false`, e o número que decidiu isso está no comentário do campo em
+        # `warden_post`: o MESMO clipe de 16 MB levou 9min51s com `true` --
+        # parado na fila do worker durável deles, `attempts: 0` em três
+        # consultas -- e 14,2s com `false`, voltando com a URL no corpo.
+        # Medido em 16/09/2026, na conta real.
+        self.assertEqual(campos["async_upload"], b"false")
         self.assertEqual(campos["youtube_description"], "a descrição".encode("utf-8"))
         # O arquivo: nome, e sobretudo os BYTES, iguais aos do disco.
         arquivos = [(a, b) for nome, a, b in partes if nome == "video"]

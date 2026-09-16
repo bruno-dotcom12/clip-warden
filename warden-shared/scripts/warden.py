@@ -1334,6 +1334,42 @@ def cmd_post(args):
             # da saída que não promete nada.
             "so the owner can upload it by hand.", code=1)
 
+    # ── warden post connect [nome do perfil]
+    #
+    # UM link, e é o único passo que não cabe no chat -- a senha do Google é
+    # digitada na tela do Google e em lugar nenhum mais. Antes disto, ligar um
+    # canal eram cinco passos num painel web, e o dono mediu o custo em
+    # 16/09/2026 com o auditor do hackathon a caminho: "precisa ser no chat
+    # apenas que ele conecta ou no máximo um link de autenticação onde ele
+    # aprova ou não e posta".
+    if args.action == "connect":
+        try:
+            saida = P.conectar(args.file or None)
+        except P.PostIndisponivel as exc:
+            die(str(exc), code=2)
+        except Exception as exc:
+            die(f"{type(exc).__name__}: {exc}", code=1)
+        if saida["ja_conectado"]:
+            print(f"already connected: {saida['canal']} {saida['handle']} on "
+                  f"profile {saida['perfil']}. Nothing to do -- "
+                  f"`warden post youtube <clip> --title \"...\"` publishes.")
+            print(f"  to swap to another channel, open: {saida['url']}",
+                  file=sys.stderr)
+            return 0
+        if saida["perfil_criado"]:
+            print(f"  created the profile {saida['perfil']}", file=sys.stderr)
+        if saida["pede_reautenticacao"]:
+            print(f"  {saida['canal']} is connected but needs REAUTH, which is "
+                  f"why it would not publish. The same link fixes it.",
+                  file=sys.stderr)
+        print(saida["url"])
+        print("  GIVE THAT ADDRESS TO THE PERSON, on its own, and say in one "
+              "line what it does: it opens Google's own screen, they pick the "
+              "channel and press Allow. Their password is typed on Google's "
+              "page and nowhere else. Then run `warden post connect` again -- "
+              "it says `already connected` when it worked.", file=sys.stderr)
+        return 0
+
     if args.action == "status":
         try:
             saida = P.status()
@@ -1380,17 +1416,48 @@ def cmd_post(args):
             print(f"NO account here will publish: {', '.join(pedem_reauth)} "
                   f"{'is' if len(pedem_reauth) == 1 else 'are'} connected but "
                   f"need(s) REAUTH, and nothing else is connected. Do NOT "
-                  f"promise a publication: reconnect that account in the "
-                  f"provider's panel first, or hand the file over in your "
+                  f"promise a publication: `warden post connect` prints the "
+                  f"address that reconnects it, or hand the file over in your "
                   f"final message with the title and description written out.",
                   file=sys.stderr)
         else:
             print("NO account here will publish: the key is valid and not one "
                   "network is connected on any profile. Do NOT promise a "
-                  "publication: connect an account in the provider's panel "
-                  "first, or hand the file over in your final message with the "
-                  "title and description written out.", file=sys.stderr)
+                  "publication. Run `warden post connect`: it prints ONE "
+                  "address for the person to open, where they pick the channel "
+                  "on Google's own screen and press Allow. Until they do, hand "
+                  "the file over in your final message with the title and "
+                  "description written out.", file=sys.stderr)
         return 3
+
+    # ── warden post status <request_id>
+    #
+    # Existia como `post status` sem argumento, que lê a CONTA. Quando o envio
+    # devolvia um request_id, não havia comando nenhum para perguntar por ele.
+    # Agora o mesmo verbo responde as duas perguntas: sem id, a conta; com id,
+    # aquele envio.
+    if args.action == "status" and args.file:
+        try:
+            saida = P.wait_for(args.file, timeout_s=args.wait)
+        except P.PostIndisponivel as exc:
+            die(str(exc), code=2)
+        except Exception as exc:
+            die(f"{type(exc).__name__}: {exc}", code=1)
+        for aviso in saida["avisos"]:
+            print(f"  note: {aviso}", file=sys.stderr)
+        if not saida["concluido"]:
+            print(f"still in the intermediary's queue after "
+                  f"{saida['esperou_s']}s ({saida['status']}).")
+            print(f"  ask again with:  warden post status {saida['request_id']}")
+            return 0
+        if saida["sucesso"] is False:
+            die("the intermediary reported the upload FAILED, so nothing was "
+                "published. Its own words are in the notes above.", code=2)
+        if saida["post_url"]:
+            print(saida["post_url"])
+        print(f"  video id: {saida['platform_post_id']}", file=sys.stderr)
+        print(f"\n{saida['prova']}", file=sys.stderr)
+        return 0
 
     # ── warden post youtube <clip> --title "..."
     if not args.file:
@@ -1428,9 +1495,22 @@ def cmd_post(args):
         print(f"  note: {aviso}", file=sys.stderr)
 
     if not saida["concluido"]:
+        # O COMANDO, não o nome de uma função interna.
+        #
+        # Medido em 16/09/2026: esta saída dizia `consulte de novo com
+        # wait_for('<id>')`. `wait_for` é uma função do módulo e não existe
+        # como comando, então o agente tentou `warden post status <id>` (que
+        # ignorava o id), não entendeu, e passou seis minutos LENDO O PRÓPRIO
+        # CÓDIGO-FONTE atrás dela -- seis minutos de silêncio para quem estava
+        # esperando. Uma mensagem que manda chamar o que não se pode chamar é
+        # pior que uma mensagem sem saída nenhuma.
         print(f"still processing after {saida['esperou_s']}s -- this is neither "
-              f"a failure nor a success. Ask again:")
-        print(f"  request_id: {saida['request_id']}")
+              f"a failure nor a success. It is the intermediary's queue, not "
+              f"this machine: the file left here already.")
+        print(f"  ask again with:  warden post status {saida['request_id']}")
+        print(f"  TELL THE PERSON, in one line, that it is uploading and you "
+              f"will come back with the address. Do not go looking for another "
+              f"way to ask: this is the way.", file=sys.stderr)
         return 0
     if saida["sucesso"] is False:
         die(f"the intermediary reported the upload FAILED, so nothing was "
@@ -1912,11 +1992,57 @@ def cmd_status(args):
         print("tiktok draft upload: " + ("ready -- " if ok else "NOT set up -- ") + porque)
     except Exception as exc:
         print(f"tiktok draft upload: could not be read ({type(exc).__name__})")
+    # PUBLICAR NO YOUTUBE, e o caminho que aparece primeiro é o que FUNCIONA.
+    #
+    # Medido em 16/09/2026, rodando este comando como quem acabou de instalar:
+    # a única linha sobre YouTube dizia `youtube publishing: NOT connected` --
+    # e ela é sobre o caminho DIRETO, o que o Google tranca como privado e que
+    # não publica nem conectado. Quem lê isso conclui que publicar no YouTube
+    # não funciona neste agente. Funciona: é o intermediário auditado, e ele
+    # não tinha linha nenhuma aqui.
+    try:
+        P = _post()
+        if not P.esta_configurado():
+            print("youtube publishing: NOT set up -- falta a chave do "
+                  "intermediário. Dois passos, sem programar: crie a conta em "
+                  "upload-post.com (grátis, 10 posts/mês, não pede cartão), "
+                  "gere a chave, ponha `WARDEN_POST_API_KEY=<chave>` num "
+                  "arquivo `.env` ao lado do compose.yml e rode "
+                  "`docker compose up -d`. Depois `warden post connect` dá UM "
+                  "endereço para ligar o canal.")
+        else:
+            info = P.status()
+            publicam = [f"{perfil['nome']}/{rede}"
+                        for perfil in info["perfis"]
+                        for rede, conta in sorted(perfil["contas"].items())
+                        if conta["conectada"] and not conta["reauth_required"]]
+            canais = [f"{conta['display_name']} {conta['handle']}"
+                      for perfil in info["perfis"]
+                      for _rede, conta in sorted(perfil["contas"].items())
+                      if conta["conectada"] and not conta["reauth_required"]]
+            if publicam:
+                print(f"youtube publishing: ready -- {', '.join(canais)} "
+                      f"(via {info['provedor']}, perfil {info['perfil']}). "
+                      f"`warden post youtube <clip> --title \"...\"` publica.")
+            else:
+                print("youtube publishing: a chave vale e NENHUM canal está "
+                      "ligado. `warden post connect` imprime UM endereço: a "
+                      "pessoa abre, escolhe o canal na tela do Google e "
+                      "aprova.")
+    except Exception as exc:
+        print(f"youtube publishing: could not be read ({type(exc).__name__}: "
+              f"{exc})")
+    # E o caminho DIRETO, depois e nomeado como o que é: ele sobe, devolve 200
+    # e o vídeo fica trancado como privado enquanto o app não passar pela
+    # auditoria do Google. Fica na saída porque `warden youtube` existe e
+    # alguém vai perguntar por ele; fica DEPOIS porque não é o caminho.
     try:
         ok, porque = _youtube().status_conta()
-        print("youtube publishing: " + ("ready -- " if ok else "NOT connected -- ") + porque)
+        print("youtube direct API (locked private until Google audits this "
+              "app; not the road): " + ("connected -- " if ok else "not "
+              "connected -- ") + porque)
     except Exception as exc:
-        print(f"youtube publishing: could not be read ({type(exc).__name__})")
+        print(f"youtube direct API: could not be read ({type(exc).__name__})")
     # The models arrive after boot rather than inside the image, so whether they
     # are here yet is a real question with a real answer, not a constant.
     # "ainda baixando" e "nunca baixou" eram a mesma linha, e são coisas
@@ -5334,8 +5460,10 @@ def main(argv=None):
     p = sub.add_parser("post",
                        help="publish through the audited intermediary -- the "
                             "path that does NOT get locked as private")
-    p.add_argument("action", choices=["youtube", "status"])
-    p.add_argument("file", nargs="?", help="the clip to publish")
+    p.add_argument("action", choices=["youtube", "status", "connect"])
+    p.add_argument("file", nargs="?",
+                   help="the clip to publish; with `status`, the request_id of "
+                        "an upload already sent")
     p.add_argument("--title", help="the video title; at most 100 characters, "
                                    "and this refuses a longer one rather than "
                                    "truncating it in silence")
@@ -5350,8 +5478,21 @@ def main(argv=None):
     p.add_argument("--shorts", action="store_true",
                    help="append #Shorts to the description. A HINT only -- "
                         "YouTube decides what a Short is from the file itself")
-    p.add_argument("--wait", type=float, default=300,
-                   help="seconds to wait for the upload to finish (default 300)")
+    # 45s e não 300s.
+    #
+    # Medido em 16/09/2026 num envio real: o comando ficou 5 minutos BLOQUEADO
+    # e calado, e o dono, que estava olhando a conversa, não tinha como saber
+    # se algo estava acontecendo. O vídeo saiu 9 minutos depois -- e os 9
+    # minutos eram a fila do intermediário (`attempts: 0` em três consultas
+    # seguidas), não este código. Esperar mais aqui não publica mais cedo:
+    # só troca o silêncio de quem espera pelo silêncio de quem trabalha.
+    #
+    # Então o teto devolve rápido, com o comando de consultar de novo na mão.
+    p.add_argument("--wait", type=float, default=45,
+                   help="seconds to wait before handing back the request id "
+                        "(default 45). The upload does NOT stop when this "
+                        "expires -- it is the intermediary's queue, and "
+                        "`warden post status <id>` asks again")
     p.set_defaults(func=cmd_post)
 
     p = sub.add_parser("tiktok",

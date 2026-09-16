@@ -141,6 +141,11 @@ ENV_BASE = "WARDEN_POST_BASE_URL"
 BASE_PADRAO = "https://api.upload-post.com/api"
 PROVEDOR_PADRAO = "upload-post"
 
+# O nome do perfil que `warden connect` cria quando a conta ainda não tem
+# nenhum. Um perfil é só um apelido para um conjunto de contas conectadas, e
+# quem instala não deveria precisar inventar um para ligar o próprio canal.
+PERFIL_PADRAO = "clip-warden"
+
 TIMEOUT_API = 30           # /me, /users, /status: alguns KB de JSON
 TIMEOUT_UPLOAD = 600       # o POST /upload leva o arquivo junto, em link doméstico
 
@@ -584,6 +589,45 @@ class UploadPost(Provedor):
         return {"perfis": perfis, "limite": dados.get("limit"),
                 "plano": dados.get("plan")}
 
+    def cria_perfil(self, chave, nome):
+        """POST /uploadposts/users {"username": nome} -> (criado?, mensagem).
+
+        Medido em 16/09/2026: 409 `Username already in use` quando o nome já
+        existe, e é por isso que "já existe" NÃO é erro aqui -- quem chama quer
+        um perfil com esse nome, e um que já está lá serve.
+        """
+        codigo, bruto = _http(
+            "POST", self.url("/uploadposts/users"),
+            corpo=json.dumps({"username": nome}).encode("utf-8"),
+            cabecalhos=dict(self.cabecalhos(chave),
+                            **{"Content-Type": "application/json"}))
+        if codigo == 409:
+            return False, "esse perfil já existia"
+        dados = _json_ou_explica(codigo, bruto, "ao criar o perfil")
+        return bool(dados.get("success")), _texto(dados.get("message"))
+
+    def link_de_conexao(self, chave, nome):
+        """POST /uploadposts/users/generate-jwt {"username": nome} -> URL.
+
+        É a única coisa que a pessoa precisa fazer fora do chat: abrir este
+        endereço, escolher o canal na tela do Google e aprovar. Medido em
+        16/09/2026 contra a API real; o campo do corpo é `username` (com
+        `profile` a API responde 400 dizendo `profile_username is required`, e
+        em GET com querystring responde 404).
+        """
+        codigo, bruto = _http(
+            "POST", self.url("/uploadposts/users/generate-jwt"),
+            corpo=json.dumps({"username": nome}).encode("utf-8"),
+            cabecalhos=dict(self.cabecalhos(chave),
+                            **{"Content-Type": "application/json"}))
+        dados = _json_ou_explica(codigo, bruto, "ao gerar o link de conexão")
+        url = _primeiro(dados, ("access_url", "url", "link"))
+        if not url:
+            raise PostIndisponivel(
+                "o provedor respondeu sem endereço de conexão. O que ele "
+                f"devolveu, verbatim: {_texto(bruto)[:300]}")
+        return str(url)
+
 
 PROVEDORES = {UploadPost.nome: UploadPost}
 
@@ -715,6 +759,64 @@ def status():
     }
 
 
+def conectar(nome=None):
+    """O link que conecta o canal da pessoa. -> dict.
+
+    Um passo, e ele é o único que não cabe no chat: a senha do Google é
+    digitada na tela do Google e em lugar nenhum mais.
+
+    Antes disto, conectar era cinco passos num painel web, e o dono mediu o
+    custo em 16/09/2026: "precisa ser no chat apenas que ele conecta ou no
+    máximo um link de autenticação onde ele aprova ou não e posta". O perfil
+    passa a ser criado aqui quando não existe, e o endereço sai pronto para
+    colar.
+
+    `ja_conectado` diz se aquele perfil JÁ tem o YouTube ligado. Quem chama usa
+    isso para não mandar alguém aprovar de novo o que já está aprovado -- e
+    para distinguir "conectado" de "conectado mas pedindo reautenticação", que
+    é o jeito silencioso de isto falhar.
+    """
+    chave = _chave()
+    provedor = _provedor()
+    listagem = provedor.perfis(chave)
+    perfis = listagem["perfis"]
+    alvo = (nome or os.environ.get(ENV_PERFIL) or "").strip()
+    if not alvo:
+        # Um perfil só: é esse. Nenhum: cria o padrão. Vários sem nome: quem
+        # chama escolhe, porque um canal errado não volta.
+        if len(perfis) == 1:
+            alvo = perfis[0]["nome"]
+        elif not perfis:
+            alvo = PERFIL_PADRAO
+        else:
+            raise PostIndisponivel(
+                "esta conta tem mais de um perfil e nenhum foi escolhido: "
+                + ", ".join(p["nome"] for p in perfis)
+                + ". Diga qual, porque um vídeo no canal errado não volta.")
+
+    existente = next((p for p in perfis if p["nome"] == alvo), None)
+    criado = False
+    if existente is None:
+        if listagem.get("limite") is not None and len(perfis) >= listagem["limite"]:
+            raise PostIndisponivel(
+                f"o plano desta conta permite {listagem['limite']} perfil(is) e "
+                f"já há {len(perfis)}: {', '.join(p['nome'] for p in perfis)}. "
+                f"Use um dos que existem, ou apague um no painel do provedor.")
+        criado, _msg = provedor.cria_perfil(chave, alvo)
+
+    yt = (existente or {}).get("contas", {}).get("youtube") or {}
+    return {
+        "perfil": alvo,
+        "perfil_criado": criado,
+        "ja_conectado": bool(yt.get("conectada")) and not yt.get("reauth_required"),
+        "pede_reautenticacao": bool(yt.get("conectada")
+                                    and yt.get("reauth_required")),
+        "canal": yt.get("display_name"),
+        "handle": yt.get("handle"),
+        "url": provedor.link_de_conexao(chave, alvo),
+    }
+
+
 def publish_youtube(clip, titulo, descricao="", privacidade="public", shorts=None):
     """Manda um clipe para o YouTube PELO INTERMEDIÁRIO. -> dict com request_id.
 
@@ -820,7 +922,29 @@ def publish_youtube(clip, titulo, descricao="", privacidade="public", shorts=Non
         ("platform[]", "youtube"),
         ("title", titulo),
         ("privacyStatus", privacidade),
-        ("async_upload", "true"),
+        # SÍNCRONO, e a diferença é de duas ordens de grandeza.
+        #
+        # Este campo era `"true"`, com o argumento de que "acima de 59 segundos
+        # o envio vira assíncrono de qualquer jeito, então pedir síncrono só
+        # criaria dois caminhos de código". O argumento estava certo sobre os
+        # dois caminhos e errado sobre o custo. Medido em 16/09/2026, o MESMO
+        # clipe de 16 MB, no mesmo link, na mesma conta:
+        #
+        #   async_upload=true    9min51s  -- fila do worker durável deles.
+        #                                    Consultei três vezes no meio:
+        #                                    `status: queued, attempts: 0`.
+        #   async_upload=false      14,2s  -- HTTP 200 com `status: completed`
+        #                                    e a URL do vídeo no corpo.
+        #
+        # Nove minutos de alguém olhando para uma conversa parada, contra
+        # catorze segundos. O dono estava numa chamada de tela compartilhada
+        # quando mediu o primeiro.
+        #
+        # E os dois caminhos continuam existindo, porque a documentação deles
+        # diz que acima de 59 segundos o envio vira assíncrono sozinho: quando
+        # a resposta vier sem `completed`, ela traz `request_id` e o código
+        # abaixo segue pelo caminho de antes, sem mudar nada.
+        ("async_upload", "false"),
     ]
     if descricao.strip():
         campos.append(("youtube_description", descricao))
@@ -832,6 +956,11 @@ def publish_youtube(clip, titulo, descricao="", privacidade="public", shorts=Non
     codigo, bruto = _http("POST", provedor.url("/upload"), corpo=corpo,
                           cabecalhos=cabecalhos, timeout=TIMEOUT_UPLOAD)
     dados = _json_ou_explica(codigo, bruto, "ao enviar o vídeo em /upload")
+
+    # A resposta síncrona traz o resultado INTEIRO: `status: completed` e a URL.
+    # Quando ela vem assim, não há o que consultar depois -- e `wait_for` sobre
+    # um envio já concluído seria uma volta à rede para reler o que está aqui.
+    concluido_agora = str(dados.get("status") or "").lower() == "completed"
 
     pedido = _primeiro(dados, ("request_id", "requestId", "id"))
     if not pedido:
@@ -859,14 +988,20 @@ def publish_youtube(clip, titulo, descricao="", privacidade="public", shorts=Non
         "plataformas": ["youtube"],
         "titulo": titulo,
         "privacidade_pedida": privacidade,
-        "assincrono": True,
+        "assincrono": not concluido_agora,
+        # O corpo cru da resposta síncrona, para quem chama poder fechar sem
+        # uma segunda requisição. `None` quando o envio caiu na fila.
+        "concluido_no_envio": dados if concluido_agora else None,
         "bytes": tamanho,
         "arquivo": caminho,
         "avisos": avisos,
         "proximo_passo": (
+            "o envio voltou CONCLUÍDO na própria resposta. Abra a URL numa "
+            "janela anônima: é ela, e não o `success: true`, que diz se o "
+            "vídeo está público." if concluido_agora else
             f"o vídeo foi ACEITO para processamento com request_id={pedido}. "
-            "Aceito não é publicado: chame `wait_for(request_id)` para ver o "
-            "que a API devolve, e depois abra a URL numa janela anônima."),
+            "Aceito não é publicado: `warden post status " + str(pedido) +
+            "` pergunta de novo, e depois abra a URL numa janela anônima."),
     }
 
 
