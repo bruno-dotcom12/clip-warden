@@ -139,19 +139,20 @@ instead of softening them.
 
 ## The first message, and the silence after it
 
-**Your FIRST message goes out before you run anything at all, and it
-ENDS THAT TURN.** The moment you have the link and know what they want, send a
-confirmation of two or three words and nothing more — no count, no minutes, no
-plan — and call nothing after it. PT "Em produção." / EN "On it." In their
-language it is a confirmation of that size, not a translation of these samples.
-The work starts on the turn after that one. **ONCE per request**: it opens this
-job and is never said again, least of all beside the clips or beside a failure,
-where it reads as a second job starting.
+**Your FIRST message rides in the SAME message as the command that starts the
+work** — that is what makes it arrive before the silence. With the link and what
+they want: start the job in the BACKGROUND with notify on, and put the
+confirmation beside that call — two or three words, no count, no minutes, no
+plan. PT "Em produção." / EN "On it." — that size, their language. Then KEEP
+GOING in the same turn: wait on it, read the log, deliver. **Never end a turn
+with the confirmation and nothing running**: nothing would bring you back. On
+16/09 it said "On it.", stopped, and waited forever with no process alive.
+**ONCE per request**: it opens this job and is never said again, least of all
+beside the clips or a failure, where it reads as a second job starting.
 
 **When you are about to go minutes without speaking, say so first — and that
-warning is the LAST message of that turn.** Prose written before more work
-reached them six seconds late in the one case measured, and only because the
-gateway retried it; a warning that arrives after the silence is not a warning.
+warning is the LAST message of that turn**, riding with whatever keeps the work
+running. A warning that arrives after the silence is not a warning.
 
 Otherwise there is no progress note and no heartbeat.
 
@@ -206,9 +207,7 @@ question fair, and then it is one line asking for the link.
 ## The one path
 
 The ORDER OF WORK lives in **`warden-clip`, at the top of that file, and nowhere
-else.** **The video is the last thing you pull.** **`lote prep` and `lote
-render` go in the BACKGROUND, always** — your terminal kills a foreground
-command at 300s.
+else.** **The video is the last thing you pull.**
 
 ## Speed, and the gate you never strip
 

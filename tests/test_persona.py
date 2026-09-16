@@ -808,19 +808,59 @@ def test_already_connected_nomeia_o_canal(soul):
     )
 
 
-def test_a_primeira_mensagem_encerra_o_turno(soul):
-    """Achado 7, degrau 2 do critério de aceite: "esse aviso encerra o turno".
+def test_a_primeira_mensagem_chega_antes_do_silencio(soul):
+    """O degrau 2 do critério de aceite, corrigido pelo que foi medido.
 
-    A persona dizia "send a confirmation of two or three words and nothing more
-    (...) then work nonstop" e `warden-run/SKILL.md:11-14` repetia a ordem. A
-    regra do 'encerra o turno' existia só para o aviso de silêncio longo.
+    O critério do dono era "o agente avisa que começou, e esse aviso encerra o
+    turno". A intenção é certa -- o aviso tem de CHEGAR antes do silêncio -- e
+    a letra estava errada, porque encerrar o turno é justamente o que impede o
+    trabalho de começar.
+
+    Medido em 16/09, na gravação: a persona mandava "call nothing after it" e
+    "the work starts on the turn after that one". O agente obedeceu à risca --
+    mandou "On it." às 18:03:02, encerrou o turno -- e o turno seguinte NUNCA
+    veio, porque num gateway de chat um turno novo só nasce de uma mensagem
+    nova. `docker top` não mostrava um processo sequer: ele não travou no meio,
+    nunca saiu do lugar.
+
+    O mecanismo que ENTREGA o aviso cedo é outro, e está medido no 7a: conteúdo
+    e chamada de ferramenta na MESMA mensagem. O gateway registra
+    "Queued follow-up (...) sending first response before continuing" e
+    "Sending response (33 chars)" (logs-7a/container/logs/gateway.log:41-42),
+    entrega o texto, e o agente segue trabalhando no mesmo turno. É assim que o
+    7a falou e cortou; é assim que a regra passou a ser escrita.
     """
-    primeira = re.search(r"(?is)Your FIRST message(.{0,500})", soul)
+    corrido = " ".join(soul.split())
+    primeira = re.search(r"(?is)Your FIRST message(.{0,500})", corrido)
     assert primeira, "sumiu a regra da primeira mensagem"
     corpo = primeira.group(1)
-    assert re.search(r"(?i)(ends that turn|ends the turn|last message of that turn)", corpo), (
-        "a primeira mensagem não está escrita como a ÚLTIMA do turno que "
-        "recebeu o pedido — é o degrau 2 do critério de aceite"
+    # 16/09, na gravação: a regra dizia "call nothing after it" e "the work
+    # starts on the turn after that one". O agente obedeceu -- mandou "On it.",
+    # encerrou o turno, e o TURNO SEGUINTE NUNCA VEIO, porque num gateway de
+    # chat um turno novo só nasce de uma mensagem nova. Ficou parado para
+    # sempre, sem um processo sequer rodando no container.
+    #
+    # O que faz o agente voltar é a notificação de um processo em SEGUNDO
+    # PLANO. Então a confirmação tem de viajar NA MESMA mensagem que dispara o
+    # trabalho -- foi assim que o 7a andou (state.db msg 21: conteúdo
+    # "Em produção." e a chamada `terminal(background=true)` juntas).
+    assert re.search(r"(?i)(rides with|same message|background)", corpo), (
+        "a persona não diz que a confirmação viaja JUNTO com o comando que "
+        "começa o trabalho. Sem isso o agente encerra o turno sem nada "
+        "rodando e nada o acorda: %r" % corpo[:300]
+    )
+    assert re.search(r"(?i)(keep going|keeps going|same turn)", corpo), (
+        "a persona não diz que o trabalho CONTINUA no mesmo turno. Sem essa "
+        "metade, 'a confirmação encerra o turno' é um agente que para para "
+        "sempre, porque num gateway de chat nada abre o turno seguinte."
+    )
+    assert re.search(r"(?i)never end a turn with the confirmation", corpo), (
+        "falta a proibição explícita: encerrar um turno com a confirmação e "
+        "nada rodando foi o defeito medido em 16/09 na gravação"
+    )
+    assert re.search(r"(?i)(before the silence|arrive before)", corpo), (
+        "a persona não diz POR QUE a confirmação viaja junto do comando: para "
+        "CHEGAR antes do silêncio, que é o degrau 2 do critério de aceite"
     )
     assert "then work nonstop" not in soul, (
         "a ordem de trabalhar no mesmo turno depois do aviso continua na "
