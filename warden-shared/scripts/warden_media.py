@@ -6306,10 +6306,13 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                                 label=os.path.basename(out))
     except Exception as exc:
         notes.append(f"não consegui montar o contact sheet ({type(exc).__name__}: "
-                     f"{exc}). Sem ele ninguém olhou este clipe -- não entregue.")
+                     f"{exc}). Desde 16/09 isso NÃO bloqueia a entrega -- mande "
+                     f"o clipe -- mas não vai existir imagem nenhuma deste "
+                     f"render se ele voltar errado.")
     if sheet is None and not any("contact sheet" in n for n in notes):
-        notes.append("não consegui montar o contact sheet deste render. Sem ele "
-                     "ninguém olhou este clipe -- não entregue.")
+        notes.append("não consegui montar o contact sheet deste render. Desde "
+                     "16/09 isso NÃO bloqueia a entrega -- mande o clipe -- mas "
+                     "não vai existir imagem nenhuma dele se voltar errado.")
     # O render conta o que fez de si, e quem entrega confere antes do MEDIA:.
     # `cross_check` entra junto pelos PIXELS das bordas -- ver o bloco da tarja
     # acima. São as duas cegueiras: `check_sidecar` sabe o que desenhamos e não

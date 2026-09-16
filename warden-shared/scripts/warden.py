@@ -1711,10 +1711,8 @@ def _link_incompleto(texto, link):
 
 # Quantos segundos o `inbox` espera pelo link que a mensagem prometeu.
 #
-# DOZE, e o número desceu de 60 em 16/09/2026 por uma razão que só apareceu no
-# uso: o dono vai mostrar isto numa chamada de compartilhamento de tela, e nas
-# palavras dele "não posso esperar tanto tempo assim". Sessenta segundos de
-# silêncio na frente de um avaliador é pior que uma pergunta.
+# Já foi 60 e já foi 12. Sessenta era silêncio demais na frente de um avaliador
+# -- "não posso esperar tanto tempo assim" -- e doze errava por um segundo.
 #
 # 14s desde 16/09/2026, e o motivo é uma medição de duas vezes.
 #
@@ -2650,11 +2648,17 @@ def _cues_queimadas(result):
 def deliver(result, rules, campaign, ledger):
     """Um render pronto vira entrega, ou não vira e diz por quê.
 
-    Três portões, nesta ordem, porque é a ordem em que uma entrega se perde: as
-    regras da campanha (que é aritmética), o contact sheet (que é a única coisa
-    que olha a imagem) e só então a linha que anexa o arquivo. O `MEDIA:` não é
-    impresso sem o mosaico: enquanto ele não existir, ninguém olhou este clipe, e
-    foi assim que um arquivo com dez defeitos visíveis foi relatado como aprovado.
+    Os portões, nesta ordem, porque é a ordem em que uma entrega se perde: as
+    regras da campanha (que é aritmética), o hook e a legenda, e só então a
+    linha que anexa o arquivo.
+
+    O contact sheet era o portão do meio até 16/09/2026 -- o `MEDIA:` não saía
+    sem ele, porque enquanto a imagem não existisse ninguém tinha olhado o
+    clipe, e foi assim que um arquivo com dez defeitos visíveis foi relatado
+    como aprovado. O dono trocou esse portão pelo tempo dele naquele dia:
+    "entrega sem olhar, sua unica obrigacao = hook e legenda". O mosaico
+    continua sendo GERADO e impresso -- é a única prova visual que existe
+    depois, quando algo volta errado -- e não bloqueia mais nada.
 
     Devolve 0 quando a entrega saiu, 1 quando não saiu. Quando não saiu, o
     stdout fica VAZIO: quem reprova não tem caminho para dar a ninguém.
@@ -4504,7 +4508,7 @@ def _aviso_de_linha_suspeita(pendentes):
     return (f"CAPTIONS BURNED, {len(pendentes)} line(s) worth a second look "
             f"(a number, a word repeated back to back, or an auto-subtitle "
             f"marker -- what a transcription gets wrong most often). They are "
-            f"they are on the contact sheet the render wrote, if you want "
+            f"on the contact sheet the render wrote, if you want "
             f"to look. If one is wrong, say so in one line when "
             f"you hand the clip over; do NOT re-render for it unless the "
             f"person asks. To silence this warning on a re-run, append: "
