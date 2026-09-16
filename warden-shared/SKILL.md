@@ -70,7 +70,7 @@ you did not get.
 | `warden tracks add <file\|url>` / `list` | the owner's own audio, kept by name, measured once. A link goes in like a file |
 | `warden style extract <clip>` / `check <render>` | the measured style of an approved clip, and whether a new one is inside it |
 | `warden voz [--since <ts>]` | how many messages each request actually cost the person; **exit 1 above four** |
-| `warden inbox --wait 60` | the link the message promised but did not carry. It ALWAYS comes as its own message a moment later, so wait generously: 60s costs nothing when it lands in two, and asking costs a round trip. Exit 1 if none came |
+| `warden inbox --wait 12` | the link the message promised but did not carry. It ALWAYS comes as its own message a moment later, so you wait instead of asking — but twelve seconds and not more: this gets shown on a screen-share call, where a minute of silence is worse than a question. Returns the instant the link lands. Exit 1 if none came |
 | `warden youtube status` / `connect` | is the owner's channel connected; `connect` prints a google.com/device code and waits for the approval |
 | `warden youtube publish <clip> --title "..."` | uploads to their channel. **This is not publishing**: until Google audits this app the video is locked as private, the owner cannot make it public and cannot appeal. The privacy it prints is what YouTube RETURNED |
 | `warden post status` | is a publishing intermediary configured on this install, and which account is connected. Exit 1 here means no key, and the persona's "Publishing" section says what to offer |

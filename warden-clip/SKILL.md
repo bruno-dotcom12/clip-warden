@@ -39,7 +39,7 @@ When the words point at a link that is not in the text -- "esse vídeo", "esse
 link", "abaixo", "essa música" -- do not answer "faltou o link". Run:
 
 ```
-warden inbox --wait 60
+warden inbox --wait 12
 ```
 
 Measured 15/09, four for four: the link comes as its OWN message, a moment

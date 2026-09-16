@@ -92,6 +92,13 @@ Who signs the captions -- the tool on the `lote` road, you on the `cut` road --
 is written in `warden-clip` 5, "Who signs the captions", and nowhere else. Read
 it there. It is never a question to the person.
 
+**One re-cut, then you deliver.** The owner's rule of 16/09 is as fast as
+possible at the minimum quality that ships: he runs this on a screen-share call.
+So a gate that names a fix gets ONE attempt at that fix; after it, you hand over
+what cleared and say in one line what you could not do. The single exception is
+captions — a clip without the words is not the product, and those turns are worth
+spending.
+
 **When a gate refuses, fix what it named. Never drop what was asked for.**
 Dropping `--hook`, swapping the srt for the approval signature, or trading
 `--seconds` for `--any-length` until nothing complains delivers a clip missing

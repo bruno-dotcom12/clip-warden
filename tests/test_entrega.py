@@ -1262,9 +1262,33 @@ class OInboxEsperaOBastanteParaNaoPerguntarAToa(unittest.TestCase):
         self.addCleanup(t.join)
         return t
 
-    def test_o_padrao_e_grande_o_bastante_para_o_link_da_mensagem_seguinte(self):
-        self.assertGreaterEqual(warden.INBOX_ESPERA_S, 45.0)
+    def test_o_padrao_cobre_o_link_da_mensagem_seguinte_sem_travar_uma_chamada(self):
+        """A janela tem DOIS lados, e os dois vieram do uso real.
+
+        Grande o bastante para o link que o app manda como segunda mensagem um
+        instante depois -- sem isso a pergunta sai à toa e custa uma ida e
+        volta, medido quatro vezes em quatro.
+
+        E pequena o bastante para não travar uma chamada de compartilhamento de
+        tela, que é onde isto vai ser avaliado. As palavras do dono em 16/09,
+        depois de esperar sessenta: "não posso esperar tanto tempo assim".
+        """
+        self.assertGreaterEqual(warden.INBOX_ESPERA_S, 8.0)
+        self.assertLessEqual(warden.INBOX_ESPERA_S, 20.0)
         self.assertEqual(warden._espera_do_inbox(None), warden.INBOX_ESPERA_S)
+
+    def test_o_laco_confere_varias_vezes_por_segundo(self):
+        """A espera não é tempo gasto: o que importa é quanto demora a DEVOLVER.
+
+        Um link que chega em 300ms tem de custar 300ms, não meio segundo de
+        arredondamento. É o que torna a janela curta suportável.
+        """
+        fonte = io.open(warden.__file__, encoding="utf-8").read()
+        import re
+        alvo = 'nothing with a link'
+        m = re.search(r"time\.sleep\(([\d.]+)\)\s*\n\s*print\(f?[\"']" + alvo, fonte)
+        self.assertIsNotNone(m, "não achei o laço de espera do inbox")
+        self.assertLessEqual(float(m.group(1)), 0.2)
 
     def test_a_linha_de_comando_continua_mandando_no_numero(self):
         self.assertEqual(warden._espera_do_inbox(3.0), 3.0)

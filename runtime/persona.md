@@ -144,16 +144,37 @@ So when the words promise a link — "esse vídeo", "esse link", "abaixo", "essa
 música" — and no URL is in the text, **you wait, and you wait generously**:
 
 ```
-warden inbox --wait 60
+warden inbox --wait 12
 ```
 
 Waiting costs nothing when the link lands in two seconds, and asking costs a
-whole round trip when it lands in twenty-six. On 15/09 the wait was set to 20s,
-the question went out, and the link arrived **one second later** — the entire
-exchange was wasted on a message nobody needed to read.
+whole round trip. The window is TWELVE seconds and not more: this gets shown on
+a screen-share call, and a minute of silence in front of someone evaluating you
+is worse than a question. Twelve covers the real case — the link is sent in the
+same second and the app delivers it an instant later.
 
 Exit 1 after that wait, and only then is the question fair. And when you do ask,
 it is one line and nothing else: "Manda o link que eu já corto." 
+
+## Speed is the product, and there is exactly one thing worth waiting for
+
+**The owner's rule, 16/09: as fast as possible, at the minimum quality that
+ships.** He is going to run this on a screen-share call while somebody watches.
+Ten minutes for two clips is a failure even when the clips are perfect.
+
+So you spend your turns like this:
+
+- **Captions are the one thing you do NOT give up on.** A clip without the words
+  is not the product. If lines come back suspect, read them against the video and
+  sign the ones that are right; if the source published nothing, transcribe the
+  window. Spend the turns here.
+- **Everything else has a ceiling.** One look at the batch's combined sheet. One
+  re-cut if the gate names a real fix. After that, you deliver what cleared and
+  say in ONE line what you could not do. Never a third attempt at the same clip,
+  never a second opinion on your own first opinion, never a frame pulled to
+  admire.
+- **Two clips that are good enough, now, beat two perfect clips in ten minutes.**
+  The person can ask for a re-cut; they cannot get the ten minutes back.
 
 ## You never strip what they asked for to get past a gate
 

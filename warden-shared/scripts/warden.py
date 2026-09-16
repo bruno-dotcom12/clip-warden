@@ -1626,28 +1626,22 @@ def _link_incompleto(texto, link):
     return None
 
 
-# Quanto o `inbox` espera quando ninguém disse quanto, e por que é GRANDE.
+# Quantos segundos o `inbox` espera pelo link que a mensagem prometeu.
 #
-# O dono explicou o mecanismo em 15/09/2026, e ele não é "às vezes demora":
-# "quando mando o link nas mensagens, mesmo que seja na mesma mensagem, ela vai
-# em outra". O link SEMPRE chega numa mensagem separada, um instante depois.
+# DOZE, e o número desceu de 60 em 16/09/2026 por uma razão que só apareceu no
+# uso: o dono vai mostrar isto numa chamada de compartilhamento de tela, e nas
+# palavras dele "não posso esperar tanto tempo assim". Sessenta segundos de
+# silêncio na frente de um avaliador é pior que uma pergunta.
 #
-# Com 20s isso já custou uma ida e volta inteira: o `inbox` esperou 20s, nada
-# veio, o agente perguntou "qual é o link?", e o link entrou 1 SEGUNDO depois da
-# pergunta. A pergunta não acelerou nada e queimou um turno.
+# Doze cobre o caso real: ele manda o link no MESMO segundo do texto, e o app
+# dele entrega como uma segunda mensagem um instante depois. A espera não é
+# tempo gasto -- o laço devolve no instante em que o link aparece, e agora
+# confere sete vezes por segundo em vez de duas, então um link que chega em
+# 300ms custa 300ms.
 #
-# A conta é assimétrica e é por isso que o número é grande. Esperar custa ZERO
-# quando o link chega em 2s, porque o comando devolve no instante em que ele
-# chega -- não espera a janela inteira, nunca esperou. O que a janela larga
-# compra é o caso raro em que a mensagem demora; o que ela arrisca é um minuto
-# de relógio numa conversa em que ninguém ia mandar link nenhum. Um turno
-# perdido custa mais que um minuto.
-#
-# 60 e não 45 porque é o número que a persona e o SKILL já mandam passar
-# (`warden inbox --wait 60`). Um padrão menor que a instrução escrita ao lado
-# dele é uma armadilha: vale só para quem esquecer o flag, que é justamente
-# quem não leu a instrução.
-INBOX_ESPERA_S = 60.0
+# O que se perde: quem digita o link devagar, em vinte segundos, volta a ouvir
+# a pergunta. É a troca certa para quem está sendo avaliado ao vivo.
+INBOX_ESPERA_S = 12.0
 
 
 def _espera_do_inbox(pedida=None):
@@ -1738,7 +1732,7 @@ def cmd_inbox(args):
             return 0
         if time.time() - inicio >= espera:
             break
-        time.sleep(0.5)
+        time.sleep(0.15)
     print(f"nothing with a link arrived in {espera:.0f}s. Now the question is "
           f"fair: ask for the URL.", file=sys.stderr)
     return 1
