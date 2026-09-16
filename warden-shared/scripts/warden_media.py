@@ -267,10 +267,29 @@ def _cookies_usaveis():
     except OSError:
         return False
 
-# Where the PO token provider answers. Bound to loopback on purpose: version
-# 2.0.0 of bgutil exists because binding it to 0.0.0.0 was a remote code
-# execution hole (GHSA-qpv9-8xfj-xx9m), and this agent is published.
-POT_BASE_URL = os.environ.get("WARDEN_POT_URL", "http://127.0.0.1:4416")
+# O gerador de PO token, em modo SCRIPT, dentro desta imagem.
+#
+# Até 16/09/2026 ele era um SEGUNDO CONTAINER escutando a porta 4416. A nuvem da
+# Plow roda um container por pessoa e o contrato dela proíbe um listener de
+# entrada, com essas palavras: "no inbound listener". O modo script do mesmo
+# projeto emite o token executando um processo Node quando o yt-dlp precisa, e
+# não abre porta nenhuma -- o que também tira uma imagem da conta de quem
+# instala localmente.
+#
+# O caminho aponta para o diretório `server/`, não para o .js: é o que o
+# `server_home` do plugin espera.
+POT_SCRIPT_HOME = os.environ.get("WARDEN_POT_SCRIPT", "/opt/plow/bgutil/server")
+
+# E o servidor HTTP continua atendido, para quem já tem um de pé.
+#
+# `WARDEN_POT_URL` só entra quando alguém a DECLARA no ambiente. Sem ela, nada
+# é perguntado a um socket que não existe -- que era o que acontecia num
+# `docker run` sem o compose: o argumento ia junto apontando para
+# `127.0.0.1:4416`, onde nunca houve ninguém.
+#
+# Quando as duas existem, o plugin dá prioridade ao HTTP. É a ordem certa: quem
+# subiu um servidor quis usá-lo.
+POT_BASE_URL = (os.environ.get("WARDEN_POT_URL") or "").strip()
 
 # yt-dlp's own wiki puts a logged-out session at roughly a thousand player and
 # webpage requests an hour, and names bursts as what gets an address flagged.
@@ -381,7 +400,11 @@ def _ytdlp(*, paced=True):
         base += ["--js-runtimes", rt]
     if _cookies_usaveis():
         base += ["--cookies", COOKIES_FILE]
-    base += ["--extractor-args", f"youtubepot-bgutilhttp:base_url={POT_BASE_URL}"]
+    if os.path.isdir(POT_SCRIPT_HOME):
+        base += ["--extractor-args",
+                 f"youtubepot-bgutilscript:server_home={POT_SCRIPT_HOME}"]
+    if POT_BASE_URL:
+        base += ["--extractor-args", f"youtubepot-bgutilhttp:base_url={POT_BASE_URL}"]
     # Retries are bounded on purpose. yt-dlp's default is ten, and ten retries
     # against an address that is being refused is how a flagged address stays
     # flagged: it reads as exactly the burst the wiki warns about.
@@ -538,7 +561,25 @@ def _porque_bloqueou(label):
 
 
 def _pot_alive():
-    """Is the PO token provider answering? A yes or no, never an exception."""
+    """Há quem emita PO token? Um sim ou um não, nunca uma exceção.
+
+    Duas respostas possíveis e as duas contam: o gerador em modo script nesta
+    imagem, que é o caminho desde 16/09/2026, e um servidor HTTP que alguém
+    tenha declarado em `WARDEN_POT_URL`.
+
+    O script não é "perguntado": ou o diretório está lá com o `generate_once.js`
+    dentro, ou não está. Executá-lo aqui só para conferir custaria um processo
+    Node e até 20s -- e quem confere de verdade é o build, que não deixa a
+    imagem sair sem uma emissão real.
+    """
+    try:
+        if os.path.isfile(os.path.join(POT_SCRIPT_HOME, "build",
+                                       "generate_once.js")):
+            return True
+    except OSError:
+        pass
+    if not POT_BASE_URL:
+        return False
     try:
         with urllib.request.urlopen(POT_BASE_URL + "/ping", timeout=3):
             return True

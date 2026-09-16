@@ -113,13 +113,12 @@ reaches out, and why:
 - **The archive links published inside a brief**, to pull footage, `http` and
   `https` only.
 - **GitHub Container Registry (`ghcr.io`)**, once per install, to pull the
-  published image. Building locally instead reaches `public.ecr.aws`,
-  `media.githubusercontent.com` and `raw.githubusercontent.com` — see
-  `docs/INSTALL.md`.
-- **Docker Hub**, once per install, for the second image in `compose.yml`: the
-  Proof-of-Origin token provider YouTube now asks for, pinned by digest. It
-  runs beside the agent with no `ports:` key, so nothing outside the compose
-  network can reach it.
+  published image — the only image there is. Building locally instead reaches
+  `public.ecr.aws`, `media.githubusercontent.com`, `raw.githubusercontent.com`
+  and `github.com` — see `docs/INSTALL.md`. Until 16/09/2026 an install also
+  pulled a second image from **Docker Hub**, the Proof-of-Origin token
+  provider; it is now inside the agent's own image, so Docker Hub is no longer
+  contacted at all.
 - **Hugging Face**, once per install, for the two transcription models.
 - **The AI Worth Using Agent Index**, hourly, with day and model token counts
   and nothing else — no prompts, no file paths, no costs. It has no switch;
@@ -158,19 +157,22 @@ To build locally instead, for development: `WARDEN_BUILD=1 ./install.sh`. It pri
 runs and stops at the first thing it cannot do. `docs/INSTALL.md` has the same
 path typed out by hand, and the three ordering traps that bite when you do.
 
-Docker Desktop needs at least 5.5 GiB of RAM in its VM: `compose.yml` caps the
+Docker Desktop needs at least 5 GiB of RAM in its VM: `compose.yml` caps the
 agent at 4 GiB — it renders two clips at once since 16/09/2026, which halved a
-two-clip batch from 105s to 54.7s at a measured peak of 1584 MiB — and since
-15/09/2026 a second container sits beside it, the Proof-of-Origin token
-provider, capped at 512 MiB, so the ceilings add up to 4.5 GiB. A smaller VM
-turns the first clip into an out-of-memory kill. The script measures it and
-says so.
+two-clip batch from 105s to 54.7s at a measured peak of 1584 MiB — and the
+remaining 1 GiB is the slack the rest of the VM needs. A smaller VM turns the
+first clip into an out-of-memory kill. The script measures it and says so.
 
-`docker compose up` therefore starts two containers, not one. The second exists
-because YouTube refuses logged-out requests that arrive without that token, and
-an address that keeps asking without one gets flagged. It is there to keep that
-from happening, which is not the same as fixing it — see "I can't download
-anything from YouTube" below.
+`docker compose up` starts **one** container. Between 15/09 and 16/09/2026 it
+started two: a second one sat beside the agent, capped at 512 MiB, minting the
+Proof-of-Origin token YouTube asks for on logged-out requests. It answered on a
+port, and the Plow cloud — one container per person — forbids an inbound
+listener, so on 16/09/2026 the token generator moved inside the agent's image
+and now runs as a script: the yt-dlp plugin starts a Node process when it needs
+a token, and nothing listens anywhere. The token still matters for the same
+reason it always did — an address that keeps asking without one gets flagged —
+and it still keeps that from happening rather than fixing it, see "I can't
+download anything from YouTube" below.
 
 Then text the agent a campaign link. Nothing else to configure **to get clips**:
 no API keys, no OAuth, no accounts. The three delivery commands are the only
@@ -208,7 +210,9 @@ three:
 - a **JavaScript runtime** (`node`, already in the image). Without one yt-dlp
   drops the `web` client from its default set and cannot decipher n/sig. Every
   install before this one was running that way in silence.
-- a **Proof-of-Origin token**, minted by the container beside the agent.
+- a **Proof-of-Origin token**, minted inside the agent's own image since
+  16/09/2026 — a Node process the yt-dlp plugin runs on demand, where until
+  then it was a second container answering on a port.
 - a **pace**. One link used to cost four extractions fired back to back; it now
   costs two, with sleeps between requests and retries capped at three.
 

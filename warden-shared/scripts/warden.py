@@ -1977,9 +1977,18 @@ def cmd_status(args):
               "MISSING -- yt-dlp drops the `web` client and cannot decipher "
               "n/sig, so YouTube links fail for a reason that reads like the "
               "source's fault"))
-        print("PO token provider (%s): " % M.POT_BASE_URL + (
-              "answering" if M._pot_alive() else
-              "NOT answering -- this install's address is being spent without "
+        # Diz QUAL dos dois caminhos está de pé, porque "answering" sobre um
+        # endereço que ninguém declarou era uma linha que não queria dizer nada.
+        if os.path.isfile(os.path.join(M.POT_SCRIPT_HOME, "build",
+                                       "generate_once.js")):
+            onde = f"script, inside this image: {M.POT_SCRIPT_HOME}"
+        elif M.POT_BASE_URL:
+            onde = f"HTTP, {M.POT_BASE_URL}"
+        else:
+            onde = "nenhum caminho configurado"
+        print(f"PO token provider ({onde}): " + (
+              "ready" if M._pot_alive() else
+              "NOT available -- this install's address is being spent without "
               "one, and YouTube flags addresses that ask without it"))
         print("yt-dlp cookies file (%s): " % M.COOKIES_FILE + (
               "present" if os.path.isfile(M.COOKIES_FILE) else

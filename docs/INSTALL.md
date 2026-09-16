@@ -46,11 +46,14 @@ app. Both are covered in
 ## What you need
 
 - **Docker, running, with Docker Compose**, and its VM set to **at least
-  5.5 GiB of RAM**. `compose.yml` caps the agent at 4 GiB — it renders two
+  5 GiB of RAM**. `compose.yml` caps the agent at 4 GiB — it renders two
   clips at the same time since 16/09/2026, which took a two-clip batch from
-  105s to 54.7s at a measured peak of 1584 MiB; since 15/09/2026 it also runs a
-  second container, the Proof-of-Origin token provider, capped at 512 MiB —
-  4.5 GiB of ceiling between them. On a smaller VM the first clip
+  105s to 54.7s at a measured peak of 1584 MiB — and that is the only ceiling
+  there is, leaving 1 GiB of slack for the rest of the VM. Between 15/09 and
+  16/09/2026 a second container ran beside it, the Proof-of-Origin token
+  provider, capped at 512 MiB, and the two ceilings added up to 4.5 GiB; that
+  container is gone, for the reason given under
+  [Where it connects](#where-it-connects). On a smaller VM the first clip
   dies as an out-of-memory kill rather than an error. Docker Desktop →
   Settings → Resources → Memory. `install.sh` measures this and warns you.
 - **Git.**
@@ -133,16 +136,21 @@ them — they are a warning, not a gate:
 
 ```
 yt-dlp JS runtime: node
-PO token provider (http://pot:4416): answering
+PO token provider (script, nesta imagem (/opt/plow/bgutil/server)): ready
 yt-dlp cookies file (/var/lib/hermes/warden/cookies.txt): absent (only needed if this address is already refused)
 ```
 
 `MISSING` on the first means yt-dlp is running with the `web` client dropped
 and no n/sig deciphering, which fails as a download error rather than as a
-missing dependency. `NOT answering` on the second means the `pot` container is
-not up and this install's address is being spent without the token that keeps
-it from being flagged. `absent` on the third is the ordinary state; the next
-section is what it is for.
+missing dependency. The second line names **which** of the two token paths is
+standing: `script, nesta imagem (…)` is the ordinary one since 16/09/2026, the
+generator that lives in the agent's own image; `HTTP, …` appears instead only
+if you set `WARDEN_POT_URL` at a token server of your own. Until 16/09/2026
+that line always read `http://pot:4416`, the second container — it no longer
+exists, so an install still printing it is reading an old `compose.yml`.
+`NOT available` means neither path is standing and this install's address is
+being spent without the token that keeps it from being flagged. `absent` on the
+third is the ordinary state; the next section is what it is for.
 
 `warden status` prints more than those seven lines — where state lives, whether it
 is writable, which campaigns are stored, and how far along the transcription
@@ -234,10 +242,19 @@ reads the refusal and says what it is, and the tool prints the same three facts
   runtime yt-dlp drops the `web` client from its default set and cannot
   decipher n/sig — a handicap on every link that surfaces as a download
   failure. The build now fails if the base image has no `node`.
-- **A Proof-of-Origin token.** The `pot` service in `compose.yml`, image
-  `brainicism/bgutil-ytdlp-pot-provider:2.0.0` pinned by digest, with no
-  `ports:` key so it answers only on the compose network. The agent finds it at
-  `WARDEN_POT_URL`, which `compose.yml` sets to `http://pot:4416`.
+- **A Proof-of-Origin token.** Both halves are in the agent's image: the yt-dlp
+  plugin, and the generator it drives. The generator runs in **script mode** —
+  the plugin starts a Node process when it needs a token, and nothing listens
+  on any port. Both are pinned in `vendor/potprovider.pin`, plugin and
+  generator on the same major, because the provider's own README says a mismatch
+  there is fatal and yields no token at all.
+
+  Until 16/09/2026 the generator was a **second container**, the `pot` service
+  in `compose.yml`, a Node server on port 4416 that the agent reached at
+  `WARDEN_POT_URL=http://pot:4416`. It moved into the image because the Plow
+  cloud runs one container per person and its contract forbids, in those words,
+  "no inbound listener" — and a generator answering on a port is exactly that.
+  Whoever installs locally gets the side benefit: one image fewer to pull.
 - **A pace.** A single link used to cost four separate extractions — channel,
   title, subtitles, download — fired back to back with no sleep. It now costs
   two, with `--sleep-requests` between them and retries capped at three.
@@ -245,8 +262,8 @@ reads the refusal and says what it is, and the tool prints the same three facts
 **The token is prophylactic.** It keeps an address from being flagged; it does
 not lift a flag. Measured here: a valid token, freshly minted, bound to
 matching visitor data, in the player context, got the identical refusal. That
-is why it is a service that runs from the first install rather than a step in
-this section.
+is why it is in the image and working from the first install rather than a step
+in this section.
 
 ### The two things that change the answer
 
@@ -288,7 +305,7 @@ deleting it is yours to do. The same goes for `.env`.
 ### The knobs
 
 `compose.yml` already passes these through from your shell or your `.env`, all
-empty by default: `WARDEN_POT_URL`, `WARDEN_YT_COOKIES`, the pair
+empty by default: `WARDEN_YT_COOKIES`, the pair
 `WARDEN_YT_CLIENT_ID` / `WARDEN_YT_CLIENT_SECRET`, and the trio
 `WARDEN_POST_API_KEY` / `WARDEN_POST_PROVIDER` / `WARDEN_POST_PROFILE` — see
 "Handing a clip to YouTube or TikTok" for what the credentials are, and why
@@ -298,7 +315,7 @@ shell, the same as `WARDEN_DIRECTORIES`.
 
 | | |
 | --- | --- |
-| `WARDEN_POT_URL` | where the token provider answers, `http://pot:4416` |
+| `WARDEN_POT_URL` | the address of a PO token server of **your own**, if you run one. Optional, and there is no default: leave it unset and the generator inside the image is used. It was set to `http://pot:4416` until 16/09/2026, when the second container it pointed at went away |
 | `WARDEN_YT_COOKIES` | the cookies path, when it is not the default below. It says which service the cookies are for; a YouTube `cookies.txt` is a whole signed-in session, so it is a file in a volume and never anything the image carries |
 | `WARDEN_COOKIES` | the older name for the same thing; `WARDEN_YT_COOKIES` wins when both are set |
 | `WARDEN_SLEEP_REQUESTS` | seconds between requests, `1.5` |
@@ -320,7 +337,7 @@ plow-agents login            # prints a phrase; text it to Plow from your phone
 plow-agents lines            # prints your line UIDs, as ln_...
 plow-agents mint ln_xxx      # writes ./plow-credentials
 
-docker compose up -d           # pulls the published image and the pot sidecar
+docker compose up -d           # pulls the published image; one container, not two
 docker compose exec -u 10000:10000 agent warden status
 ```
 
@@ -446,12 +463,17 @@ tag in place of the `ghcr.io/...` one.
 
 Worth knowing before you run a stranger's agent on your machine.
 
-**While installing**, it downloads the published image from **`ghcr.io`**, and
-the Proof-of-Origin token provider image from **Docker Hub**, pinned by digest
-in `compose.yml`. Nothing else.
+**While installing**, it downloads the published image from **`ghcr.io`**.
+Nothing else — one image, because there is one container. Until 16/09/2026 it
+also pulled the Proof-of-Origin token provider image from **Docker Hub**: that
+provider was a second container, a Node server on port 4416, and it is now part
+of the agent's image, running as a script with no port of its own. The Plow
+cloud runs one container per person and its contract forbids, in those words,
+"no inbound listener", which is what forced the move; the install got shorter as
+a side effect, since that image had its own 512 MiB ceiling and its own pull.
 
 **Only if you build locally** (`WARDEN_BUILD=1`, or `-f compose.build.yml`) it
-reaches three more hosts, all pinned by digest or sha256 in the repository:
+reaches four more hosts, all pinned by digest or sha256 in the repository:
 
 - `public.ecr.aws` — the Plow base image, pinned by digest.
 - `media.githubusercontent.com` — the YuNet face-detection model, pinned by
@@ -459,6 +481,10 @@ reaches three more hosts, all pinned by digest or sha256 in the repository:
   detector runs, so it gets the same discipline as a binary.
 - `raw.githubusercontent.com` — the Agent Index client, pinned in
   `vendor/client.pin`.
+- `github.com` — the PO token generator's source, pinned by commit and checksum
+  in `vendor/potprovider.pin`. This is the half that used to arrive as the
+  Docker Hub image; building it into the agent is what let the second container
+  go. The plugin that drives it comes from the wheel pinned in the same file.
 
 **While running**, it reaches:
 

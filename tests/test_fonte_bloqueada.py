@@ -357,46 +357,78 @@ class ComoOYtdlpEChamado(unittest.TestCase):
         self.assertIsNone(warden_media._js_runtimes())
         self.assertNotIn("--js-runtimes", warden_media._ytdlp())
 
-    def test_a_chamada_aponta_para_o_provider_configurado(self):
-        """O endereço vem da constante do módulo, então quem muda o env muda a
-        chamada -- e é assim que o compose aponta o agente para o sidecar."""
+    def _args_do_pot(self):
         args = warden_media._ytdlp()
-        valor = args[args.index("--extractor-args") + 1]
-        self.assertEqual(
-            valor,
-            "youtubepot-bgutilhttp:base_url=" + warden_media.POT_BASE_URL)
+        return [args[i + 1] for i, a in enumerate(args) if a == "--extractor-args"]
+
+    def test_a_chamada_leva_o_script_da_imagem(self):
+        """O caminho normal desde 16/09/2026: o gerador mora aqui dentro e o
+        plugin recebe o diretório `server/`. Nenhuma porta, que é o que a nuvem
+        da Plow exige."""
+        _troca(self, "POT_BASE_URL", "")
+        valores = self._args_do_pot()
+        esperado = ("youtubepot-bgutilscript:server_home="
+                    + warden_media.POT_SCRIPT_HOME)
+        if os.path.isdir(warden_media.POT_SCRIPT_HOME):
+            self.assertIn(esperado, valores)
+        self.assertFalse([v for v in valores if "bgutilhttp" in v],
+                         "sem WARDEN_POT_URL declarada, nada é perguntado por "
+                         "HTTP: o argumento apontava para um socket que não "
+                         "existe num `docker run` sem compose")
+
+    def test_um_servidor_declarado_entra_junto(self):
+        """E quem já tem um servidor de PO token de pé aponta o agente para ele
+        pelo ambiente. Os dois podem ir juntos: o plugin dá prioridade ao HTTP,
+        que é a ordem certa -- quem subiu um servidor quis usá-lo."""
+        _troca(self, "POT_BASE_URL", "http://meu-provedor:4416")
+        valores = self._args_do_pot()
+        self.assertIn("youtubepot-bgutilhttp:base_url=http://meu-provedor:4416",
+                      valores)
 
     def test_o_padrao_sem_env_e_o_loopback(self):
-        """O bgutil 2.0.0 existe porque escutar em 0.0.0.0 era execução remota de
-        código (GHSA-qpv9-8xfj-xx9m), e este agente é publicado.
+        """Sem `WARDEN_POT_URL` declarada, NADA é perguntado por HTTP.
 
-        A versão anterior deste teste afirmava que `POT_BASE_URL` É o loopback,
-        e passava no Mac por acidente: lá a variável não existe. DENTRO do
-        container ela vale `http://pot:4416`, que é o desenho -- o provider é um
-        container irmão -- e o teste reprovava o próprio conserto. O que é
-        invariante é o PADRÃO, não o valor, então é o padrão que se trava aqui.
+        O padrão era `http://127.0.0.1:4416`, e ele existia porque o provedor
+        era um container irmão. Em 16/09/2026 o gerador passou a viver dentro
+        desta imagem, em modo script, e o padrão virou vazio: num `docker run`
+        sem compose o argumento ia junto apontando para um socket onde nunca
+        houve ninguém.
+
+        O que o bgutil 2.0.0 ensinou continua valendo e é por isso que não há
+        servidor nenhum por padrão: escutar em 0.0.0.0 era execução remota de
+        código (GHSA-qpv9-8xfj-xx9m), e este agente é publicado.
         """
         import importlib
         antes = os.environ.pop("WARDEN_POT_URL", None)
         try:
             recarregado = importlib.reload(warden_media)
-            self.assertTrue(
-                recarregado.POT_BASE_URL.startswith("http://127.0.0.1"),
-                recarregado.POT_BASE_URL)
+            self.assertEqual(recarregado.POT_BASE_URL, "")
         finally:
             if antes is not None:
                 os.environ["WARDEN_POT_URL"] = antes
             importlib.reload(warden_media)
 
+    def test_o_script_da_imagem_e_o_caminho_padrao(self):
+        """O gerador mora aqui dentro, e o plugin recebe o diretório `server/`.
+
+        É o que substitui o container irmão desde 16/09/2026: a nuvem da Plow
+        roda um container por pessoa e o contrato dela proíbe um listener de
+        entrada, com essas palavras.
+        """
+        self.assertEqual(warden_media.POT_SCRIPT_HOME,
+                         os.environ.get("WARDEN_POT_SCRIPT",
+                                        "/opt/plow/bgutil/server"))
+
     def test_o_env_sobrepoe_o_padrao(self):
-        """E a sobreposição é o mecanismo, não um acaso: sem ela o compose não
-        teria como apontar o agente para o sidecar."""
+        """E a sobreposição é o mecanismo, não um acaso: é assim que quem já
+        tem um servidor de PO token de pé aponta o agente para ele."""
         import importlib
         antes = os.environ.get("WARDEN_POT_URL")
-        os.environ["WARDEN_POT_URL"] = "http://pot:4416"
+        os.environ["WARDEN_POT_URL"] = "http://meu-provedor:4416"
         try:
             recarregado = importlib.reload(warden_media)
-            self.assertEqual(recarregado.POT_BASE_URL, "http://pot:4416")
+            self.assertEqual(recarregado.POT_BASE_URL,
+                             "http://meu-provedor:4416")
         finally:
             if antes is None:
                 os.environ.pop("WARDEN_POT_URL", None)
@@ -618,17 +650,43 @@ class SondaDoProvider(unittest.TestCase):
         warden_media._FACTS.clear()
         self.addCleanup(warden_media._FACTS.clear)
 
-    def test_sem_provider_ouvindo_a_resposta_e_False_e_nao_excecao(self):
+    def test_sem_provider_NENHUM_a_resposta_e_False_e_nao_excecao(self):
+        """Nem servidor HTTP nem script: um não, e nunca uma exceção.
+
+        Desde 16/09/2026 a sonda tem DUAS respostas possíveis -- o gerador em
+        modo script dentro da imagem e um servidor HTTP que alguém declarou --
+        então desligar só o HTTP não é mais "sem provider". Estes testes apagam
+        os dois.
+        """
+        _troca(self, "POT_SCRIPT_HOME", "/nao/existe/em/lugar/nenhum")
         _troca(self, "POT_BASE_URL", "http://127.0.0.1:%d" % _porta_fechada())
         self.assertIs(warden_media._pot_alive(), False)
 
     def test_um_endereco_sem_sentido_tambem_e_so_um_nao(self):
         """Um WARDEN_POT_URL digitado errado não pode derrubar a explicação do
         bloqueio -- é justamente quando ela é mais necessária."""
+        _troca(self, "POT_SCRIPT_HOME", "/nao/existe/em/lugar/nenhum")
         _troca(self, "POT_BASE_URL", "nao-e-uma-url")
         self.assertIs(warden_media._pot_alive(), False)
 
+    def test_o_script_da_imagem_basta_sem_servidor_nenhum(self):
+        """E é o caminho normal desde 16/09: a nuvem da Plow proíbe um listener
+        de entrada, então não há servidor para responder e o script é quem
+        emite. A sonda não EXECUTA o gerador -- isso custaria um processo Node e
+        até 20s; quem prova que ele emite é o build, que não deixa a imagem sair
+        sem uma emissão real."""
+        import os as _os
+        import tempfile
+        with tempfile.TemporaryDirectory() as raiz:
+            _os.makedirs(_os.path.join(raiz, "build"))
+            with open(_os.path.join(raiz, "build", "generate_once.js"), "w") as fh:
+                fh.write("// só precisa existir\n")
+            _troca(self, "POT_SCRIPT_HOME", raiz)
+            _troca(self, "POT_BASE_URL", "")
+            self.assertIs(warden_media._pot_alive(), True)
+
     def test_a_mensagem_de_bloqueio_sobrevive_ao_provider_fora_do_ar(self):
+        _troca(self, "POT_SCRIPT_HOME", "/nao/existe/em/lugar/nenhum")
         _troca(self, "POT_BASE_URL", "http://127.0.0.1:%d" % _porta_fechada())
         msg = warden_media._porque_bloqueou("yt-dlp metadata lookup")
         self.assertIn("PO token provider: NOT reachable", msg)

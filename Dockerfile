@@ -14,7 +14,7 @@
 # without the flag the same thing happens with a warning that reads like a
 # problem somebody should fix, and there is nothing to fix until the base ships
 # arm64.
-FROM --platform=linux/amd64 public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-4747960eaa8a44ac24424bf0cc6c22559af61f43@sha256:fe9b0f428f9ed2da1698ecf0b504c79eceb9e016e770291ff6b3418b9f65449d
+FROM --platform=linux/amd64 public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-80ef5024eb4b770e727a618a9b55421c73da6228@sha256:864771e8165db16c11a55635df85696f39d91020f258576dd62b7cab0515514f
 
 # ffmpeg decides every number this agent states about a clip. The base carries
 # it; if a future base stops carrying it, the build is where that should be
@@ -125,6 +125,60 @@ n = sorted(r.value.keys()); \
 print('PO token providers yt-dlp can see:', n); \
 exit(0 if any('bgutil' in x.lower() for x in n) else 1)"
 
+# O GERADOR de PO token, dentro desta imagem, em modo SCRIPT.
+#
+# Até 16/09/2026 quem emitia o token era um segundo container escutando a porta
+# 4416. A nuvem da Plow roda UM container por pessoa e o contrato dela proíbe um
+# listener de entrada, com essas palavras: "no inbound listener". O modo script
+# do mesmo projeto resolve os dois lados: o plugin executa um processo Node
+# quando precisa de um token, nada escuta porta, e quem instala localmente passa
+# a precisar de uma imagem a menos.
+#
+# `npm ci` e não `npm install`: o lockfile deles é o que fixa a árvore inteira,
+# e resolver de novo no build seria trocar um pin auditado por o que o registro
+# servir hoje. `npm prune --omit=dev` depois do `tsc` porque o TypeScript não é
+# preciso para RODAR o que ele gerou.
+COPY vendor/potprovider.pin /opt/plow/potprovider.pin
+RUN set -eu; \
+    sha="$(sed -n 's/^server_sha=//p' /opt/plow/potprovider.pin)"; \
+    want="$(sed -n 's/^server_sha256=//p' /opt/plow/potprovider.pin)"; \
+    curl -fsSL --max-time 180 -o /tmp/bgutil.tar.gz \
+      "https://github.com/Brainicism/bgutil-ytdlp-pot-provider/archive/${sha}.tar.gz"; \
+    got="$(sha256sum /tmp/bgutil.tar.gz | cut -d' ' -f1)"; \
+    [ "$got" = "$want" ] || { echo "bgutil server tarball is $got, pin says $want" >&2; exit 1; }; \
+    mkdir -p /opt/plow/bgutil; \
+    tar -xzf /tmp/bgutil.tar.gz --strip-components=1 -C /opt/plow/bgutil; \
+    rm -f /tmp/bgutil.tar.gz; \
+    cd /opt/plow/bgutil/server; \
+    npm ci --no-audit --no-fund; \
+    npx tsc; \
+    npm prune --omit=dev --no-audit --no-fund; \
+    npm cache clean --force; \
+    test -f /opt/plow/bgutil/server/build/generate_once.js; \
+    chown -R root:root /opt/plow/bgutil; \
+    find /opt/plow/bgutil -type d -exec chmod 0755 {} + ; \
+    find /opt/plow/bgutil -type f -exec chmod 0644 {} +
+
+# E a prova de que ele EMITE, no build, em vez de ser descoberta por um estranho
+# no primeiro link. Uma execução do gerador; se ela não devolver um token, a
+# imagem não sai.
+#
+# `--content-binding` e não `-v`: em 2.0.0 o `-v` é `--visitor-data` e está
+# deprecado ("Visitor data is deprecated, use --content-binding instead"), o que
+# fez esta verificação falhar na primeira tentativa. O valor é qualquer coisa
+# que amarre o token a um contexto; aqui é um literal, porque o que se prova é
+# que o gerador EMITE, não qual vídeo ele viu.
+RUN set -eu; \
+    node /opt/plow/bgutil/server/build/generate_once.js \
+      --content-binding clip-warden-build-check \
+      > /tmp/pot.json 2>/tmp/pot.err \
+      || { echo "the PO token generator did not run:" >&2; cat /tmp/pot.err >&2; exit 1; }; \
+    grep -q poToken /tmp/pot.json \
+      || { echo "the PO token generator ran and produced no token:" >&2; \
+           cat /tmp/pot.json /tmp/pot.err >&2; exit 1; }; \
+    echo "PO token generator: emits, in script mode, no listener"; \
+    rm -f /tmp/pot.json /tmp/pot.err
+
 # The YuNet face-detection model, fetched at build from the commit vendor/yunet.pin
 # names and checked against the hash beside it -- the same discipline as the
 # agent-index client, because a model file is code the detector runs. It is a
@@ -159,6 +213,22 @@ RUN set -eu; \
 # nobody is watching, and a second install on the same machine keeps the models
 # it already pulled.
 ENV HF_HOME=/var/lib/hermes/models
+
+# Os dois padrões que vinham do `compose.yml` e que precisam valer num
+# `docker run` solto -- que é como a nuvem da Plow sobe um agente.
+#
+# Dois renders ao mesmo tempo: medido em 16/09/2026 neste container, o mesmo
+# lote de dois clipes de 20s levou 105s em fila e 54,7s em paralelo, com pico de
+# 1584 MiB contra 1815 MiB. Metade do tempo, e o pico ABAIXO do sequencial.
+#
+# `AGENT_ID` é o id no Agent Index. Sem ele o reporter de uso fica parado, e
+# ficar parado por falta de um padrão que o repositório inteiro já conhece é
+# uma instalação que não conta.
+#
+# Os dois continuam podendo ser trocados pelo ambiente: o compose sobrescreve, e
+# a Plow também.
+ENV WARDEN_RENDER_PARALELO=2
+ENV AGENT_ID=clip-warden
 COPY --chmod=0755 image/bin/warden-models /usr/local/bin/warden-models
 
 # Identity, and the licence. Late on purpose: the persona is the file that gets

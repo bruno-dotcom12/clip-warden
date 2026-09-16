@@ -68,23 +68,26 @@ docker info >/dev/null 2>&1 || pare "o Docker não está rodando. Abra o Docker 
 docker compose version >/dev/null 2>&1 || pare "este Docker não tem 'docker compose'. Atualize o Docker Desktop."
 
 # A RAM da VM do Docker, que não estava em requisito nenhum e derrubava o
-# primeiro corte por OOM. compose.yml fixa mem_limit em 3g no agente e o agente
-# precisa de ~2 GiB para transcrever e renderizar ao mesmo tempo.
+# primeiro corte por OOM. O agente precisa de ~2 GiB para transcrever e
+# renderizar ao mesmo tempo.
 #
-# Desde 15/09/2026 o compose sobe um segundo container ao lado: o `pot`, que
-# emite o PO token que o YouTube exige de quem pede deslogado. São mais 512m de
-# teto. E desde 16/09/2026 o agente renderiza DOIS clipes ao mesmo tempo
+# Desde 16/09/2026 o agente renderiza DOIS clipes ao mesmo tempo
 # (`WARDEN_RENDER_PARALELO=2`, medido: 105s viram 54,7s), então o teto dele
-# subiu de 3g para 4g. Somando o sidecar são 4,5 GiB de teto, e a mesma folga
-# de 1 GiB para o resto da VM são 5,5 GiB -- por isso a conta é em MiB, que
-# "GiB inteiro" não expressa.
+# subiu de 3g para 4g -- e é o único teto que existe. Entre 15/09 e 16/09/2026
+# o compose subia um segundo container ao lado, o `pot`, que emitia o PO token
+# do YouTube: mais 512m de teto, 4,5 GiB somados. Ele saiu em 16/09/2026,
+# porque a nuvem da Plow roda um container por pessoa e proíbe listener de
+# entrada, e o gerador de token passou a viver dentro da própria imagem, em
+# modo script. Um container só, 4 GiB de teto, e a mesma folga de 1 GiB para o
+# resto da VM dá 5 GiB -- por isso a conta é em MiB, que "GiB inteiro" não
+# expressa.
 MEM_BYTES="$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)"
 MEM_MIB=$(( MEM_BYTES / 1048576 ))
-if [ "$MEM_MIB" -lt 5632 ]; then
-    printf '  aviso: a VM do Docker tem %s MiB. O compose limita 4g no agente\n' "$MEM_MIB"
-    printf '         mais 512m no sidecar pot: 4,5 GiB de teto somado, e o agente\n'
-    printf '         renderiza dois clipes ao mesmo tempo (pico medido 1584 MiB).\n'
-    printf '         Docker Desktop > Settings > Resources > Memory: suba para 5,5 GiB.\n'
+if [ "$MEM_MIB" -lt 5120 ]; then
+    printf '  aviso: a VM do Docker tem %s MiB. O compose limita 4g no agente,\n' "$MEM_MIB"
+    printf '         que é o único container, e ele renderiza dois clipes ao\n'
+    printf '         mesmo tempo (pico medido 1584 MiB).\n'
+    printf '         Docker Desktop > Settings > Resources > Memory: suba para 5 GiB.\n'
     printf '         Seguindo assim mesmo -- o primeiro corte pode morrer por OOM.\n'
 fi
 printf '  ok: git, docker, compose, %s MiB de RAM na VM\n' "$MEM_MIB"

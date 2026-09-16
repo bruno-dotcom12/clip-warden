@@ -16,10 +16,16 @@ services:
       # the publisher; every installer reports to the same id. The reporter
       # stands down without it, so an install that never sets it never counts.
       AGENT_ID: ${AGENT_ID:-clip-warden}
-      # Where the Proof-of-Origin token provider answers. The service name
-      # below, not localhost: the provider is a sibling container, and the
-      # tool's own default (127.0.0.1) is for someone running it on the host.
-      WARDEN_POT_URL: ${WARDEN_POT_URL:-http://pot:4416}
+      # O provedor de PO token NÃO é mais um container.
+      #
+      # Ele era um segundo serviço aqui embaixo, escutando a porta 4416, e
+      # saiu em 16/09/2026: a nuvem da Plow roda um container por pessoa e
+      # proíbe um listener de entrada, então o gerador passou a viver DENTRO
+      # da imagem, em modo script (ver `vendor/potprovider.pin`). Quem instala
+      # localmente também ganha: uma imagem a menos para puxar.
+      #
+      # `WARDEN_POT_URL` continua sendo lida. Declare-a se você tiver um
+      # servidor de PO token próprio de pé; sem ela, vale o script da imagem.
       # Quantos clipes de um lote renderizam ao mesmo tempo. Dois, medido em
       # 16/09/2026: o lote de dois clipes levava 105s em fila e o render é o
       # que sobrou de lento depois que o download deixou de trazer o vídeo
@@ -88,8 +94,6 @@ services:
       # pessoa, e uma sessão dentro de uma imagem publicada é uma sessão
       # publicada. Ver "Putting the cookies file in" em docs/INSTALL.md.
       WARDEN_YT_COOKIES: ${WARDEN_YT_COOKIES:-}
-    depends_on:
-      - pot
     volumes:
       # `.host`, not the path the agent reads: a bind carries this machine's
       # ownership in, and the image copies the file into place as root itself.
@@ -110,11 +114,9 @@ services:
     # 3.8 GiB Docker VM can take the VM down with it rather than dying alone.
     # A limit turns "the machine froze" into "the agent restarted".
     #
-    # 3g is 1.7x the measured peak, which is room for a longer source without
-    # room for a runaway. If Docker Desktop is set to less than 4 GiB this is
-    # the number to lower, or raise the VM -- the agent needs about 2 GiB to
-    # transcribe and render at once, and saying so here beats a stranger
-    # discovering it as a kill.
+    # Se o Docker Desktop tiver menos que isto, é este número que se abaixa, ou
+    # a VM que se levanta -- dizer aqui custa uma linha e economiza um estranho
+    # descobrindo por um kill.
     # 4g e não 3g desde 16/09/2026, e o motivo é o render em paralelo.
     # `WARDEN_RENDER_PARALELO=2` corta o tempo do lote pela metade, e dois
     # ffmpeg ao mesmo tempo não cabiam nos 3 GiB com folga nenhuma: o pico de
@@ -142,40 +144,29 @@ services:
     # enforced, and are tracked in the security pass rather than papered over
     # with a compose key that does nothing.
 
-  # The Proof-of-Origin token provider.
+  # O PROVEDOR DE PO TOKEN ERA UM SERVIÇO AQUI, E SAIU EM 16/09/2026.
   #
-  # YouTube now wants a PO token on requests from a logged-out client. Without
-  # one an install looks like a bot, and the address it is calling from gets
-  # flagged -- at which point NOTHING in this project can pull a YouTube link
-  # any more. That is not a hypothesis: it is the state the owner's own address
-  # was measured in on 15/09/2026, and a valid token minted afterwards did not
-  # lift it. The token has to be there BEFORE the flag, which is why this is a
-  # service and not a troubleshooting step.
+  # O YouTube quer um PO token nas requisições de um cliente deslogado. Sem um,
+  # a instalação parece um robô e o endereço de onde ela chama é marcado -- e a
+  # partir daí NADA neste projeto puxa um link do YouTube. Não é hipótese: foi o
+  # estado medido no endereço do próprio dono em 15/09/2026, e um token emitido
+  # depois não levantou a marcação. O token tem de estar lá ANTES da marca.
   #
-  # A sidecar rather than something baked into the agent image, on purpose:
-  # this is a Node service with native dependencies that tracks YouTube's
-  # BotGuard, it will need updating on YouTube's schedule rather than ours, and
-  # 2.0.0 exists because 1.3.x had a remote code execution hole
-  # (GHSA-qpv9-8xfj-xx9m). Keeping it separate means updating it never means
-  # rebuilding the agent.
+  # Isso não mudou. O que mudou foi ONDE ele é emitido. Era um sidecar Node
+  # escutando 4416, escolhido para poder ser atualizado no calendário do YouTube
+  # sem rebuild do agente. A nuvem da Plow roda UM container por pessoa e o
+  # contrato dela proíbe, com essas palavras, "no inbound listener" -- então o
+  # gerador passou para dentro da imagem, no modo SCRIPT do mesmo projeto: um
+  # processo Node executado quando o yt-dlp precisa, e nenhuma porta aberta.
   #
-  # NO `ports:` KEY, and that is the security control. The published advice is
-  # `-p 127.0.0.1:4416:4416`; not publishing at all is strictly safer, because
-  # then the provider is reachable only on this compose network -- by the agent
-  # and by nothing else on the machine.
-  pot:
-    # Pinned by digest as well as tag, the same rule the agent's own base
-    # follows: this service answers a request the agent makes on every
-    # YouTube link, and a moving tag would substitute code underneath an
-    # install without anybody reviewing it.
-    image: brainicism/bgutil-ytdlp-pot-provider:2.0.0@sha256:ed86b6fdd5e430ddd7c8ce1adb55e1ab54db7c7dbc1bcbf3a82454a85b971164
-    init: true
-    restart: unless-stopped
-    # It is a token minter, not a workload. Measured elsewhere it sits idle;
-    # the limit is here so a leak in a third-party service cannot take the
-    # host's Docker VM down with it, the same reason the agent has one.
-    mem_limit: 512m
-    pids_limit: 128
+  # O que se perde é a atualização independente: subir a versão do gerador agora
+  # é um rebuild. O que se ganha é uma imagem a menos para quem instala, e a
+  # única forma que cabe na nuvem. A versão continua pinada com sha256 em
+  # `vendor/potprovider.pin`, plugin e gerador na mesma major -- 1.3.x continua
+  # fora por causa do mesmo RCE (GHSA-qpv9-8xfj-xx9m).
+  #
+  # `WARDEN_POT_URL` continua sendo lida: declare-a se você tiver um servidor
+  # próprio de pé e quiser que ele ganhe do script.
 
 volumes:
   agent-home:

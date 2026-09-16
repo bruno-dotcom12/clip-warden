@@ -18,3 +18,24 @@
 version=2.0.0
 url=https://files.pythonhosted.org/packages/29/38/fd54194c03f6636488343d4c49e96ce2fe8ecd228c0cf7ce4d024ab7d52b/bgutil_ytdlp_pot_provider-2.0.0-py3-none-any.whl
 sha256=22884c399802771ddfd9275bb05b178d67c89db67a1d5d1e17ed7f681956628e
+
+# E o GERADOR, que é a outra metade e não vem no wheel.
+#
+# O wheel acima é só o PLUGIN cliente: ele sabe pedir um token e não sabe
+# emitir. Até 16/09/2026 quem emitia era um SEGUNDO CONTAINER
+# (brainicism/bgutil-ytdlp-pot-provider), servidor Node escutando 4416.
+#
+# A nuvem da Plow roda UM container por pessoa e o contrato dela proíbe, com
+# essas palavras, "no inbound listener". Então o gerador entra aqui, na mesma
+# imagem, no modo SCRIPT: o plugin executa um processo Node quando precisa de
+# um token, e nada escuta porta nenhuma.
+#
+# Mesma major do plugin, e isso é obrigatório: o README deles diz que major
+# diferente entre plugin e gerador é FATAL (`PoTokenProviderRejectedRequest`,
+# nenhum token). 1.3.x continua fora de questão pelo mesmo RCE de cima.
+#
+# O commit é o da tag 2.0.0, e o sha256 é do tarball do GitHub -- pelo mesmo
+# motivo do wheel: isto é código que roda dentro de um agente com credencial
+# viva.
+server_sha=37169ee2656e08c5c2e5dc9df4c598c0cb4c88a8
+server_sha256=aa92bac728aebe2d3dbf2081b27523da95ef0fbc6a97540b44b398ba5383ccc6
