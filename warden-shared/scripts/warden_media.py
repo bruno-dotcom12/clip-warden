@@ -39,6 +39,14 @@ import warden_beat
 import warden_rules as R
 import warden_style as S
 
+# Quanto o corte pode andar para fechar a frase que ele parte ao meio, e o
+# menor clipe que vale a pena entregar quando ele anda para trás. Seis segundos
+# porque o caso medido em 16/09/2026 pedia 4,9s; acima disso já não é fechar uma
+# frase, é entregar outro clipe. Oito porque abaixo disso não há hook (3s) mais
+# fala que sustente o corte.
+TETO_DA_FRASE_S = 6.0
+MIN_DA_FRASE_S = 8.0
+
 TIMEOUT_DOWNLOAD = 900
 TIMEOUT_RENDER = 900
 TIMEOUT_FETCH = 60
@@ -4554,6 +4562,86 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         if pedido is not None:
             venceu_o_pedido = f"video.duration_min_s = {lo}"
         length = float(lo)
+
+    # ---- a frase que o corte parte ao meio, fechada AQUI ----
+    #
+    # Medido em 16/09/2026, no primeiro lote que saiu com legenda de verdade: o
+    # portão de estilo REPROVA um clipe que termina no meio da frase, e reprovou
+    # 2 de 2. O conserto que ele pedia era re-renderizar com outro `--end` --
+    # uma volta inteira, para um dono que roda isto numa chamada de tela
+    # compartilhada e cuja regra de 16/09 é "o mais rápido possível". Era também
+    # a origem da frase que ele mandou nunca mais escrever: "Ends at ~106s to
+    # not cut the sentence — vou usar end=106."
+    #
+    # A ferramenta já sabe onde a frase fecha: é o fim da cue que o `--end`
+    # corta ao meio. Então ela fecha sozinha, sem perguntar e sem uma segunda
+    # renderização.
+    #
+    # DOIS sentidos, e o segundo não é luxo: a janela do `lote` é extraída com
+    # cerca de dois segundos de folga de cada lado, então esticar quase nunca
+    # cabe no arquivo. Medido no caso real: a frase fechava 4,9s depois e só
+    # havia 2,0s de material. Quando não dá para ir à frente, o corte VOLTA para
+    # o fim da última frase inteira -- um clipe de 17s que fecha a frase é o
+    # produto, e um de 20s que fecha em "…Aí se" é uma reprovação.
+    #
+    # `venceu_o_pedido` é o que já existia para "a campanha obrigou a sair do
+    # número pedido": o portão de duração passa com a nota dizendo o porquê, em
+    # vez de reprovar um desvio que a própria ferramenta escolheu.
+    if (caption_srt and pedido is not None and not shots
+            and os.path.isfile(caption_srt)):
+        try:
+            _ficha, _ = origem_da_janela(source)
+            _zero = float((_ficha or {}).get("source_start") or 0.0)
+            _rows = _read_srt(caption_srt)
+        except Exception:
+            _rows = []
+        _fim = _zero + float(start) + length if _rows else None
+        _parte = [r for r in _rows if r["start"] < _fim < r["end"]] if _rows else []
+        if _parte:
+            _cabe = duration_of(source)
+            _sobra = float(_parte[0]["end"]) - _fim
+            _pode = (0.05 < _sobra <= TETO_DA_FRASE_S
+                     and (hi is None or length + _sobra <= hi)
+                     and (not _cabe or float(start) + length + _sobra <= _cabe - 0.05))
+            if _pode:
+                notes.append(
+                    f"extended {_sobra:.1f}s past the {pedido:.0f}s asked for, to "
+                    f"{length + _sobra:.1f}s, because the cut landed in the middle "
+                    f"of a sentence and that sentence closes there."
+                    + (f" Say it to the person in ONE clause about what they "
+                       f"will see -- \"ficou {_sobra:.0f} segundos mais longo "
+                       f"para não cortar a frase no meio\" -- and never with the "
+                       f"word cue in it." if _sobra >= 1.0 else
+                       " Under a second: say NOTHING about it. A person does not "
+                       "want to read that a clip is 0.4s longer than they asked."))
+                length += _sobra
+                venceu_o_pedido = ("the cut was splitting a sentence and it "
+                                   "closes there")
+            else:
+                # Para trás: o fim da última cue que fecha frase de verdade.
+                _fecham = [r for r in _rows
+                           if r["end"] <= _fim
+                           and (r.get("text") or "").rstrip().endswith(
+                               (".", "!", "?", "…", '."', '?"', '!"'))]
+                _piso = max(float(lo) if lo is not None else 0.0, MIN_DA_FRASE_S)
+                if _fecham:
+                    _novo = float(_fecham[-1]["end"]) - (_zero + float(start))
+                    _corta = length - _novo
+                    if 0.05 < _corta <= TETO_DA_FRASE_S and _novo >= _piso:
+                        notes.append(
+                            f"pulled back {_corta:.1f}s from the {pedido:.0f}s "
+                            f"asked for, to {_novo:.1f}s, because the cut landed "
+                            f"in the middle of a sentence and there was no room "
+                            f"in this window to reach its end. This one closes "
+                            f"the last whole sentence instead."
+                            + (f" Say it to the person in ONE clause -- \"ficou "
+                               f"{_corta:.0f} segundos mais curto para não cortar "
+                               f"a frase no meio\"." if _corta >= 1.0 else
+                               " Under a second: say NOTHING about it."))
+                        length = _novo
+                        venceu_o_pedido = ("the cut was splitting a sentence and "
+                                           "this window had no room to reach its "
+                                           "end")
 
     # An edit is cut to the bar, and it is cut to the bar even when the file
     # ships silent. The platform's own sound player starts where you tell it,
