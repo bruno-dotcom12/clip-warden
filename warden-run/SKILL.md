@@ -5,141 +5,96 @@ description: The whole path from one message to finished clips. Use when someone
 
 # One message in, clips out
 
-Someone sends a link, or asks you to go find a campaign. What comes back is
-files they can upload, with the caption to paste. Everything between is yours.
+**Answer in the language the person wrote to you in**, every message, including
+the first. No sentence in this repository is a line to copy out.
 
-**Before you run a single command: send `Em produção.`** Two words, on their own,
-the instant you have the link and know what they want. Then work without
-stopping. Measured 15/09: the owner waited ten minutes with no sign the request
-had been received, because the first line only went out after the work had
-already started.
+**Before you run a single command, send ONE short line saying you are on it** —
+two or three words, the instant you have the link and know what they want. Then
+work without stopping. Measured 15/09: the owner waited ten minutes with no sign
+the request had arrived.
 
 **And nothing you do after that is a message.** Not which window you picked, not
-that a clip was approved, not a second you adjusted. The owner's words about one
-of those: *"uma mensagem nada a ver que eu como usuário não quero ler, porque
-primeiro não entendo e não quero saber."*
+that a clip was approved, not a second you adjusted.
 
-**The order of work is written in `warden-clip`, at the top of that file, and
-nowhere else.** Not here, not in the persona, not in the README. This skill is
-the front door -- what happens at each door -- and it does not carry a second copy
-of the order, because the second copy is the one that goes stale and the model
-obeys whichever it reads first.
+**The order of work is in `warden-clip`, at the top of that file, and nowhere
+else.** This skill is the front door; a second copy of the order is the one that
+goes stale.
 
 ## 1. The campaign
 
 A link: `warden-campaign` turns it into a stored rule set.
 
-No link, they want you to look: ask the search questions first.
-`warden prefs ask --group search` lists only the ones not answered yet, which is
-which audience they post to, what footage they can actually work with, where they
-post, and what makes a campaign worth their time. Ask them in ONE numbered message, never one at a time -- the persona's rule
-about that covers these too -- store each with `warden prefs set`, and never ask
-a second time. This is the one place questions still belong before a search,
-because nobody can measure what a person wants to spend their afternoon on. It
-does not reopen the question of clips: the count and the length are still the
-only thing ever asked before a cut.
+No link, they want you to look: `warden prefs ask --group search` lists only the
+questions not answered yet. Ask them in ONE numbered message, never one at a
+time, store each with `warden prefs set`, and never ask twice.
 
-Then `warden discover`, which returns the public campaign directories as text
-with those answers printed on top. The filtering is yours: read the listings,
-keep what matches what they told you, and come back with a short list of what is
-open, what it pays, and what footage it gives you, with the link to each. Three
-or four options, not thirty, and say plainly which one you would take and why.
-Then wait. You are choosing where their next hours go, and that is their call.
+Then `warden discover` returns the public directories as text and the filtering
+is yours: three or four options, what each pays, what footage it gives, the link
+to each, and which one you would take and why. Never describe a campaign you
+did not read. **Then wait — the choice is theirs.**
 
-If a search answer is still missing, the command says so and you do not filter on
-it. If a page could not be read, say which and move on. Never describe a campaign
-you did not read.
+**When a search answer is still missing, the command says so and you do not
+filter by it**; you never invent the criterion. When a page did not open, say
+which and move on.
 
-## 2. Nothing to ask
+## 2. What is never asked
 
-**Do not run `warden prefs ask --group edit` before the first clip.** Every edit
-preference has a default now, and the command says so. The persona's single
-question -- how many clips and how long, and only when the message names neither
--- is the only question that may come before a clip.
+Every edit preference has a default:
 
-`warden prefs show --campaign <id>` is read SILENTLY, for what the campaign
-overrules. You repeat that to them in one clause alongside the clip, not as a
-question: "essa campanha põe o som na plataforma, então esses saem mudos."
+| | |
+|---|---|
+| how many | 2 |
+| how long | 20s, inside the campaign's limits |
+| sound | what the campaign says, else the original |
+| language of hook and captions | **the video's own**, never translated unless they ask |
+| captions | burn them; footage that already has burned text gets ONE set, and `cut` measures that |
+| the moments | you choose them; no approval round trip |
+| bars, for an edit on the beat | the count closest to the duration asked; you say which you took |
 
-Store a preference only when the person volunteers one (`warden prefs set`).
+**Do not run `warden prefs ask --group edit` before the first clip.** The
+persona's single question — how many clips and how long, and only when the
+message names neither — is the only one that may come before a cut. `warden
+prefs show --campaign <id>` is read SILENTLY: what the campaign overrules is one
+clause alongside the clip, never a question.
 
 ## 3. Footage, text, moments
 
-`warden-clip` is the whole of it: which command, in which order, with the
-measured reason for each. Do not work from a summary of it, and do not write one
-here.
-
-The gate is in `warden-clip` 1, and it is one sentence there: a link someone
-sent you is authorised by their having sent it. Do not restate the mechanics
-here; that is the summary this section just told you not to write.
-
-Render the moments you chose. There is no approval round trip.
+`warden-clip` is the whole of it, in order, with the measured reason for each.
+Do not work from a summary and do not write one here. There is no approval
+round trip: render the moments you chose.
 
 ## 4. Render and send
 
-`warden lote` is the short road and it is the default one: `lote prep <url>`
-gives you the words, the signals and the defaults in one output, and `lote render`
-cuts the windows, writes one combined contact sheet and prints every
-`MEDIA:` line at the end. Use `warden cut` directly only for a single odd clip.
+`warden lote prep` then `warden lote render` is the road; `warden cut` directly
+is for a single odd clip. **Both go in the BACKGROUND, and how to wait for them
+is in `warden-clip`, at the top.**
 
-**Both of them go in the BACKGROUND, always.** The rule, and the 16/09
-measurement behind it, are in `warden-clip` at the top of that file and nowhere
-else. This line exists only so nobody reaches this section and runs them here
-the other way.
+Three rules live in `warden-clip` and nowhere else, and none is ever a question
+to the person: the duration they named (`--seconds <n>`, 5b), who signs the
+captions (5), and **`warden delivered` before you render anything** ("Deliver
+first, cut second"). The contact sheet is not a step: a warning about anything
+but the hook and the caption is repassed in ONE line beside the clip.
 
-The length rule: when THEY said a number of seconds it goes on the command line
-as `--seconds <n>`. When nobody named one, `cut` uses the stored default and
-prints which number it used and where it came from. You repeat that number only
-if it differs from what they asked for. Why, and what it cost, is in
-`warden-clip` 5b.
+**A gate that names a fix gets ONE attempt at it**, and then you hand over what
+cleared and say in one line what you could not do. Captions are the exception: a
+clip without the words is not the product.
 
-Who signs the captions -- the tool on the `lote` road, you on the `cut` road --
-is written in `warden-clip` 5, "Who signs the captions", and nowhere else. Read
-it there. It is never a question to the person.
+**Fix what the gate named. Never drop what was asked for.** Dropping `--hook`,
+swapping the srt for the approval signature or trading `--seconds` for
+`--any-length` until nothing complains ships a clip missing the product: 15/09,
+both clips went out with no captions and no hook.
 
-**One re-cut, then you deliver.** The owner's rule of 16/09 is as fast as
-possible at the minimum quality that ships: he runs this on a screen-share call.
-So a gate that names a fix gets ONE attempt at that fix; after it, you hand over
-what cleared and say in one line what you could not do. The single exception is
-captions — a clip without the words is not the product, and those turns are worth
-spending.
-
-**When a gate refuses, fix what it named. Never drop what was asked for.**
-Dropping `--hook`, swapping the srt for the approval signature, or trading
-`--seconds` for `--any-length` until nothing complains delivers a clip missing
-the product. That happened on 15/09 and both clips went out with no captions and
-no hook. If you cannot satisfy the gate with everything they asked for, say which
-one you could not do, in one line, and hand over what you have.
-
-**You do NOT open the contact sheet before you send.** That was the rule until
-16/09/2026 and the owner took it out that day, in these words, when I asked him
-whether the mosaic should stay mandatory: *"2 = entrega sem olhar, sua unica
-obrigacao = hook e legenda"*. The two vision calls of that request cost 31s of
-706s, on a screen-share call. So `cut` still writes the sheet, still prints
-`SHEET:`, and no longer withholds `MEDIA:` for it.
-
-Your obligation is two things: the hook and the caption. When the tool WARNS
-about something else in its output — a suspect caption line, possible text the
-footage already carries — you repass that warning in ONE line in the same
-message as the clip, and the person decides. You do not investigate it yourself.
-What that costs, and the checklist for whoever does look, is in `warden-clip` 6.
-
-**How a file is handed over is written in the persona, under "Handing the file
-over", and it is written there and nowhere else.** Read it there before you end
-a turn that carries a clip. Nothing about it is repeated here, because a second
-copy is the one that goes stale.
-
+**How a file is handed over is in the persona, under "Handing the file over".**
 With every clip goes the caption from `warden-package` and the one thing they do
-on the platform, which is almost always the sound.
+on the platform, almost always the sound.
 
 ## 5. Afterwards
 
-When they say they posted one, run `warden log`: the campaign's cap is counted
-from that ledger and a clipper past the cap is working for free. Do not ask which
-ones they posted.
+When they say they posted one, run `warden log`: the cap is counted from that
+ledger and a clipper past it works for free. Do not ask which they posted.
 
 ## What you never do
 
 Take footage nobody sent you. State a number you did not get from `warden`. Fill
-a rule the brief did not state. Ask for a licence, for rights, or for permission
+a rule the brief did not state. Ask for a licence, for rights or for permission
 to caption.

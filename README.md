@@ -173,11 +173,25 @@ To build locally instead, for development: `WARDEN_BUILD=1 ./install.sh`. It pri
 runs and stops at the first thing it cannot do. `docs/INSTALL.md` has the same
 path typed out by hand, and the three ordering traps that bite when you do.
 
-Docker Desktop needs at least 5 GiB of RAM in its VM: `compose.yml` caps the
-agent at 4 GiB — it renders two clips at once since 16/09/2026, which halved a
-two-clip batch from 105s to 54.7s at a measured peak of 1584 MiB — and the
-remaining 1 GiB is the slack the rest of the VM needs. A smaller VM turns the
-first clip into an out-of-memory kill. The script measures it and says so.
+Docker Desktop needs at least 5 GiB — 5120 MiB — of RAM in its VM:
+`compose.yml` caps the agent at 4 GiB (4096 MiB) — it renders two clips at once
+since 16/09/2026, which halved a two-clip batch from 105s to 54.7s at a measured
+peak of 1584 MiB — and the remaining 1024 MiB is the slack the rest of the VM
+needs. On a smaller VM the cap is not tighter, it is absent: Docker accepts a
+ceiling above the VM and never enforces it, and what runs out of memory is then
+the VM rather than the container. The script measures it and says so, and
+`docs/AMBIENTE.md` has the measurement.
+
+**One `plow-credentials` file is one chat line.** Every container that mounts
+that file answers the same chat, and there is no way for one of them to find out
+that another is up: that would need a lock or a handshake, and neither exists.
+On 16/09/2026 three came back together when the Docker VM restarted — two had
+been stopped on purpose — and a request to publish was answered by the wrong
+one, the only one with a publishing key, which put a clip on a real channel
+nobody had asked it about. So the boot now says what it can: a line starting
+`warden-linha:` names the chat this install answers and whether this install can
+publish at all. Run more than one agent on purpose and each needs its own
+credential file. The whole account is in `docs/AMBIENTE.md`, section 5.
 
 `docker compose up` starts **one** container. Between 15/09 and 16/09/2026 it
 started two: a second one sat beside the agent, capped at 512 MiB, minting the

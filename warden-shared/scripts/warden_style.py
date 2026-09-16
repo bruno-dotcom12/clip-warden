@@ -432,15 +432,15 @@ def split_acento(texto):
     # literais; o resto exige uma fuga que este hook não tem.
     bruto = str(texto or "")
     marcas = [n for n, ch in enumerate(bruto) if ch == MARCA_ACENTO]
-    escreva_assim = (f"A marca de acento é um PAR em volta da palavra: "
-                     f"`{MARCA_ACENTO}assim{MARCA_ACENTO}`, colada na palavra e "
-                     f"com espaço por fora. Não existe asterisco literal num "
-                     f"hook -- se o asterisco é para aparecer na tela, ele não "
-                     f"pode estar aqui.")
+    escreva_assim = (f"The accent mark is a PAIR around the word: "
+                     f"`{MARCA_ACENTO}like_this{MARCA_ACENTO}`, tight against "
+                     f"the word and spaced on the outside. There is no literal "
+                     f"asterisk in a hook -- if the asterisk is meant to show "
+                     f"on screen, it cannot be here.")
     if len(marcas) % 2:
         raise RuntimeError(
-            f"o hook tem {len(marcas)} asterisco(s), que é ímpar, então há uma "
-            f"marca de acento aberta e nunca fechada: {bruto!r}. " +
+            f"the hook has {len(marcas)} asterisk(s), an odd number, so one "
+            f"accent mark was opened and never closed: {bruto!r}. " +
             escreva_assim)
     for abre, fecha in zip(marcas[0::2], marcas[1::2]):
         dentro = bruto[abre + 1:fecha]
@@ -2191,15 +2191,25 @@ def _duration(path):
 # O checklist que acompanha todo contact sheet. Curto e objetivo de propósito:
 # uma lista longa não é olhada, e cada item aqui corresponde a um defeito medido
 # no clipe que foi reprovado.
+#
+# EM INGLÊS, como o resto da saída do render, e por medição: em 16/09/2026 estes
+# oito itens saíram em português dentro de um bloco em inglês, numa conversa em
+# inglês (state.db id 69; logs-7a/container/render-outs.txt, bloco do render 1).
+# São as ÚLTIMAS linhas que o modelo lê antes de escrever, e a prosa que ele
+# escreveu saiu em português (msg 21, 14:51:58, "Em produção.").
+#
+# Isto não é texto para a pessoa: é a conferência que o modelo faz olhando o
+# mosaico. Quem escolhe a língua da conversa é a pessoa, e o modelo responde
+# nela; a ferramenta fala uma língua só, a dela.
 CHECKLIST = [
-    "o hook cabe inteiro no quadro, sem corte lateral, em no máximo duas linhas",
-    "o hook SAIU da tela: está nos primeiros quadros do mosaico e não nos últimos",
-    "a legenda tem no máximo duas linhas",
-    "nenhuma cue termina no meio da frase (preposição, artigo, conjunção)",
-    "o destaque amarelo acompanha a fala, não a cue inteira acesa de uma vez",
-    "não há duas legendas no mesmo quadro",
-    "não há moldura, borda de material ou texto de terceiro cortado nas bordas",
-    "o rosto do sujeito não está coberto por texto",
+    "the hook fits whole in frame, no side crop, at most two lines",
+    "the hook LEFT the screen: it is in the first frames of the sheet, not the last",
+    "the caption is at most two lines",
+    "no cue ends mid-sentence (on a preposition, article or conjunction)",
+    "the yellow highlight follows the speech, not the whole cue lit at once",
+    "there are no two captions in the same frame",
+    "no frame, letterbox edge or third-party text cropped at the borders",
+    "the speaker's face is not covered by text",
 ]
 
 
@@ -2470,7 +2480,7 @@ def _cut_interval(video, dur):
              "select='gt(scene,0.4)',metadata=print", "-f", "null", "-"],
             capture_output=True, text=True, timeout=180)
     except Exception as exc:
-        return None, f"o detector de cena não rodou ({type(exc).__name__})"
+        return None, f"the scene detector did not run ({type(exc).__name__})"
     if done.returncode != 0:
         cauda = (done.stderr or "").strip().splitlines()[-1:]
         return None, ("o detector de cena saiu com erro"
@@ -2487,8 +2497,8 @@ def _scale_variation(frames):
     interessa quanto, interessa se houve.
     """
     if len(frames) < 2:
-        return None, (f"só {len(frames)} quadro(s) abriram deste arquivo, e "
-                      f"variação de escala se mede entre dois")
+        return None, (f"only {len(frames)} frame(s) opened from this file, and "
+                      f"scale drift is measured between two")
     from PIL import ImageChops
     a = frames[0].resize((160, 284))
     b = frames[-1].resize((160, 284))
@@ -2532,9 +2542,9 @@ def consolidate(measurements):
 LIMITS = {
     "scale_variation": (
         0.02, None,
-        "variação de escala ao longo do clipe. Zero é um trecho bruto de vinte "
-        "segundos com texto por cima. Separa limpo: 0,12 a 0,83 nos vinte "
-        "aprovados, 0 num corte sem movimento."),
+        "scale drift across the clip. Zero is a raw twenty-second stretch "
+        "with text over it. It separates cleanly: 0.12 to 0.83 across the "
+        "twenty approved clips, 0 on a cut with no movement."),
 }
 
 # Medidas que saem no relatório e não reprovam ninguém. A lista é longa de
@@ -2664,17 +2674,42 @@ def check_sidecar(side):
         # A última delas é o CORTE, não a legenda. Mandar re-quebrar a legenda
         # aqui é mandar consertar o lugar errado: não existe palavra seguinte
         # dentro do clipe para a cue alcançar.
+        # NENHUM conselho pode repetir o número que já está no corte.
+        #
+        # Esta frase era montada sem guarda para `falta <= 0` e saiu assim, duas
+        # vezes idênticas, nos renders 2 e 3 de 16/09/2026
+        # (logs-7a/container/render-outs.txt:127 e :169):
+        #
+        #   That sentence closes 0.0s later, at 30.0s: cut 30.0s instead of
+        #   30.0s, or move the start so it fits in the number that was asked for.
+        #
+        # O portão reprovava e mandava fazer exatamente o que já estava feito.
+        # Custou 2 renders (~150s de CPU) e 2 laços de espera (~523s) em cima de
+        # uma instrução que não dizia nada, e todo re-corte nascia reprovado.
+        #
+        # `falta <= 0.05` quer dizer que as palavras que existem acabam JUNTO com
+        # o corte: daqui não dá para saber onde a frase fecha, porque não há
+        # texto depois dela. Um `--end` maior não tem o que alcançar, e a saída
+        # é outra -- mover o COMEÇO, ou escolher uma janela que termine em ponto.
         fecha = cap.get("sentence_closes_at_s")
+        dur = float(side["duration_s"]) if side.get("duration_s") else None
         onde = ""
-        if fecha and side.get("duration_s"):
-            falta = float(fecha) - float(side["duration_s"])
-            onde = (f" That sentence closes {falta:.1f}s later, at {fecha:.1f}s: "
-                    f"cut {fecha:.1f}s instead of {float(side['duration_s']):.1f}s, "
-                    f"or move the start so it fits in the number that was asked "
-                    f"for. When the extra second is the right trade, say it to "
-                    f"the person in ONE line about what they will see -- \"ficou "
-                    f"um segundo mais longo para não cortar a frase no meio\" -- "
-                    f"and never with the word cue in it.")
+        if fecha and dur:
+            falta = float(fecha) - dur
+            if falta > 0.05:
+                onde = (f" That sentence closes {falta:.1f}s later, at "
+                        f"{float(fecha):.1f}s: cut {float(fecha):.1f}s instead "
+                        f"of {dur:.1f}s, or move the start so it fits in the "
+                        f"number that was asked for. When the extra second is "
+                        f"the right trade, say so to the person in ONE clause, "
+                        f"in THEIR language, about what they will see -- and "
+                        f"never with the word cue in it.")
+            else:
+                onde = (" The words that exist end WITH this cut, so nothing "
+                        "here can say where that sentence closes: a longer "
+                        "--end has nothing to reach, and the same numbers would "
+                        "come back. Move the START, or choose a window that "
+                        "ends on a full stop.")
         out.append(("REJECT",
                     f"this clip ENDS mid-sentence, on \"…{pendurados[-1]}\". The "
                     f"speech goes on past --end, so the last thing the viewer "
@@ -2777,12 +2812,12 @@ def check_against(measured, spec):
             # antigo dava `continue` e o comando terminava dizendo "dentro da
             # faixa em todas as métricas aplicadas", que era verdade e era vazio:
             # nenhuma foi aplicada. Falta de medição não é aprovação.
-            porque = measured.get(name + "_why") or "não foi medido"
+            porque = measured.get(name + "_why") or "it was not measured"
             out.append(("REJECT",
-                        f"{name} não pôde ser medido ({porque}), e é o único "
-                        f"limite que reprova alguma coisa. Sem ele este comando "
-                        f"não tem opinião sobre este arquivo -- não trate o "
-                        f"silêncio como aprovação."))
+                        f"{name} could not be measured ({porque}), and it is "
+                        f"the only limit that rejects anything. Without it this "
+                        f"command has no opinion about this file -- do not read "
+                        f"the silence as approval."))
             continue
         band = ranges.get(name) or {}
         contexto = (f" (approved clips: {band['min']}–{band['max']})"
@@ -2974,43 +3009,45 @@ def cross_check(side, medida):
             if side is None:
                 porque = ("sem -estilo.json ao lado para cruzar")
             elif not (side or {}).get("hook"):
-                porque = ("o -estilo.json está aqui, mas este clipe foi cortado "
-                          "SEM hook, então não há largura medida pelo PIL para "
-                          "cruzar com ela")
+                porque = ("the -estilo.json is here, but this clip was cut "
+                          "with NO hook, so there is no PIL-measured width to "
+                          "cross it with")
             else:
-                porque = ("o -estilo.json tem hook mas não anotou a largura "
-                          "útil (`usable_px`), então não há com o que cruzar")
-            out.append(("note", f"text_width_ratio: {px} medido nos pixels, "
-                                f"{porque}. Sozinho ele não reprova: erra para "
-                                f"mais em material com muito contraste."))
+                porque = ("the -estilo.json has a hook but never wrote down the "
+                          "usable width (`usable_px`), so there is nothing to "
+                          "cross it with")
+            out.append(("note", f"text_width_ratio: {px} measured in pixels, "
+                                f"{porque}. On its own it does not reject: it "
+                                f"over-reports on high-contrast material."))
         return out
     nosso = largura / float(util)
     if px > 1.0 and nosso > 1.0:
         out.append(("REJECT",
-                    f"largura de texto acima do quadro nos DOIS instrumentos: "
-                    f"{px} medido nos pixels do arquivo e {nosso:.2f}x medido "
-                    f"pelo PIL no hook ({largura}px contra {util}px úteis). "
-                    f"Dois instrumentos com cegueiras diferentes apontando o "
-                    f"mesmo lugar é a única leitura em que a métrica de pixel "
-                    f"vota."))
+                    f"text wider than the frame on BOTH instruments: {px} "
+                    f"measured in the file's pixels and {nosso:.2f}x measured "
+                    f"by PIL on the hook ({largura}px against {util}px usable). "
+                    f"Two instruments with different blind spots pointing at "
+                    f"the same place is the only reading where the pixel metric "
+                    f"gets a vote."))
     elif px > 1.0:
         out.append(("note",
-                    f"os dois instrumentos discordam: os pixels dizem "
-                    f"{px} de largura e o PIL diz que o hook cabe "
-                    f"({nosso:.2f}x, {largura}px de {util}px). O PIL mediu com a "
-                    f"fonte real antes de desenhar, então o hook está bem -- o "
-                    f"que está largo é outra coisa no quadro. Texto queimado do "
-                    f"próprio material, legenda de outro clipador, ou um "
-                    f"letreiro com muito contraste. Olhe as bordas no mosaico."))
+                    f"the two instruments disagree: the pixels say {px} wide "
+                    f"and PIL says the hook fits ({nosso:.2f}x, {largura}px of "
+                    f"{util}px). PIL measured with the real typeface before "
+                    f"drawing, so the hook is fine -- what is wide is something "
+                    f"else in the frame. Text burned into the material itself, "
+                    f"another clipper's captions, or a high-contrast title "
+                    f"card. Look at the edges in the mosaic."))
     elif nosso > 1.0:
         out.append(("note",
-                    f"os dois instrumentos discordam ao contrário: o PIL diz "
-                    f"que o hook não cabe ({nosso:.2f}x) e os pixels não viram "
-                    f"({px}). O PIL manda, e o REJECT dele já está acima; os "
-                    f"pixels perdem hook claro sobre fundo claro."))
+                    f"the two instruments disagree the other way: PIL says the "
+                    f"hook does not fit ({nosso:.2f}x) and the pixels did not "
+                    f"see it ({px}). PIL wins, and its REJECT is already above; "
+                    f"the pixel metric loses a light hook on a light "
+                    f"background."))
     else:
-        out.append(("ok", f"largura de texto confere nos dois: {px} nos pixels, "
-                          f"{nosso:.2f}x no hook medido pelo PIL"))
+        out.append(("ok", f"text width agrees on both: {px} in the pixels, "
+                          f"{nosso:.2f}x on the hook measured by PIL"))
     return out
 
 
@@ -3054,7 +3091,7 @@ def fala_comeca(source, start=0.0, length=None):
     try:
         feito = subprocess.run(args, capture_output=True, text=True, timeout=300)
     except Exception as exc:
-        return [], f"o detector de fala não rodou ({type(exc).__name__})"
+        return [], f"the speech detector did not run ({type(exc).__name__})"
     if feito.returncode != 0:
         cauda = (feito.stderr or "").strip().splitlines()[-1:]
         return [], ("o detector de fala saiu com erro"
@@ -3068,7 +3105,7 @@ def fala_comeca(source, start=0.0, length=None):
         achados = [0.0] + achados
     achados = sorted(set(round(float(start) + a, 3) for a in achados))
     if not achados:
-        return [], "nenhum começo de fala foi detectado neste trecho"
+        return [], "no speech onset was detected in this stretch"
     return achados, None
 
 
@@ -3100,7 +3137,7 @@ def encaixa_na_fala(cues, onsets, janela=ENCAIXE_JANELA_S,
     if not cues or not onsets:
         return cues, {"onsets": len(onsets or []), "encaixadas": 0,
                       "atraso_mediano_antes": None, "atraso_mediano_depois": None,
-                      "porque": "nenhum começo de fala para encaixar"}
+                      "porque": "no speech onset to snap to"}
     onsets = sorted(float(o) for o in onsets)
 
     def perto(t):

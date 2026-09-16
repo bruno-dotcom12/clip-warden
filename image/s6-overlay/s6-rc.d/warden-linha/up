@@ -1,0 +1,1 @@
+/command/with-contenv /command/s6-setuidgid hermes /opt/hermes/.venv/bin/python3 /etc/s6-overlay/scripts/warden-linha

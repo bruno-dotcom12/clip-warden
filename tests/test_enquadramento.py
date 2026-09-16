@@ -264,7 +264,10 @@ class ADecisaoEAritmetica(unittest.TestCase):
     def test_video_normal_segue_o_caminho_de_sempre(self):
         modo, porque = M.decide_enquadramento([0.1, 0.12, 0.09, 0.15], True)
         self.assertEqual(modo, "normal")
-        self.assertIn("vídeo normal", porque)
+        # A saída do warden é INGLÊS de propósito (quem a lê é o modelo):
+        # warden_media.py:4189-4190. A agulha segue o texto, o comportamento
+        # é o mesmo.
+        self.assertIn("this is ordinary video", porque)
 
     def test_tela_com_webcam_vira_dividido(self):
         modo, porque = M.decide_enquadramento([0.6, 0.7, 0.55, 0.12], True)
@@ -277,7 +280,7 @@ class ADecisaoEAritmetica(unittest.TestCase):
         medidas = [0.6, 0.6, 0.6] + [0.1] * 7          # 30%, faixa de dúvida
         modo, porque = M.decide_enquadramento(medidas, True)
         self.assertEqual(modo, "dividido")
-        self.assertIn("DÚVIDA", porque)
+        self.assertIn("DOUBTFUL band", porque)
 
     def test_abaixo_da_duvida_nao_divide(self):
         medidas = [0.6] + [0.1] * 9                     # 10%
@@ -290,7 +293,7 @@ class ADecisaoEAritmetica(unittest.TestCase):
         A webcam de canto é o que separa uma coisa da outra."""
         modo, porque = M.decide_enquadramento([0.6, 0.7, 0.8, 0.1], False)
         self.assertEqual(modo, "normal")
-        self.assertIn("não muda", porque)
+        self.assertIn("does not change", porque)
         self.assertIn("--crop", porque, "tem de dizer o que fazer")
 
     def test_duvida_sem_webcam_fica_no_caminho_de_sempre(self):
@@ -300,7 +303,7 @@ class ADecisaoEAritmetica(unittest.TestCase):
     def test_sem_quadro_nenhum_nao_inventa_um_veredito(self):
         modo, porque = M.decide_enquadramento([], True)
         self.assertEqual(modo, "normal")
-        self.assertIn("ninguém olhou", porque)
+        self.assertIn("nobody looked", porque)
 
     def test_sem_detector_a_detecao_nao_para_o_corte(self):
         """Na máquina sem OpenCV a pergunta não se responde -- e `quadros`
@@ -312,7 +315,7 @@ class ADecisaoEAritmetica(unittest.TestCase):
         saiu = M.tela_compartilhada("/nao/existe.mp4", 0, 5)
         self.assertEqual(saiu["modo"], "normal")
         self.assertIsNone(saiu["quadros"])
-        self.assertIn("sem detector de rosto", saiu["porque"])
+        self.assertIn("without a face detector", saiu["porque"])
 
 
 class OLayoutNaoCobreALegenda(unittest.TestCase):

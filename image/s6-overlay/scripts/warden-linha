@@ -1,0 +1,124 @@
+#!/opt/hermes/.venv/bin/python3
+"""Say, once at boot, that this install's Plow line can be shared -- and with what.
+
+WHY THIS EXISTS
+---------------
+Measured on 16/09/2026 (logs-7a/ACHADOS-FASE-1.md, "Achados da SEGUNDA
+coleta" section 8). At 15:08:1x UTC three containers came up together --
+`warden-7a`, `clip-warden-agent-1` and `clip-warden-nuvem` -- each binding the
+SAME `./plow-credentials` file from the host, so all three answered the SAME
+chat `cht_knqXxEnmlk01lLC_--xjPw`. Two of them had been stopped on purpose; they
+came back with the Docker VM.
+
+At 15:16:45 somebody wrote "Publish the last clip in YouTube". The agent that
+answered was not the one the person was talking to: it was
+`clip-warden-agent-1`, the one holding `WARDEN_POST_API_KEY` and
+`WARDEN_POST_PROFILE=Clip-Warden`. At 15:17:23 it published to a real channel.
+Nobody had asked THAT agent for anything. The collision was only found at 15:20,
+by running `docker ps` as forensics.
+
+Nothing in this repository said a word about it -- not the compose file, not the
+boot, not the tool output. This service is the boot half of that.
+
+WHAT THIS IS NOT: A DETECTION
+-----------------------------
+There is no way, from inside a container, to learn that another install is up
+right now. It would take a lock or a handshake, and there is neither: the Plow
+response that names this agent's home channel does not say who else is on it.
+So this warning never claims another install is running. It states the three
+things that ARE checkable here, and says plainly that it cannot know the rest.
+A warning that overstates is a warning people learn to skip.
+
+WHAT IT CHECKS
+--------------
+(a) The credential came from a bind mount -- `/var/lib/plow/credentials.host`
+    exists, put there by `compose.yml`'s `./plow-credentials` volume and copied
+    into place by `image/cont-init.d/005-plow-credential`. A file on the host is
+    the shareable thing: ANY other container that binds it lands on this chat.
+    On Plow's own cloud there is no such file (the credential arrives in the
+    environment), and then this service says nothing at all.
+(b) `PLOW_HOME_CHANNEL`, exported by plow-init into
+    /run/s6/container_environment (plow-init.py:986-998) and reaching us
+    through `with-contenv`. Naming the chat is the point: three containers
+    logging "shared line" without an id is three log lines nobody can match.
+(c) `WARDEN_POST_API_KEY` and `WARDEN_POST_PROFILE`. That pair is what turned a
+    collision into a publication. The key alone means this install CAN publish;
+    the pinned profile means it publishes to one named, already-connected
+    channel -- the profile IS the channel.
+
+HOW IT BEHAVES (the owner's decision: a warning, not a block)
+-------------------------------------------------------------
+* No network, no lock, no file written, no docker socket. It reads the
+  environment and asks whether one path exists. There is nothing here that can
+  hang a boot, rot into a stale marker, or leave an install wedged because
+  another one died holding something.
+* As the AGENT (uid 10000): the `up` file drops privileges first. A root process
+  inside $HERMES_HOME is how this install's usage reporting died on 15/09.
+* NEVER FATAL. A oneshot that fails is a boot that fails, and a warning is not
+  worth the agent not starting. Every path ends in `sys.exit(0)`.
+* THE KEY NEVER APPEARS. Its presence is reported, never its value -- a log is a
+  place, and the key does not go to places.
+"""
+import os
+import sys
+
+# Overridable so the test can point it at a temporary file. The default is the
+# path `image/cont-init.d/005-plow-credential` reads, which is the path
+# `compose.yml` binds `./plow-credentials` to.
+CRED_HOST = os.environ.get(
+    "PLOW_CREDENTIAL_HOST", "/var/lib/plow/credentials.host")
+
+
+def diz(msg):
+    print("warden-linha: " + msg, file=sys.stderr)
+
+
+def main():
+    # Sem arquivo de credencial vindo do host não existe a coisa que se
+    # compartilha por construção. É o caso da nuvem da Plow, onde cada
+    # inquilino recebe a credencial pelo ambiente. Calar aqui é o certo.
+    if not os.path.isfile(CRED_HOST):
+        return
+
+    chat = (os.environ.get("PLOW_HOME_CHANNEL") or "").strip()
+    onde = chat if chat else "(o plow-init ainda não nomeou o chat)"
+
+    diz("esta instalação atende o chat %s, e a credencial dela veio de um "
+        "arquivo desta máquina (%s). Qualquer outro container que monte o "
+        "MESMO arquivo responde o MESMO chat. Se outra instalação está de pé "
+        "agora, não dá para saber daqui: isso exigiria um lock ou um "
+        "handshake, e a Plow não diz quem mais está na linha." % (onde,
+                                                                  CRED_HOST))
+
+    tem_chave = bool((os.environ.get("WARDEN_POST_API_KEY") or "").strip())
+    perfil = (os.environ.get("WARDEN_POST_PROFILE") or "").strip()
+
+    if not tem_chave:
+        # Este é o estado de quem instala, e ele é o estado SEGURO: sem chave o
+        # agente entrega o arquivo na conversa e a pessoa sobe pelo app.
+        diz("sem chave de publicação aqui (WARDEN_POST_API_KEY vazia): esta "
+            "instalação não publica sozinha, então uma colisão custa uma "
+            "resposta repetida, não um vídeo no ar.")
+        return
+
+    if perfil:
+        diz("ATENÇÃO: esta instalação PUBLICA. Tem chave "
+            "(WARDEN_POST_API_KEY, no ambiente) e um perfil fixado à mão "
+            "(WARDEN_POST_PROFILE=%s). O perfil é o canal: se ela responder "
+            "uma mensagem destinada a outra instalação do mesmo chat, publica "
+            "nesse canal, e isso não volta atrás. Foi o que aconteceu em "
+            "16/09/2026 às 15:17 UTC. Para tirá-la da linha, pare o container "
+            "ou dê a ela um arquivo de credencial próprio." % perfil)
+    else:
+        diz("esta instalação tem chave de publicação (WARDEN_POST_API_KEY) e "
+            "nenhum perfil fixado: ela gera um `clip-warden-<8 hexadecimais>` "
+            "próprio, que não tem canal conectado atrás. Publicar exige "
+            "alguém conectar um canal primeiro.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as erro:  # noqa: BLE001 -- um boot não vale um traceback
+        diz("stood down on %s: %s" % (type(erro).__name__, erro))
+    sys.exit(0)

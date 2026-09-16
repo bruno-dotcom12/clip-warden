@@ -1,5 +1,12 @@
 # Auditoria da YouTube API — respostas prontas
 
+> Explicação humana, para quem mantém este repositório. **Este arquivo NÃO entra
+> na imagem**: o Dockerfile copia `runtime/persona.md` (:237), as sete
+> `warden-*/` (:242-248) e `SPECS/` (:250), e nada mais. O agente nunca lê o que
+> está escrito aqui. Regra que o agente precisa seguir mora em
+> `runtime/persona.md`, no corpo de uma `warden-*/SKILL.md`, ou em
+> `warden-<skill>/references/<nome>.md` — as três coisas que a imagem carrega.
+
 Este arquivo é para copiar e colar no formulário
 `https://support.google.com/youtube/contact/yt_api_form`.
 

@@ -152,6 +152,21 @@ services:
       # respondia a ninguém. Quem funcionava tinha o arquivo posto à mão, numa
       # camada de escrita que morre no primeiro `--force-recreate`. O passo
       # está em `image/cont-init.d/005-plow-credential`, com o relato inteiro.
+      #
+      # ESTE ARQUIVO É A LINHA, E ELE PODE SER MONTADO POR MAIS DE UM
+      # CONTAINER. Medido em 16/09/2026: três containers subiram juntos quando
+      # a VM do Docker voltou -- dois deles parados de propósito, trazidos de
+      # volta pelo `restart:` -- e os três responderam o mesmo chat
+      # `cht_knqXxEnmlk01lLC_--xjPw` porque montavam este mesmo arquivo. Uma
+      # mensagem pedindo publicação foi atendida pelo container ERRADO, o
+      # único com chave e perfil fixado, e o vídeo foi ao ar num canal real
+      # sem ninguém ter pedido àquele agente.
+      #
+      # Detectar isso ao vivo exigiria um lock ou um handshake, e não há
+      # nenhum dos dois. O que existe é o aviso: o oneshot
+      # `image/s6-overlay/scripts/warden-linha` fala no boot, nomeia o chat e
+      # diz se ESTA instalação tem com que publicar. É aviso, não bloqueio, e
+      # o relato inteiro está em docs/AMBIENTE.md §5.
       - ./plow-credentials:/var/lib/plow/credentials.host:ro
       # The agent's home, kept across up/down for its sessions, its campaigns
       # and the footage it has already pulled.
@@ -169,14 +184,45 @@ services:
     # 3.8 GiB Docker VM can take the VM down with it rather than dying alone.
     # A limit turns "the machine froze" into "the agent restarted".
     #
-    # Se o Docker Desktop tiver menos que isto, é este número que se abaixa, ou
-    # a VM que se levanta -- dizer aqui custa uma linha e economiza um estranho
-    # descobrindo por um kill.
     # 4g e não 3g desde 16/09/2026, e o motivo é o render em paralelo.
     # `WARDEN_RENDER_PARALELO=2` corta o tempo do lote pela metade, e dois
     # ffmpeg ao mesmo tempo não cabiam nos 3 GiB com folga nenhuma: o pico de
     # UM render com transcrição junto já era 1815 MiB. Velocidade que o OOM
     # killer interrompe não é velocidade.
+    #
+    # UM TETO SÓ É TETO SE A VM FOR MAIOR QUE ELE. Medido no teste 7a
+    # (16/09/2026): `mem_limit: 4g` = 4096 MiB aplicado ao container
+    # (logs-7a/snapshot-inicial/inspect.json, HostConfig.Memory=4294967296)
+    # numa VM de 3.826 GiB = 3918 MiB (snapshot-inicial/docker-info.txt). O
+    # Docker aceita e nunca honra: `docker stats` imprimiu
+    # `MEM USAGE / LIMIT  1.024GiB / 3.826GiB` (snapshot-inicial/
+    # docker-stats-1.txt) -- o LIMIT exibido é a VM, não os 4 GiB. O container
+    # volta a ser, na prática, ilimitado, que é o estado que o commit 81c032f
+    # existiu para acabar.
+    #
+    # A saída escolhida foi levantar a VM, não baixar o teto: o maior pico
+    # medido neste projeto é 1815 MiB. (Ressalva honesta: os dois lugares que
+    # citam esse número discordam sobre QUAL carga o produziu --
+    # RELATORIO-AUDITORIA-13-09.md:108 diz transcrição + corte juntos, em
+    # 13/09, e tests/test_lote.py diz lote SEQUENCIAL de dois clipes, em 16/09.
+    # Não está resolvido, e o valor do teto não depende de resolver.) O único
+    # número do 7a -- 1,024 GiB -- não é pico nenhum:
+    # é UMA amostra de `docker stats`, colhida num caminho barato: a legenda
+    # veio publicada do YouTube e o faster-whisper não rodou uma vez
+    # (logs-7a/container/sessao-mensagens.txt:85). Baixar o teto para caber em
+    # 3918 MiB daria 2800m, isto é 1,54x o pico medido, contra os 2,26x de
+    # hoje, e apertaria justamente o passo que o 7a não exercitou.
+    #
+    # O número mínimo da VM está declarado abaixo e o mesmo par está em
+    # docs/INSTALL.md; tests/test_ambiente_7a.py lê os dois e falha se
+    # discordarem, de modo que ninguém mais mude um lado só.
+    #
+    #   warden-agent-mem-limit-mib: 4096
+    #   warden-min-docker-vm-mib: 5120
+    #
+    # 4096 de teto + 1024 MiB de folga para o resto da VM = 5120 MiB (5 GiB)
+    # no Docker Desktop > Settings > Resources > Memory. Abaixo disso o teto
+    # daqui é decorativo, e é `install.sh` que mede e avisa.
     mem_limit: 4g
     mem_reservation: 768m
 

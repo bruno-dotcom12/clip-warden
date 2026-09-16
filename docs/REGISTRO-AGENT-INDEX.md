@@ -1,5 +1,12 @@
 # Re-registro no Agent Index
 
+> Explicação humana, para quem mantém este repositório. **Este arquivo NÃO entra
+> na imagem**: o Dockerfile copia `runtime/persona.md` (:237), as sete
+> `warden-*/` (:242-248) e `SPECS/` (:250), e nada mais. O agente nunca lê o que
+> está escrito aqui. Regra que o agente precisa seguir mora em
+> `runtime/persona.md`, no corpo de uma `warden-*/SKILL.md`, ou em
+> `warden-<skill>/references/<nome>.md` — as três coisas que a imagem carrega.
+
 Este arquivo existe porque o registro **não roda dentro do container**. Ele roda
 no host, no checkout, com o `./plow-credentials` que o `plow-agents mint`
 escreveu. Nada aqui é executado por um agente: é para o dono copiar e colar.

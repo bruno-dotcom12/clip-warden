@@ -317,32 +317,32 @@ class LotePrepEUmaLeituraSo(_ComLoteFalso):
     def test_prep_anuncia_os_padroes_em_vez_de_perguntar(self):
         code, saida, _erro = self._roda(["lote", "prep", URL])
         self.assertEqual(code, 0)
-        bloco = saida.split("SEM PERGUNTAR", 1)[1]
-        self.assertIn("quantidade: 2 clipe(s)", bloco)
-        self.assertIn("duração: 20s", bloco)
-        self.assertIn("som: original", bloco)
+        bloco = saida.split("WITHOUT ASKING", 1)[1]
+        self.assertIn("how many: 2 clip(s)", bloco)
+        self.assertIn("length: 20s", bloco)
+        self.assertIn("sound: original", bloco)
         # O idioma deixou de ser fixo em 15/09/2026: ele é o da fonte, e o
         # dublê publica legenda em `pt`, então é `pt` que tem de aparecer --
         # vindo da fonte, e não de uma constante. Ver `LinguaDoHook` abaixo.
-        self.assertIn("hook e legenda: pt (padrão: a língua da fonte", bloco)
-        self.assertIn("legenda: queimar em pt", bloco)
+        self.assertIn("hook and captions: pt (default: the source language", bloco)
+        self.assertIn("captions: burn them in pt", bloco)
         # e diz explicitamente para NÃO pedir confirmação
         self.assertIn("Do not ask them to confirm", saida)
 
     def test_o_numero_da_mensagem_vence_o_padrao(self):
         _code, saida, _erro = self._roda(
             ["lote", "prep", URL, "--n", "3", "--seconds", "45"])
-        self.assertIn("quantidade: 3 clipe(s) (pedida na mensagem)", saida)
-        self.assertIn("duração: 45s (pedida na mensagem)", saida)
+        self.assertIn("how many: 3 clip(s) (asked for in the message)", saida)
+        self.assertIn("length: 45s (asked for in the message)", saida)
 
     def test_a_campanha_vence_o_padrao_de_duracao_e_de_som(self):
         """O padrão é gosto; o limite da campanha é o pagamento."""
         cid = self._campanha("prep-apertada", duration_min_s=25,
                              duration_max_s=40, audio="forbidden")
         _code, saida, _erro = self._roda(["lote", "prep", URL, "--campaign", cid])
-        self.assertIn("duração: 25s", saida)
-        self.assertIn("limites da campanha", saida)
-        self.assertIn("som: mudo", saida)
+        self.assertIn("length: 25s", saida)
+        self.assertIn("the brief's limits", saida)
+        self.assertIn("sound: muted", saida)
         self.assertIn("video.audio", saida)
 
     def test_prep_escreve_o_srt_e_a_ficha_de_onde_ele_veio(self):
@@ -537,8 +537,8 @@ class LoteRenderFazTudoODepois(_ComLoteFalso):
         self.assertIn("END YOUR TURN NOW", erro)
         bloco = erro.split("END YOUR TURN NOW", 1)[1]
         self.assertEqual(bloco.count("MEDIA:"), 2, bloco)
-        self.assertIn("Corte 1: <caption>", bloco)
-        self.assertIn("Corte 2: <caption>", bloco)
+        self.assertIn(warden.RUBRICA_DO_CLIPE.format(i=1), bloco)
+        self.assertIn(warden.RUBRICA_DO_CLIPE.format(i=2), bloco)
         self.assertIn("no tool call after it", erro)
         # e o stdout continua com um MEDIA: por clipe, do `deliver`
         self.assertEqual(saida.count("MEDIA:"), 2)
@@ -572,8 +572,8 @@ class LoteRenderFazTudoODepois(_ComLoteFalso):
         _code, _saida, erro = self._roda(
             ["lote", "render", URL, "--windows", "10-30", "--hooks", "x",
              "--campaign", cid])
-        self.assertIn("duração: 25s", erro)
-        self.assertIn("som: mudo", erro)
+        self.assertIn("length: 25s", erro)
+        self.assertIn("sound: muted", erro)
         self.assertEqual(self.media.cortes[0]["sound"], "platform")
         self.assertEqual(self.media.cortes[0]["asked_s"], 25)
 
@@ -906,7 +906,13 @@ class UmSegundoPedidoNaoApagaOsClipesDoPrimeiro(_ComLoteFalso):
         self._roda(["lote", "render", URL, "--windows", "10-30", "--hooks", "a"])
         de_a = [c["out"] for c in self.media.cortes]
         self._roda(["lote", "prep", URL_B])
-        self._roda(["lote", "render", URL_B, "--windows", "10-30", "--hooks", "b"])
+        # `--even-if-owed` porque o primeiro lote deixou um clipe pronto e não
+        # enviado, e desde 16/09/2026 isso PARA um render novo: em 7a dois
+        # renders passaram por cima de um corte que já estava pronto às 14:54 e
+        # nunca saiu. O que este teste mede é o CAMINHO de saída, não a trava,
+        # então aqui a pessoa pediu outro corte de verdade.
+        self._roda(["lote", "render", URL_B, "--windows", "10-30", "--hooks", "b",
+                    "--even-if-owed"])
         de_b = [c["out"] for c in self.media.cortes[len(de_a):]]
         self.assertTrue(de_a and de_b)
         self.assertEqual(set(de_a) & set(de_b), set())
@@ -925,8 +931,11 @@ class UmSegundoPedidoNaoApagaOsClipesDoPrimeiro(_ComLoteFalso):
         primeiro = self.media.cortes[0]["out"]
         with open(primeiro, "wb") as fh:          # o clipe que já está entregue
             fh.write(b"o primeiro")
+        # Idem: o corte de antes está devendo entrega, e o segundo pedido só
+        # passa pela trava de 16/09 com a porta explícita.
         _code, _saida, erro = self._roda(
-            ["lote", "render", URL, "--windows", "300-320", "--hooks", "b"])
+            ["lote", "render", URL, "--windows", "300-320", "--hooks", "b",
+             "--even-if-owed"])
         segundo = self.media.cortes[-1]["out"]
         self.assertNotEqual(primeiro, segundo)
         self.assertIn("was NOT overwritten", erro)
@@ -1083,17 +1092,17 @@ class OIdiomaSegueAFonte(_ComLoteFalso):
         self.media.lingua = "en"
         _code, saida, _erro = self._roda(["lote", "prep", URL])
         self.assertIn("LANG:en", saida)
-        self.assertIn("hook e legenda: en", saida)
-        self.assertIn("legenda: queimar em en", saida)
+        self.assertIn("hook and captions: en", saida)
+        self.assertIn("captions: burn them in en", saida)
         self.assertIn("WRITE THE HOOKS IN EN", saida)
         # e o exemplo do próximo comando já vem na língua certa
-        self.assertIn("<gancho em en>", saida)
+        self.assertIn("<hook line in en>", saida)
 
     def test_fonte_em_portugues_da_hook_e_legenda_em_portugues(self):
         self.media.lingua = "pt"
         _code, saida, _erro = self._roda(["lote", "prep", URL])
         self.assertIn("LANG:pt", saida)
-        self.assertIn("hook e legenda: pt", saida)
+        self.assertIn("hook and captions: pt", saida)
         self.assertIn("WRITE THE HOOKS IN PT", saida)
 
     def test_a_tag_regional_vira_a_raiz(self):
@@ -1101,32 +1110,37 @@ class OIdiomaSegueAFonte(_ComLoteFalso):
         `cut` compara os dois primeiros caracteres."""
         self.media.lingua = "pt-BR"
         _code, saida, _erro = self._roda(["lote", "prep", URL])
-        self.assertIn("hook e legenda: pt (", saida)
+        self.assertIn("hook and captions: pt (", saida)
 
     def test_a_preferencia_da_pessoa_vence_a_fonte(self):
         """"hook em português num vídeo em inglês" é escolha de quem pediu."""
         self.media.lingua = "en"
         self._roda(["prefs", "set", "--key", "hook", "--value", "pt"])
         _code, saida, _erro = self._roda(["lote", "prep", URL])
-        self.assertIn("hook e legenda: pt (sua preferência guardada", saida)
-        self.assertIn("vence a língua da fonte", saida)
+        self.assertIn("hook and captions: pt (their stored preference", saida)
+        self.assertIn("it beats the source language", saida)
         # o mesmo com a fonte em português e a pessoa pedindo inglês
         self._roda(["prefs", "set", "--key", "hook", "--value", "en"])
         self.media.lingua = "pt"
         _code, saida, _erro = self._roda(["lote", "prep", URL])
-        self.assertIn("hook e legenda: en (sua preferência guardada", saida)
+        self.assertIn("hook and captions: en (their stored preference", saida)
 
     def test_sem_lingua_lida_nada_e_chutado(self):
         """Chutar `pt` aqui é exatamente o que custava o lote."""
         tag, linha = warden.lingua_do_hook({}, None)
         self.assertIsNone(tag)
-        self.assertIn("ainda não foi lida", linha)
-        self.assertNotIn("pt", linha.split("--")[0])
+        self.assertIn("has not been read yet", linha)
+        # Nenhuma TAG de idioma foi chutada. Por palavra inteira, e não por
+        # substring: com a linha em inglês, `assertNotIn("pt", ...)` casava
+        # dentro de `captions` e o teste reprovava a frase certa.
+        import re as _re
+        self.assertNotIn("pt", _re.findall(r"[a-z]{2,3}(?:-[a-z]{2,4})?",
+                                           linha.split("--")[0]))
 
     def test_none_continua_desligando_o_hook(self):
         tag, linha = warden.lingua_do_hook({"hook": "none"}, "en")
         self.assertEqual(tag, "none")
-        self.assertIn("nenhum", linha)
+        self.assertIn("none", linha)
 
     def test_a_lingua_desce_ate_o_cut(self):
         """Sem isto o `cut` não tem contra o que comparar o gancho."""
@@ -1145,7 +1159,7 @@ class OIdiomaSegueAFonte(_ComLoteFalso):
             self.assertEqual(json.load(fh)["language"], "es")
         _code, _saida, erro = self._roda(
             ["lote", "render", URL, "--windows", "10-14", "--hooks", "x"])
-        self.assertIn("hook e legenda: es", erro)
+        self.assertIn("hook and captions: es", erro)
 
     def test_a_transcricao_do_prep_ja_entrega_a_lingua(self):
         """Mesmo sem legenda PUBLICADA, o `prep` transcreve a fonte e a língua
@@ -1174,11 +1188,11 @@ class OIdiomaSegueAFonte(_ComLoteFalso):
         _code, _saida, erro = self._roda(
             ["lote", "render", URL, "--windows", "10-14", "--hooks", "x"])
         # o primeiro anúncio é honesto sobre não saber
-        self.assertIn("ainda não foi lida", erro)
+        self.assertIn("has not been read yet", erro)
         # e o segundo diz o que mudou
         self.assertIn("the language came from transcribing the windows", erro)
         self.assertIn("it is EN", erro)
-        self.assertIn("hook e legenda: en", erro)
+        self.assertIn("hook and captions: en", erro)
         self.assertEqual(self.media.cortes[0]["language"], "en")
 
 
@@ -1207,7 +1221,7 @@ class ALinguaSoEAFIRMADAQUANDOFOIMEDIDA(_ComLoteFalso):
         self.media.lingua_medida = True
         saida = self._prep()
         self.assertIn("that is the language of the video", saida)
-        self.assertIn("lida do material", saida)
+        self.assertIn("read from the material", saida)
         self.assertIn("WRITE THE HOOKS IN EN", saida)
 
     def test_nao_medida_nao_afirma_nada_sobre_o_video(self):
@@ -1218,10 +1232,10 @@ class ALinguaSoEAFIRMADAQUANDOFOIMEDIDA(_ComLoteFalso):
         saida = self._prep()
         # as duas afirmações que podiam ser falsas, ausentes
         self.assertNotIn("that is the language of the video", saida)
-        self.assertNotIn("lida do material", saida)
+        self.assertNotIn("read from the material", saida)
         # e a ferramenta diz, em voz alta, o que NÃO apurou
         self.assertIn("NOT measured", saida)
-        self.assertIn("NÃO foi medida", saida)
+        self.assertIn("was never measured", saida)
         self.assertIn("do NOT say this is the video's language", saida)
         # a INSTRUÇÃO continua a mesma, porque é ela que evita a recusa do cut
         self.assertIn("WRITE THE HOOKS IN PT", saida)
@@ -1262,8 +1276,8 @@ class ALinguaSoEAFIRMADAQUANDOFOIMEDIDA(_ComLoteFalso):
         self.assertEqual(dados["source_language"], "en")
         _code, _saida, erro = self._roda(
             ["lote", "render", URL, "--windows", "10-14", "--hooks", "x"])
-        self.assertIn("NÃO foi medida", erro)
-        self.assertNotIn("lida do material", erro)
+        self.assertIn("was never measured", erro)
+        self.assertNotIn("read from the material", erro)
         # e o hook continua sendo pedido na língua da legenda
         self.assertEqual(self.media.cortes[0]["language"], "pt")
 
@@ -1279,15 +1293,15 @@ class ALinguaSoEAFIRMADAQUANDOFOIMEDIDA(_ComLoteFalso):
             json.dump(dados, fh)
         _code, _saida, erro = self._roda(
             ["lote", "render", URL, "--windows", "10-14", "--hooks", "x"])
-        self.assertNotIn("lida do material", erro)
-        self.assertIn("NÃO foi medida", erro)
+        self.assertNotIn("read from the material", erro)
+        self.assertIn("was never measured", erro)
 
     def test_lingua_do_hook_trata_none_como_nao_medida(self):
         _tag, com = warden.lingua_do_hook({}, "en", medida=True)
         _tag, sem = warden.lingua_do_hook({}, "en", medida=None)
-        self.assertIn("lida do material", com)
-        self.assertNotIn("lida do material", sem)
-        self.assertIn("NÃO foi medida", sem)
+        self.assertIn("read from the material", com)
+        self.assertNotIn("read from the material", sem)
+        self.assertIn("was never measured", sem)
 
     def test_a_preferencia_pinada_nao_fala_da_lingua_do_video(self):
         """Quando a pessoa pina um idioma, a fonte não entra na justificativa
@@ -1296,8 +1310,8 @@ class ALinguaSoEAFIRMADAQUANDOFOIMEDIDA(_ComLoteFalso):
             with self.subTest(medida=medida):
                 _tag, linha = warden.lingua_do_hook({"hook": "pt"}, "en",
                                                     medida=medida)
-                self.assertIn("sua preferência guardada", linha)
-                self.assertNotIn("lida do material", linha)
+                self.assertIn("their stored preference", linha)
+                self.assertNotIn("read from the material", linha)
 
 
 class PrefsNaoTemMaisOQuePerguntarAntesDeUmClipe(_ComLoteFalso):

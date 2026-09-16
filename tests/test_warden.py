@@ -82,6 +82,31 @@ import warden
 import warden_rules as R
 
 
+# O livro de entregas é um arquivo em disco dentro de WARDEN_DIR, e o WARDEN_DIR
+# deste arquivo é UM SÓ para o módulo inteiro (a linha do `mkdtemp` lá em cima).
+# Sem isto a dívida de um teste vaza para todos os seguintes: na rodada de
+# 16/09/2026 a falha de `ADuracaoPedidaPrecisaSerDecidida` trazia, ANTES de
+# qualquer coisa do próprio teste, seis linhas `# owed since before this batch`
+# de c.mp4, lote-ok.mp4, lote-a.mp4, lote-b.mp4, lote-p1.mp4 e lote-p2.mp4 --
+# clipes de OUTROS testes. O portão do livro aparecia em asserts que nada têm
+# com ele, e o gate do `lote render` ficava impossível de exercitar aqui.
+#
+# Cada teste começa com o livro vazio. Roda ANTES do `setUp` de cada classe,
+# então nenhum teste perde o estado que ele mesmo monta.
+try:
+    import pytest
+
+    @pytest.fixture(autouse=True)
+    def _livro_de_entregas_vazio_por_teste():
+        for nome in ("entregas.json", "pedidos.json"):
+            caminho = os.path.join(WARDEN_DIR, nome)
+            if os.path.exists(caminho):
+                os.remove(caminho)
+        yield
+except ImportError:                                   # pragma: no cover
+    pass
+
+
 def rules(**over):
     base = R.blank()
     base.update({"id": "test", "name": "Test campaign", "schema": 1})
@@ -651,12 +676,15 @@ class RealRender(unittest.TestCase):
                              "--start", "0", "--end", "3", "--out", "s.mp4"])
         except SystemExit:
             pass
-        self.assertIn("som: original (padrão; a campanha não decide isso)",
-                      err.getvalue())
+        # A saída do warden é INGLÊS de propósito (quem a lê é o modelo:
+        # warden.py:3023-3031). A agulha segue o texto; o comportamento é o
+        # mesmo -- o padrão sai anunciado e o render recebe `embedded`.
+        self.assertIn("sound: original (default; the brief does not decide "
+                      "this one)", err.getvalue())
         # E o padrão é uma decisão, não um descuido: o render recebeu `embedded`.
         som, linha = warden._som_decidido(r, {})
         self.assertEqual(som, "embedded")
-        self.assertIn("padrão", linha)
+        self.assertIn("default", linha)
 
     def test_cut_clamps_a_long_window_to_the_campaign_maximum(self):
         r = rules(video={"duration_min_s": 1, "duration_max_s": 3,
@@ -1465,8 +1493,12 @@ class BatchContract(unittest.TestCase):
         self.assertIn("2 clip(s) cleared", erro.getvalue())
         self.assertIn("END YOUR TURN NOW", erro.getvalue())
         self.assertIn("no tool call after it", erro.getvalue())
-        self.assertIn("Corte 1: <caption>", erro.getvalue())
-        self.assertIn("Corte 2: <caption>", erro.getvalue())
+        # `Corte {i}: <caption>` era a ÚNICA linha que o modelo copia
+        # literalmente, e ela escolhia português pela pessoa. Virou molde:
+        # warden.RUBRICA_DO_CLIPE. A agulha cita a CONSTANTE, para nunca
+        # mais congelar um idioma aqui.
+        self.assertIn(warden.RUBRICA_DO_CLIPE.format(i=1), erro.getvalue())
+        self.assertIn(warden.RUBRICA_DO_CLIPE.format(i=2), erro.getvalue())
         # e os DOIS caminhos estão no mesmo bloco, um debaixo do outro
         bloco = erro.getvalue().split("END YOUR TURN NOW", 1)[1]
         self.assertEqual(bloco.count("MEDIA:"), 2, bloco)
@@ -2308,7 +2340,7 @@ class StyleSpec(unittest.TestCase):
         achados = self.S.check_against(
             {"scale_variation": 0.0},
             {"scale_variation": {"min": 0.12, "max": 0.83}})
-        self.assertTrue(any(lv == "REJECT" and "trecho bruto" in m
+        self.assertTrue(any(lv == "REJECT" and "raw twenty-second stretch" in m
                             for lv, m in achados), achados)
 
     def test_a_clip_that_moves_is_not_rejected(self):
@@ -3036,7 +3068,8 @@ class SinalADois(unittest.TestCase):
         pode reprovar nada sozinha."""
         achados = self.S.cross_check(self._lado(800), {"text_width_ratio": 1.14})
         self.assertEqual([m for lv, m in achados if lv == "REJECT"], [])
-        self.assertTrue(any("discordam" in m for lv, m in achados), achados)
+        self.assertTrue(any("the two instruments disagree" in m
+                            for lv, m in achados), achados)
 
     def test_a_metrica_continua_aparecendo_quando_nao_ha_sidecar(self):
         achados = self.S.cross_check(None, {"text_width_ratio": 1.22})
@@ -3084,7 +3117,7 @@ class NadaSomeCalado(unittest.TestCase):
     def test_variacao_de_escala_sem_dois_quadros_diz_por_que(self):
         valor, porque = self.S._scale_variation([])
         self.assertIsNone(valor)
-        self.assertIn("quadro", porque)
+        self.assertIn("frame", porque)
 
 
 class AlturaDaLegenda(unittest.TestCase):
@@ -4679,10 +4712,10 @@ class ADuracaoPedidaPrecisaSerDecidida(unittest.TestCase):
         except SystemExit:
             pass                       # a fonte não existe; o portão é o que importa
         self.assertNotIn("no duration decision", erro.getvalue())
-        self.assertIn("duração:", erro.getvalue())
+        self.assertIn("length:", erro.getvalue())
         # o número e a sua procedência, na mesma linha
-        self.assertIn("padrão de 20s", erro.getvalue())
-        self.assertIn("limites da campanha", erro.getvalue())
+        self.assertIn("default of 20s", erro.getvalue())
+        self.assertIn("inside the brief's limits", erro.getvalue())
 
     def test_o_padrao_de_duracao_cabe_nos_limites_da_campanha(self):
         """A campanha continua vencendo o padrão, que é a metade que não pode cair."""
@@ -4693,7 +4726,7 @@ class ADuracaoPedidaPrecisaSerDecidida(unittest.TestCase):
         segundos, linha = warden._duracao_decidida(r, {})
         self.assertEqual(segundos, 25)
         self.assertIn("25s", linha)
-        self.assertIn("campanha", linha)
+        self.assertIn("campaign", linha)
 
     def test_um_plano_sem_duracao_nenhuma_usa_o_padrao_e_o_anuncia(self):
         import io
@@ -4707,7 +4740,7 @@ class ADuracaoPedidaPrecisaSerDecidida(unittest.TestCase):
         except SystemExit:
             pass
         self.assertNotIn("no duration decision", erro.getvalue())
-        self.assertIn("duração:", erro.getvalue())
+        self.assertIn("length:", erro.getvalue())
         # e diz para QUANTOS clipes o padrão valeu, que é o que o `die` dizia
         self.assertIn("2 of 2", erro.getvalue())
 
@@ -4761,7 +4794,7 @@ class ADuracaoPedidaPrecisaSerDecidida(unittest.TestCase):
         except SystemExit:
             pass
         self.assertIn("1 of 3", erro.getvalue())
-        self.assertIn("duração:", erro.getvalue())
+        self.assertIn("length:", erro.getvalue())
 
 
 class AsTresMargensDaInterface(unittest.TestCase):

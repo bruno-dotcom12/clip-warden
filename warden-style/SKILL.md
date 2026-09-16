@@ -61,20 +61,21 @@ speech on screen. `warden status` has a `libass` line for exactly this.
   seven-second segment with thirty words becomes a six-line block parked on the
   speaker's face.
 - **A cue never ends on a word that needs the next one.** No preposition,
-  article, conjunction or unstressed pronoun at the end, in either language.
+  article, conjunction or unstressed pronoun at the end, in any language.
   `cut` moves the break to the nearest real boundary — punctuation first, then
   by extending past the dangling word, then by pulling back. Extending is why
-  the ceiling is 3.4s and not 2.2s: "é o meu veredito," costs half a second more
-  than "é o meu" and is the difference between a sentence and a fragment.
-- **A fixed expression is one word.** "crème de la crème" was split in 14/09 and
-  "LA CREME DO MERCADO" sat alone on screen for two seconds. The list lives in
-  `EXPRESSOES_FIXAS`; it grows when a cut shows the next one.
+  the ceiling is 3.4s and not 2.2s: carrying one more word to the end of the
+  clause costs about half a second, and it is the difference between a sentence
+  and a fragment.
+- **A fixed expression is one word.** One was split on 14/09 and half of it sat
+  alone on screen for two seconds. The list lives in `EXPRESSOES_FIXAS`; it
+  grows when a cut shows the next one.
 - **Each word gets the time its syllables ask for**, not an equal share. That is
   what keeps the yellow highlight on the mouth instead of ahead of it.
 - **The body size, the ink height and the white→yellow highlight are calibrated
   constants the renderer applies.** You do not set them and you do not
-  "simplify" them; `docs/ESTILO-CALIBRACAO.md` has the measurements and the
-  delivered clip that each one cost.
+  "simplify" them; `warden-style/references/estilo-calibracao.md` has the
+  measurements and the delivered clip that each one cost.
 - The caption and the hook must be **in the same language**. `cut` compares them
   and refuses to burn on a mismatch. A Portuguese hook over an English caption
   went out once.
@@ -89,7 +90,7 @@ The hook is **white**, and one or two key words carry an accent. Mark them in
 the hook text with asterisks:
 
 ```
---hook "COPILOTO GANHA *70 MIL* POR MES"
+--hook "<THE LINE, WITH THE *KEY WORDS* MARKED>"
 ```
 
 A whole line in colour reads cheap. And the accent is **#FF3B30**, a red-orange,
@@ -122,8 +123,8 @@ track he downloaded from Pixabay as royalty-free was claimed on Content ID as
 someone else's, and the video was **blocked worldwide and demonetised**. The
 free library's licence does not stop the automatic claim -- it gives grounds to
 contest it afterwards. The one source with no risk by construction, for YouTube,
-is **studio.youtube.com > Áudio**, because YouTube does not claim its own
-catalogue. `tracks add` writes down where each track came from and what that
+is **YouTube Studio's own audio library**, because YouTube does not claim its
+own catalogue. `tracks add` writes down where each track came from and what that
 means; it does not refuse anything.
 
 ## The footage
@@ -182,7 +183,7 @@ runs 13s and another 73s and neither is "the right one".
 three things only. The corpus is twenty scenepack edits with no running caption,
 so most ranges do not apply to a podcast cut and `check` says so out loud rather
 than rejecting a format it never measured. Why the list is short, with the
-numbers, is in `docs/ESTILO-CALIBRACAO.md`.
+numbers, is in `warden-style/references/estilo-calibracao.md`.
 
 What **is** enforced is exact, because it comes from the renderer rather than
 from pixels: `cut` writes a `-estilo.json` beside every clip with the hook's
@@ -200,10 +201,12 @@ theory: a clip once went out with the hook cropped at both edges and a six-line
 caption over the speaker's face, with every numeric check green. Until
 16/09/2026 the answer to that was the contact sheet, and it was the gate.
 
-**The owner took that gate out on 16/09/2026.** Asked whether the mosaic should
-stay mandatory before delivery, when the two vision calls of one request had
-cost 31s of 706s: *"2 = entrega sem olhar, sua unica obrigacao = hook e
-legenda"*. Same day: *"quero o mais rapido possivel com o minimo de qualidade"*.
+**The owner took that gate out on 16/09/2026**, asked directly whether the
+mosaic should stay mandatory before delivery, with the two vision calls of one
+request costing 31s of 706s in front of him. He answered that a clip ships
+without being looked at, and that the only obligation left is the hook and the
+caption. The price, and the list for when somebody does look:
+`warden-check/references/contact-sheet.md`.
 
 So the sheet is still written — it costs about 1.3s and it is the only visual
 evidence that exists later — and nothing waits on it. What is lost is exactly

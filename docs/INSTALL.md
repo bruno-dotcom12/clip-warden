@@ -1,5 +1,12 @@
 # Installing Clip Warden
 
+> Explicação humana, para quem mantém este repositório. **Este arquivo NÃO entra
+> na imagem**: o Dockerfile copia `runtime/persona.md` (:237), as sete
+> `warden-*/` (:242-248) e `SPECS/` (:250), e nada mais. O agente nunca lê o que
+> está escrito aqui. Regra que o agente precisa seguir mora em
+> `runtime/persona.md`, no corpo de uma `warden-*/SKILL.md`, ou em
+> `warden-<skill>/references/<nome>.md` — as três coisas que a imagem carrega.
+
 Two commands and a text message. Most of the time is a download you can walk
 away from, and nothing of yours goes into it.
 
@@ -51,16 +58,34 @@ app. Both are covered in
 ## What you need
 
 - **Docker, running, with Docker Compose**, and its VM set to **at least
-  5 GiB of RAM**. `compose.yml` caps the agent at 4 GiB — it renders two
-  clips at the same time since 16/09/2026, which took a two-clip batch from
-  105s to 54.7s at a measured peak of 1584 MiB — and that is the only ceiling
-  there is, leaving 1 GiB of slack for the rest of the VM. Between 15/09 and
-  16/09/2026 a second container ran beside it, the Proof-of-Origin token
-  provider, capped at 512 MiB, and the two ceilings added up to 4.5 GiB; that
-  container is gone, for the reason given under
-  [Where it connects](#where-it-connects). On a smaller VM the first clip
-  dies as an out-of-memory kill rather than an error. Docker Desktop →
+  5 GiB — 5120 MiB — of RAM**. `compose.yml` caps the agent at 4 GiB
+  (4096 MiB) — it renders two clips at the same time since 16/09/2026, which
+  took a two-clip batch from 105s to 54.7s at a measured peak of 1584 MiB —
+  and that is the only ceiling there is, leaving 1 GiB of slack for the rest
+  of the VM. Between 15/09 and 16/09/2026 a second container ran beside it,
+  the Proof-of-Origin token provider, capped at 512 MiB, and the two ceilings
+  added up to 4.5 GiB; that container is gone, for the reason given under
+  [Where it connects](#where-it-connects). Docker Desktop →
   Settings → Resources → Memory. `install.sh` measures this and warns you.
+
+  <!-- warden-agent-mem-limit-mib: 4096 -->
+  <!-- warden-min-docker-vm-mib: 5120 -->
+  <!-- Os dois números acima também estão em compose.yml, junto do `mem_limit`.
+       tests/test_ambiente_7a.py lê os dois arquivos e falha se discordarem. -->
+
+  **A smaller VM does not give you a tighter agent — it gives you no ceiling
+  at all.** Docker accepts a `mem_limit` larger than the VM and never enforces
+  it. Measured on 16/09/2026 with the VM at 3.826 GiB (3918 MiB) against the
+  4096 MiB cap: `docker stats` printed `MEM USAGE / LIMIT 1.024GiB /
+  3.826GiB` — the limit it shows is the VM, because the cgroup can never be
+  reached before the VM runs out. What dies then is the VM, not the agent, and
+  the first clip comes back as a frozen machine rather than an error. That is
+  the exact state the container's ceiling exists to prevent, so treat the
+  5120 MiB as the requirement it is.
+
+  `docs/AMBIENTE.md` carries that measurement in full — and, next to it, the
+  orange platform warning Docker Desktop shows for this container on an Apple
+  Silicon Mac, which is amd64 emulation, is expected, and is not a fault.
 - **Git.**
 - **A Plow account**, for the agent's chat line, and the phone that owns it.
 - **About 5 GB of free disk.** You download 1.06 GB (the published image,
@@ -366,6 +391,18 @@ Three things that bite, in the order they bite:
   run as root creates the agent's own state directories root-owned and locks the
   agent out of them — and `warden status` would still print `writable: yes`,
   because root can write, so the diagnostic hides the damage.
+- **One `plow-credentials` file is one chat line, however many containers hold
+  it.** Every container that bind-mounts that same file answers the same chat.
+  On 16/09/2026 three of them came back together when the Docker VM restarted —
+  two had been stopped on purpose, and `restart:` brought them back — and a
+  request to publish was served by the wrong one, the only one holding a
+  publishing key and a pinned profile. It went to a real channel. There is no
+  way to detect this live from inside a container, so the boot says what it can
+  instead: a line starting `warden-linha:` names the chat this install answers
+  and says whether this install can publish at all. See `docker compose logs
+  agent | grep warden-linha`, and `docs/AMBIENTE.md` section 5 for the whole
+  account. If you run more than one agent on purpose, give each its own
+  credential file.
 
 To build it yourself instead of pulling:
 
@@ -900,9 +937,25 @@ paid plan, and that one needs no TikTok developer token.
 A conversation with this agent never resets on its own, and a long one carries
 every big command output it has ever produced back to the model on every single
 message — which is slow and is billed every time. At boot the container turns on
-a setting that quietly throws away the **old, bulky command outputs** once the
-conversation gets large, keeping the recent ones. Nothing you said is touched,
-and no summary is written by a model, so there is nothing to get wrong.
+a setting that throws away **old tool results** once the conversation gets
+large, keeping the recent ones. Nothing you said is touched, and no summary is
+written by a model.
+
+**It is not only command output, and this has cost a delivery.** Every old tool
+result is fair game, including the text of a skill the agent loaded with
+`skill_view` — which is where its operating instructions live. On 16/09/2026, at
+14:52:50, five seconds after the agent started rendering, the prune reclaimed
+the 34,983 characters of `warden-clip` and the 8,575 of `warden-run`, and the
+two clips that finished two minutes later were never handed over. The sign of it
+in the history is the line the agent sees in place of the skill:
+
+```
+[SKILL_PRUNED: content lost in compression; reload with skill_view(name=warden-clip)]
+```
+
+So: it cannot garble anything, but it can take away instructions the agent is
+still going to need. Anything the agent must not forget belongs in the output of
+the command it is running at that moment, not only in a skill it read earlier.
 
 To turn it off, open `compose.yml`'s volume — the setting lives in the agent's
 own `config.yaml`, at `compression: proactive_prune_tokens`. Set it to `0` and

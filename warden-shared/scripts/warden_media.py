@@ -3259,9 +3259,9 @@ def ass_from_cues(cues, width, height, safe=None, offset=0.0, length=None,
         f"Dialogue: 0,{_ass_stamp(a)},{_ass_stamp(b)},Default,,0,0,0,,{t}\n"
         for a, b, t in rows)
     if sem_k and perdas is not None:
-        perdas.append(f"{len(sem_k)} cue(s) ficaram sem destaque palavra a "
-                      f"palavra porque os tempos por palavra não bateram com as "
-                      f"linhas: {'; '.join(sem_k[:3])}")
+        perdas.append(f"{len(sem_k)} cue(s) came out with no word-by-word "
+                      f"highlight, because the per-word times did not line up "
+                      f"with the lines: {'; '.join(sem_k[:3])}")
     return header + body if rows else ""
 
 
@@ -4180,28 +4180,29 @@ def decide_enquadramento(medidas, tem_pip):
     regra 3 do dono: quando NÃO for tela compartilhada, nada muda.
     """
     if not medidas:
-        return "normal", ("nenhum quadro foi lido, então ninguém olhou este "
-                          "material -- segue o caminho de sempre")
+        return "normal", ("no frame was read, so nobody looked at this "
+                          "material -- it takes the usual path")
     telas = [p for p in medidas if p >= PLANURA_TELA]
     fracao = len(telas) / len(medidas)
-    quantos = f"{len(telas)} de {len(medidas)} quadros amostrados são tela " \
-              f"({fracao:.0%}, planura >= {PLANURA_TELA})"
+    quantos = f"{len(telas)} of {len(medidas)} sampled frames read as screen " \
+              f"({fracao:.0%}, flatness >= {PLANURA_TELA})"
     if fracao < TELA_FRACAO_DUVIDA:
-        return "normal", (f"{quantos}: isto é vídeo normal, e o enquadramento "
-                          f"segue o rosto como sempre")
+        return "normal", (f"{quantos}: this is ordinary video, and the "
+                          f"framing follows the face as always")
     if not tem_pip:
         return "normal", (
-            f"{quantos}, mas NÃO há webcam de canto estável em nenhum deles. "
-            f"Área chapada sozinha não é tela compartilhada -- desenho animado "
-            f"e captura de jogo também são chapados -- então o enquadramento "
-            f"não muda. Se este material FOR uma tela e o corte sair no meio "
-            f"dela, passe --crop para escolher a faixa à mão")
+            f"{quantos}, but there is NO stable corner webcam in any of them. "
+            f"A flat area on its own is not a shared screen -- animation and "
+            f"game capture are flat too -- so the framing does not change. If "
+            f"this material IS a screen and the cut lands in the middle of it, "
+            f"pass --crop to pick the band by hand")
     if fracao >= TELA_FRACAO_CERTA:
-        return "dividido", (f"{quantos}: webcam em cima, tela embaixo")
-    return "dividido", (f"{quantos} -- faixa de DÚVIDA ({TELA_FRACAO_DUVIDA:.0%} "
-                        f"a {TELA_FRACAO_CERTA:.0%}), e na dúvida divide: um "
-                        f"dividido sobre vídeo normal é feio, um corte no meio "
-                        f"do navegador é inutilizável")
+        return "dividido", (f"{quantos}: webcam on top, screen below")
+    return "dividido", (f"{quantos} -- the DOUBTFUL band "
+                        f"({TELA_FRACAO_DUVIDA:.0%} to {TELA_FRACAO_CERTA:.0%}), "
+                        f"and in doubt it splits: a split layout over ordinary "
+                        f"video is ugly, a cut through the middle of a browser "
+                        f"window is unusable")
 
 
 def tela_compartilhada(source, start, length, samples=None):
@@ -4239,8 +4240,8 @@ def tela_compartilhada(source, start, length, samples=None):
     achado = _face_detector()
     if achado is None:
         ok, porque = face_detection_status()
-        saiu["porque"] = (f"não dá para dizer se isto é tela compartilhada sem "
-                          f"detector de rosto ({porque})")
+        saiu["porque"] = (f"cannot tell whether this is a shared screen "
+                          f"without a face detector ({porque})")
         return saiu
     cv2, det = achado
     tmp, quadros_lidos = _quadros_coloridos(source, start, length, samples)
@@ -4788,11 +4789,15 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                     f"extended {_sobra:.1f}s past the {pedido:.0f}s asked for, to "
                     f"{length + _sobra:.1f}s, because the cut landed in the middle "
                     f"of a sentence and that sentence closes there."
-                    + (f" Say it to the person in ONE clause about what they "
-                       f"will see -- \"ficou {_sobra:.0f} segundo"
-                       f"{'s' if round(_sobra) != 1 else ''} mais longo para "
-                       f"não cortar a frase no meio\" -- and never with the "
-                       f"word cue in it." if _sobra >= 1.0 else
+                    # O FATO, medido, fica na nota; a FRASE é do modelo, na
+                    # língua da pessoa. A amostra em português que estava aqui
+                    # chegou ao modelo no meio de uma conversa em inglês
+                    # (state.db msgs 69 e 75 de 16/09/2026) e a resposta dele à
+                    # pessoa saiu em português.
+                    + (" Say that in ONE clause to the person, in "
+                       "their own language, about what they will see -- "
+                       "the seconds and why, never with the word cue in it."
+                       if _sobra >= 1.0 else
                        " Under a second: say NOTHING about it. A person does not "
                        "want to read that a clip is 0.4s longer than they asked."))
                 length += _sobra
@@ -4815,10 +4820,8 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                             f"in the middle of a sentence and there was no room "
                             f"in this window to reach its end. This one closes "
                             f"the last whole sentence instead."
-                            + (f" Say it to the person in ONE clause -- \"ficou "
-                               f"{_corta:.0f} segundo"
-                               f"{'s' if round(_corta) != 1 else ''} mais curto "
-                               f"para não cortar a frase no meio\"."
+                            + (" Say that in ONE clause to the person, in "
+                               "their own language: the seconds and why."
                                if _corta >= 1.0 else
                                " Under a second: say NOTHING about it."))
                         length = _novo
@@ -4877,11 +4880,12 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     # não existe, e toda a aritmética abaixo -- rosto, kept, fx -- responde
     # bem a uma pergunta que não é a do material. Ver `tela_compartilhada`.
     enq = {"modo": "normal", "pip": None, "faces": None, "quadros": None,
-           "porque": ("a fonte não é mais larga que o quadro, então não há "
-                      "faixa vertical a escolher")}
+           "porque": ("the source is no wider than the frame, so there is no "
+                      "vertical band to choose")}
     if manual_pct:
-        enq["porque"] = (f"crop {crop} veio à mão, e um número do dono não se "
-                         f"discute: nem a detecção de tela compartilhada roda")
+        enq["porque"] = (f"crop {crop} came in by hand, and a number from the "
+                         f"owner is not up for debate: not even the "
+                         f"shared-screen detection runs")
     elif kept:
         enq = tela_compartilhada(source, start, length)
         if enq.get("quadros") == 0:
@@ -5354,9 +5358,10 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
             f"the reject; the gradient footer cannot help this one, because "
             f"that band is the middle of the picture and covering it would "
             f"cover the subject. The speech is already on screen, so this clip "
-            f"ships with the footage's own captions and no second set. Say that "
-            f"to the person in one line -- \"esse vídeo já vem legendado, então "
-            f"não pus legenda em cima\" -- and nothing about bands or frames.")
+            f"ships with the footage's own captions and no second set. Tell "
+            f"the person that in ONE clause, in their own language -- the fact "
+            f"is: this video already comes captioned, so no second caption was "
+            f"added -- and say nothing about bands or frames.")
     elif caption_srt and os.path.exists(caption_srt):
         if R.get(rules, "sources.archive_has_captions") is True:
             # The campaign says this archive already burns its own captions.
@@ -5512,9 +5517,10 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                     else:
                         sincronia = {"porque": porque_fala or "sem fala detectada"}
                         notes.append(
-                            f"não consegui achar os começos de fala deste trecho "
-                            f"({porque_fala}), então o destaque ficou no tempo "
-                            f"cru da legenda de origem, que costuma chegar atrasado.")
+                            f"could not find the speech onsets in this stretch "
+                            f"({porque_fala}), so the highlight is on the raw "
+                            f"timing of the source subtitle, which usually "
+                            f"runs late.")
                     if descartes:
                         # Era nota, e nota não protege: fala que existe no SRT
                         # e não vai para a tela não aparece no mosaico -- o que
@@ -5557,8 +5563,8 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                                   offset=queima_de, length=float(length),
                                   perdas=perdas)
         if not texto_ass.strip():
-            burn_reason = ("o ASS saiu vazio: nenhuma cue sobrou dentro da "
-                           "janela depois de deslocada para o tempo do clipe")
+            burn_reason = ("the ASS came out empty: no cue was left inside "
+                           "the window once shifted to the clip's own clock")
             cues = []
         else:
             ass_path = os.path.join(art_dir, f"{stem}.ass")
@@ -5596,10 +5602,10 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                         f"Refusing rather than burning.")
             if fora > 0:
                 notes.append(
-                    f"{fora} cue(s) da legenda caem fora da janela deste corte "
-                    f"e não foram queimadas. É fala que acontece depois do "
-                    f"--end, então está certo descartá-las -- mas se o corte "
-                    f"deveria incluir essa fala, é o --end que está curto.")
+                    f"{fora} subtitle cue(s) fall outside this cut's window and "
+                    f"were not burned. That is speech happening after --end, so "
+                    f"dropping them is right -- but if the cut was meant to "
+                    f"include that speech, it is --end that is short.")
             longest = max(c["end"] - c["start"] for c in cues)
             most = max(len(c["lines"]) for c in cues)
             pendurados = S.finais_pendurados(
@@ -5643,18 +5649,18 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                          f"lines and {longest:.1f}s each, each word lit as it is "
                          f"said (\\k, time split by syllable)")
             for perda in perdas:
-                notes.append("ATENÇÃO: " + perda)
+                notes.append("WATCH OUT: " + perda)
             if pendurados:
                 # A nota afirmava "porque o trecho não tinha fronteira nenhuma"
                 # para toda cue acusada, e para a ÚLTIMA da janela isso é falso:
                 # ali o que corta é o fim do clipe, não a falta de fronteira.
                 # Duas causas, duas frases.
-                porque = ("o reflow não achou fronteira utilizável no trecho"
+                porque = ("the reflow found no usable boundary in the stretch"
                           if len(pendurados) > 1 or not fala_apos_o_corte else
-                          "a fala continua depois do fim do corte")
+                          "the speech continues past the end of the cut")
                 notes.append(
-                    f"{len(pendurados)} cue(s) fecham numa palavra que pede "
-                    f"complemento ({porque}): " + "; ".join(pendurados[:3]))
+                    f"{len(pendurados)} cue(s) close on a word that needs a "
+                    f"complement ({porque}): " + "; ".join(pendurados[:3]))
     if not cues and burn_reason:
         notes.append(burn_reason)
 
@@ -6346,14 +6352,15 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         sheet = S.contact_sheet(out, os.path.splitext(out)[0] + "-contato.jpg",
                                 label=os.path.basename(out))
     except Exception as exc:
-        notes.append(f"não consegui montar o contact sheet ({type(exc).__name__}: "
-                     f"{exc}). Desde 16/09 isso NÃO bloqueia a entrega -- mande "
-                     f"o clipe -- mas não vai existir imagem nenhuma deste "
-                     f"render se ele voltar errado.")
+        notes.append(f"could not build the contact sheet ({type(exc).__name__}: "
+                     f"{exc}). Since 16/09 this does NOT block delivery -- send "
+                     f"the clip -- but there will be no image of this render at "
+                     f"all if it comes back wrong.")
     if sheet is None and not any("contact sheet" in n for n in notes):
-        notes.append("não consegui montar o contact sheet deste render. Desde "
-                     "16/09 isso NÃO bloqueia a entrega -- mande o clipe -- mas "
-                     "não vai existir imagem nenhuma dele se voltar errado.")
+        notes.append("could not build the contact sheet for this render. "
+                     "Since 16/09 this does NOT block delivery -- send the clip "
+                     "-- but there will be no image of it at all if it comes "
+                     "back wrong.")
     # O render conta o que fez de si, e quem entrega confere antes do MEDIA:.
     # `cross_check` entra junto pelos PIXELS das bordas -- ver o bloco da tarja
     # acima. São as duas cegueiras: `check_sidecar` sabe o que desenhamos e não

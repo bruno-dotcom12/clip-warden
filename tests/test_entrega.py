@@ -152,7 +152,7 @@ class OCaminhoNuncaFoiEscrito(_ComAsDuasPontas):
         warden.entregas_registra(self.clipe)
         code, err = self._confirma()
         self.assertEqual(code, 1, err)
-        self.assertIn("NOT sent: nenhuma mensagem sua citou esse arquivo", err)
+        self.assertIn("NOT sent: no message of yours cites that file", err)
         self.assertEqual(len(warden.entregas_pendentes()), 1)
 
     def test_o_anexo_de_outro_clipe_nao_confirma_este(self):
@@ -173,7 +173,7 @@ class OCaminhoNuncaFoiEscrito(_ComAsDuasPontas):
         self.assertEqual(code, 1, err)          # ainda deve o segundo
         code, err = self._confirma(dois)
         self.assertEqual(code, 1, err)
-        self.assertIn("nenhuma mensagem sua citou esse arquivo", err)
+        self.assertIn("no message of yours cites that file", err)
         pendentes = [r["clip"] for r in warden.entregas_pendentes()]
         self.assertEqual(pendentes, [os.path.abspath(dois)])
 
@@ -194,9 +194,9 @@ class OCaminhoFoiEscritoNoMeioDoTurno(_ComAsDuasPontas):
         warden.entregas_registra(self.clipe)
         code, err = self._confirma()
         self.assertEqual(code, 1, err)
-        self.assertIn("NOT sent: MEDIA escrito no meio do turno", err)
-        self.assertIn("Esse anexo foi descartado", err)
-        self.assertIn("mensagem FINAL", err)
+        self.assertIn("NOT sent: that MEDIA: line was written MID-TURN", err)
+        self.assertIn("that attachment was thrown away", err)
+        self.assertIn("FINAL message of a turn", err)
         self.assertEqual(len(warden.entregas_pendentes()), 1)
 
     def test_a_recusa_diz_a_hora_da_mensagem(self):
@@ -210,7 +210,7 @@ class OCaminhoFoiEscritoNoMeioDoTurno(_ComAsDuasPontas):
         warden.entregas_registra(self.clipe)
         _code, err = self._confirma()
         import re
-        self.assertRegex(err, r"msg às \d\d:\d\d")
+        self.assertRegex(err, r"message at \d\d:\d\d")
 
     def test_a_ultima_mensagem_e_a_que_vale(self):
         """Escreveu no meio, refez no fim: o que vale é a mais recente."""
@@ -411,9 +411,9 @@ class OBlocoDaMensagemFinal(unittest.TestCase):
                              ("b.mp4", "/clipes/b.mp4")])
         self.assertIn("END YOUR TURN NOW", texto)
         self.assertIn("no tool call after it", texto)
-        self.assertIn("Corte 1: <caption>", texto)
+        self.assertIn(warden.RUBRICA_DO_CLIPE.format(i=1), texto)
         self.assertIn("MEDIA:/clipes/a.mp4", texto)
-        self.assertIn("Corte 2: <caption>", texto)
+        self.assertIn(warden.RUBRICA_DO_CLIPE.format(i=2), texto)
         self.assertIn("MEDIA:/clipes/b.mp4", texto)
         # e a ordem é a ordem dos clipes
         self.assertLess(texto.index("/clipes/a.mp4"), texto.index("/clipes/b.mp4"))
@@ -539,9 +539,9 @@ class OQueDeliveredDizQuandoFaltaAlguem(_ComAsDuasPontas):
             code = warden.cmd_delivered(type("A", (), {"clip": None})())
         texto = err.getvalue() + out.getvalue()
         self.assertEqual(code, 1)
-        self.assertIn("Rode este comando no INÍCIO do turno seguinte", texto)
-        self.assertIn("não pode confirmar um envio que ainda não aconteceu",
+        self.assertIn("Run this command again at the START of your NEXT turn",
                       texto)
+        self.assertIn("cannot confirm a send that has not happened yet", texto)
         self.assertNotIn("Do not end your turn while this command exits 1",
                          texto)
 
@@ -1467,3 +1467,291 @@ class ADividaDeEntregaEDaCONVERSA(unittest.TestCase):
         warden._entregas_grava(rows)
         pendentes = [r["clip"] for r in warden.entregas_pendentes()]
         self.assertIn(self.clip, pendentes)
+
+
+# ══════════════════════════════════════════════════════ o conselho impossível
+#
+# Um portão que reprova e manda fazer o que já está feito não é um portão: é um
+# laço. Medido em 7a (16/09/2026), nos renders 2 e 3, texto idêntico nos dois:
+#
+#   That sentence closes 0.0s later, at 30.0s: cut 30.0s instead of 30.0s,
+#   or move the start so it fits in the number that was asked for.
+#
+# (logs-7a/container/render-outs.txt:127 e :169). O agente obedeceu, re-cortou
+# duas vezes, e as duas nasceram reprovadas. Custou 2 renders (~150s de CPU) e
+# 2 laços de espera (~523s) em cima de uma instrução que não dizia nada.
+#
+# A origem é warden_style.py:2669-2677: `falta = float(fecha) -
+# float(side["duration_s"])` montava a frase sem nenhuma guarda para
+# `falta <= 0`.
+
+class OPortaoNuncaMandaCortarNOMESMONUMERO(unittest.TestCase):
+    """A regra, em uma linha: nenhum conselho pode ter o número atual."""
+
+    @staticmethod
+    def _side(fecha, duracao=30.0):
+        return {"duration_s": duracao,
+                "caption": {"cues": 12, "karaoke": True, "max_lines": 2,
+                            "hanging_endings": ["an analogy, which was "
+                                                "something that you"],
+                            "ends_mid_sentence": True,
+                            "sentence_closes_at_s": fecha}}
+
+    def _reprova(self, side):
+        import warden_style as S
+        return [m for nivel, m in S.check_sidecar(side) if nivel == "REJECT"]
+
+    def test_a_frase_que_fecha_NO_FIM_do_corte_nao_vira_cut_X_instead_of_X(self):
+        """`fecha == duração`: era `cut 30.0s instead of 30.0s`."""
+        for msg in self._reprova(self._side(30.0)):
+            self.assertNotIn("cut 30.0s instead of 30.0s", msg)
+            self.assertNotIn("closes 0.0s later", msg)
+
+    def test_nem_quando_o_fim_da_frase_fica_ANTES_do_fim_do_corte(self):
+        """`fecha < duração` dava um `falta` negativo e um `--end` menor que o
+        corte, que não é 'onde a frase fecha' -- é encurtar às cegas."""
+        for msg in self._reprova(self._side(29.2)):
+            self.assertNotIn("cut 29.2s instead of 30.0s", msg)
+
+    def test_a_reprovacao_continua_existindo_e_diz_a_outra_saida(self):
+        """Calar o portão não é a correção: o clipe ENDS mid-sentence de
+        verdade. O que muda é o conselho."""
+        msgs = self._reprova(self._side(30.0))
+        self.assertTrue(any("ENDS mid-sentence" in m for m in msgs), msgs)
+        texto = " ".join(msgs).lower()
+        self.assertIn("move the start", texto)
+
+    def test_quando_a_frase_fecha_DEPOIS_o_conselho_continua_sendo_o_numero(self):
+        """O caso que sempre funcionou não pode ter sido perdido no conserto."""
+        msgs = self._reprova(self._side(31.6))
+        self.assertTrue(any("31.6s" in m for m in msgs), msgs)
+
+    def test_nenhum_conselho_do_portao_repete_o_numero_atual(self):
+        """A invariante, e não os três casos acima: para toda duração e todo
+        ponto de fecho, a mensagem nunca oferece o número que já está lá."""
+        import itertools
+        for dur, fecha in itertools.product((15.0, 20.0, 30.0, 31.1),
+                                            (14.0, 15.0, 20.0, 30.0, 31.1, 44.0)):
+            for msg in self._reprova(self._side(fecha, dur)):
+                self.assertNotIn(f"cut {dur:.1f}s instead of {dur:.1f}s", msg)
+                self.assertNotIn("closes 0.0s later", msg)
+
+
+class ATEXTONaoTRAZUMAFRASEPRONTAEMPORTUGUES(unittest.TestCase):
+    """A nota separa o FATO da FRASE, e a frase é do modelo.
+
+    Medido em 7a: a nota do render mandava o agente dizer, palavra por palavra,
+    `"ficou {N} segundo(s) mais longo para não cortar a frase no meio"`
+    (warden_media.py:4791-4795, :4818-4822; warden_style.py:2674-2677). Ela
+    chegou ao modelo no meio de uma conversa EM INGLÊS -- state.db msgs 69 e
+    75, e o mesmo texto em render-outs.txt:29, :64, :127 -- e a resposta do
+    agente à pessoa foi em português ("Em produção.", msg 21).
+
+    A ferramenta mede; quem escolhe as palavras, e a língua, é o modelo.
+    """
+
+    # O miolo da frase pronta, que é o que a ferramenta não pode mais soletrar.
+    # Procurado como fragmento porque no código ele nasce de uma f-string
+    # quebrada em várias linhas.
+    AMOSTRA = "cortar a frase no meio"
+
+    def _fonte(self, nome):
+        caminho = os.path.join(os.path.dirname(HERE), "warden-shared",
+                               "scripts", nome)
+        with open(caminho, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_a_amostra_em_portugues_saiu_das_notas_do_render(self):
+        for nome in ("warden_media.py", "warden_style.py"):
+            fonte = self._fonte(nome)
+            self.assertNotIn(self.AMOSTRA, fonte,
+                             f"{nome} ainda soletra a frase que o modelo tem "
+                             f"de repassar, numa língua só")
+
+    def test_o_fato_medido_continua_na_nota(self):
+        """Tirar a frase não pode ter tirado o número: o que a pessoa precisa
+        ouvir é que o clipe ficou mais longo, e só a ferramenta sabe quanto."""
+        fonte = self._fonte("warden_media.py")
+        self.assertIn("because the cut landed in the middle", fonte)
+        # "in their own" e não a frase inteira: no código ela nasce de uma
+        # f-string quebrada em duas linhas.
+        # `>=` e não `==`: contar exatamente duas era transformar "as duas
+        # notas de duração mandam o modelo escolher as palavras" em "só elas
+        # podem mandar". Em 16/09 uma TERCEIRA nota ganhou a mesma correção --
+        # a de `not burning captions`, que trazia pronta a frase `"esse vídeo
+        # já vem legendado, então não pus legenda em cima"` para o modelo
+        # repassar palavra por palavra -- e este teste reprovou o conserto.
+        self.assertGreaterEqual(fonte.count("their own language"), 2,
+                                "as notas de duração -- a que estende e a que "
+                                "encurta -- têm de mandar o modelo escolher as "
+                                "palavras")
+        self.assertNotIn("esse vídeo já vem legendado", fonte)
+
+
+class OCHECKLISTFALAALINGUADORESTODASAIDA(unittest.TestCase):
+    """As últimas linhas que o agente lê a cada render, e elas eram só em PT.
+
+    Medido em 7a: a saída do render trazia os oito itens em português -- `o
+    hook cabe inteiro no quadro...` -- no meio de um bloco em inglês e de uma
+    conversa em inglês (state.db id 69; render-outs.txt, bloco do render 1). O
+    cabeçalho do `prep` e este checklist são a primeira e a última coisa lidas
+    a cada render: é o banho de português que antecede toda prosa que o modelo
+    escreve, e a prosa saiu em português (msg 21, "Em produção.").
+
+    O checklist NÃO é uma frase para a pessoa: é a conferência que o modelo faz
+    olhando o mosaico. Então ele segue a língua do resto da saída da
+    ferramenta, que é inglês.
+    """
+
+    def test_nenhum_item_traz_palavra_exclusiva_do_portugues(self):
+        import warden_style as S
+        # Só marcas inequívocas: " no " e " que " também são inglês, e um
+        # marcador ambíguo reprova a tradução correta.
+        marcas = ("ção", "não", "está", "quadro", "legenda", "moldura",
+                  "máximo", "amarelo", " da ", " do ", "coberto")
+        for item in S.CHECKLIST:
+            for marca in marcas:
+                self.assertNotIn(marca, item.lower(),
+                                 f"item ainda em português: {item!r}")
+
+    def test_o_checklist_continua_com_os_oito_itens(self):
+        """Traduzir não pode ter virado encurtar: cada item corresponde a um
+        defeito medido num clipe reprovado."""
+        import warden_style as S
+        self.assertEqual(len(S.CHECKLIST), 8)
+        for item in S.CHECKLIST:
+            self.assertTrue(item.strip())
+
+
+# ══════════════════════════════════ AUDITORIA 8: o livro de entregas tem de FECHAR
+
+class OLivroFechaSozinhoNoTurnoSEGUINTE(_ComAsDuasPontas):
+    """Achado 11 do ACHADOS-FASE-1, e o pré-requisito da trava do pedido 4.
+
+    Medido em 7a, DEPOIS da janela do diagnóstico: duas mensagens finais com
+    `MEDIA:` (msg 91 às 15:14:47 e msg 97 às 15:17:10), com o gateway
+    confirmando `Delivering 2 non-image MEDIA attachment(s)` nas duas, e
+    `entregas.json` continuou com `"sent": false` nos dois clipes. `warden
+    delivered` continuou respondendo `2 clip(s) rendered and cleared, and NOT
+    confirmed as sent`, e por isso a msg 97 começa com "Reenviando os dois
+    cortes, porque o sistema não confirmou que chegaram".
+
+    A causa é estrutural e está em `cmd_delivered`: SEM argumento o comando
+    só LISTA. Toda a verificação -- `mensagem_que_citou` + `envios_desde` --
+    está atrás do `if args.clip:`, e nada obriga ninguém a passar um caminho.
+    O agente rodou a forma sem argumento, leu "não confirmado", e reenviou.
+
+    Por que isto vem ANTES de confiar na trava do pedido 4: a trava recusa um
+    `lote render` novo enquanto houver clipe com `"sent": false`. Se o livro
+    nunca fecha, a trava deixa de ser uma rede e vira um `lote render` que
+    nunca mais roda nesta conversa.
+    """
+
+    def _sem_argumento(self):
+        err, out = io.StringIO(), io.StringIO()
+        with redirect_stderr(err), redirect_stdout(out):
+            code = warden.cmd_delivered(type("A", (), {"clip": None})())
+        return code, err.getvalue() + out.getvalue()
+
+    def test_sem_argumento_o_livro_fecha_quando_a_prova_existe(self):
+        """A prova é a mesma que o comando COM argumento já aceita."""
+        escreve_state_db(self.db, [
+            ("assistant", f"here it is\nMEDIA:{os.path.abspath(self.clipe)}",
+             "stop")])
+        self._anexo_saiu()
+        warden.entregas_registra(self.clipe)
+        code, saida = self._sem_argumento()
+        self.assertEqual(code, 0, saida)
+        self.assertEqual(warden.entregas_pendentes(), [])
+
+    def test_sem_argumento_os_dois_clipes_do_mesmo_envio_fecham(self):
+        """O caso exato da msg 91: duas linhas `MEDIA:` na mesma final."""
+        dois = self._arquivo("corte-02.mp4")
+        escreve_state_db(self.db, [
+            ("assistant",
+             f"here they are\nMEDIA:{os.path.abspath(self.clipe)}\n"
+             f"MEDIA:{os.path.abspath(dois)}", "stop")])
+        self._anexo_saiu(2)
+        warden.entregas_registra(self.clipe)
+        warden.entregas_registra(dois)
+        code, saida = self._sem_argumento()
+        self.assertEqual(code, 0, saida)
+        self.assertEqual(warden.entregas_pendentes(), [])
+
+    def test_sem_argumento_o_que_NAO_saiu_continua_devendo(self):
+        """Fechar o livro não pode virar riscar tudo.
+
+        O clipe citado no meio do turno é o defeito que este projeto perdeu
+        clipe por não ver; ele tem de sobreviver a esta varredura.
+        """
+        dois = self._arquivo("corte-02.mp4")
+        escreve_state_db(self.db, [
+            ("assistant", f"MEDIA:{os.path.abspath(self.clipe)}", "stop"),
+            ("assistant", f"MEDIA:{os.path.abspath(dois)}", "tool_calls")])
+        self._anexo_saiu()
+        warden.entregas_registra(self.clipe)
+        warden.entregas_registra(dois)
+        code, saida = self._sem_argumento()
+        self.assertEqual(code, 1, saida)
+        self.assertEqual([r["clip"] for r in warden.entregas_pendentes()],
+                         [os.path.abspath(dois)])
+
+    def test_sem_argumento_e_sem_prova_nenhuma_nada_e_riscado(self):
+        """Nenhuma mensagem citou nada: o livro continua aberto, como deve."""
+        escreve_state_db(self.db, [("assistant", "rendering", "stop")])
+        warden.entregas_registra(self.clipe)
+        code, saida = self._sem_argumento()
+        self.assertEqual(code, 1, saida)
+        self.assertEqual(len(warden.entregas_pendentes()), 1)
+
+
+class ORecadoDeEntregaNaoFalaPortugues(_ComAsDuasPontas):
+    """Item 7 da auditoria: `warden.py:5620` é a mais barata e a mais grave.
+
+    Ela é meia string em português e meia em inglês NA MESMA FRASE -- `NOT
+    sent: MEDIA escrito no meio do turno (msg às HH:MM). Esse anexo foi
+    descartado. Repita essa linha MEDIA: na mensagem FINAL. The message that
+    carried ... ended with finish_reason=...` -- e é exatamente o que o agente
+    lê quando a entrega JÁ falhou, isto é, no momento em que ele mais precisa
+    de uma instrução que não o faça trocar de idioma.
+    """
+
+    # As mesmas palavras só-de-português usadas no bloco final. Ver
+    # tests/test_media_na_saida.py: texto de ferramenta é instrução para o
+    # modelo, e a língua dela é a do resto da saída do render.
+    PT = ("escrito", "descartado", "mensagem", "anexo", "nenhuma", "citou",
+          "esse", "essa", "arquivo", "turno", "repita", "rode", "envio",
+          "aconteceu", "seguinte", "início", "linha", "não", "ele")
+
+    def _pt_em(self, texto):
+        import re as _re
+        achadas = _re.findall(r"[^\W\d_]+",
+                              _re.sub(r"/\S+|MEDIA:\S*", " ", texto),
+                              flags=_re.UNICODE)
+        return sorted({p for p in achadas if p.lower() in self.PT})
+
+    def test_o_recado_de_nunca_citado_e_em_ingles(self):
+        escreve_state_db(self.db, [("assistant", "rendering", "stop")])
+        warden.entregas_registra(self.clipe)
+        _code, err = self._confirma()
+        self.assertIn("NOT sent", err)
+        self.assertEqual(self._pt_em(err), [], err)
+
+    def test_o_recado_de_meio_do_turno_e_em_ingles(self):
+        escreve_state_db(self.db, [
+            ("assistant", f"MEDIA:{os.path.abspath(self.clipe)}", "tool_calls")])
+        warden.entregas_registra(self.clipe)
+        _code, err = self._confirma()
+        self.assertIn("NOT sent", err)
+        self.assertEqual(self._pt_em(err), [], err)
+
+    def test_a_cobranca_final_e_em_ingles(self):
+        """A última linha do `warden delivered` sem argumento dizia `Rode este
+        comando no INÍCIO do turno seguinte. Ele não pode confirmar um envio
+        que ainda não aconteceu.` no meio de um parágrafo em inglês."""
+        warden.entregas_registra(self.clipe)
+        err, out = io.StringIO(), io.StringIO()
+        with redirect_stderr(err), redirect_stdout(out):
+            warden.cmd_delivered(type("A", (), {"clip": None})())
+        texto = err.getvalue() + out.getvalue()
+        self.assertEqual(self._pt_em(texto), [], texto)
