@@ -6304,7 +6304,7 @@ def verifica_um_envio(caminho, varredura=False):
         _ja = entregas_reenvios_pedidos(caminho)
         entregas_pede_reenvio(caminho)
         _de_novo = ("" if not _ja else
-                    f" This is the {_ja + 1}th time this clip measures as a "
+                    f" That is {_ja + 1} times this clip has measured as a "
                     f"send that did not happen. The file is still not theirs, "
                     f"so this keeps holding the batch -- that is the honest "
                     f"state, not a bug. If you need the next render to run "

@@ -39,46 +39,98 @@ import unittest
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(RAIZ, "warden-shared", "scripts")
 
-# A REGRA É SOBRE PROSA, NÃO SOBRE ORDEM ENTRE COMANDOS.
+# O GATILHO É INVERTIDO, E ESSA É A LIÇÃO QUE CUSTOU TRÊS AUDITORIAS.
 #
-# A primeira versão desta varredura acusava "run `warden delivered` before you
-# render anything" e "Read that before you cut one" -- as duas legítimas: rodar
-# um comando antes de outro no mesmo turno é o trabalho normal. O que mata a
-# entrega é PROSA entre duas chamadas de ferramenta.
+# A primeira versão deste arquivo listava cinco verbos de dizer e quatro de
+# ação. Uma auditoria escreveu doze frases venenosas e ela pegou DUAS -- as duas
+# de onde os regexes tinham sido copiados. Era a caçada de cópias com outro
+# nome. Escapavam "let them know", "post a note", "drop a line", "say X then
+# immediately Y", e a forma inteira em PORTUGUÊS, que é metade do que se escreve
+# aqui.
 #
-# Então o gatilho é um VERBO DE DIZER perto de uma forma de "e siga". Sem o
-# verbo de dizer não há acusação -- uma varredura que reprova quem está certo é
-# desligada na semana seguinte, e aí não pega mais o peixe que importa.
-# `tell(s) you` é o DOCUMENTO falando com o agente ("section 5 tells you to read
-# this"), não o agente falando com a pessoa. Sem esta exclusão a varredura
-# acusava um ponteiro entre arquivos.
-DIZER = (r"(?:say|says|saying|tells? (?!you\b)|telling (?!you\b)|"
-         r"send (?:one |a |ONE )?(?:short )?(?:line|message)|"
-         r"write to (?:them|the person))")
-
-FORMAS = (
-    # warden-run/SKILL.md, a 3ª cópia: "send ONE short line ... BEFORE you run
-    # a single command ... Then work without stopping."
-    (DIZER + r"[^.]{0,120}?\bbefore you (?:run|start|render|cut)\b",
-     "mandar falar ANTES de rodar"),
-    (r"(?i)\bbefore you (?:run|start|render|cut)\b[^.]{0,120}?" + DIZER,
-     "mandar falar ANTES de rodar"),
-    # warden-package/SKILL.md: "say so before rendering a clip".
-    (DIZER + r"[^.]{0,60}?\bbefore rendering\b", "mandar falar antes de renderizar"),
-    # warden.py (lote prep), a 2ª: "Say those five lines ... and keep going."
-    (DIZER + r"[^.]{0,160}?\bkeep going\b", "mandar falar e seguir"),
-    (r"(?i)\bwork without stopping\b", "mandar falar e seguir"),
-    # warden.py (lote prep): "then, in the SAME turn, pick N window(s) and run"
-    (DIZER + r"[^.]{0,160}?in the SAME turn", "mandar falar e agir no mesmo turno"),
-    # warden_media.py: "a long silence in a chat -- say so before you wait."
-    (DIZER + r"[^.]{0,40}?\bbefore you wait\b", "mandar avisar antes de esperar"),
+# Então a pergunta mudou de "esta frase é uma das que eu conheço?" para "esta
+# instrução de FALAR diz que a fala encerra o turno?". Toda fala sem esse
+# marcador é acusada, e o ruído se resolve com EXCEÇÕES NOMEADAS lá embaixo --
+# uma exceção nomeada é auditável; um regex que só casa o que já aconteceu não é.
+DIZER = (
+    # inglês
+    r"say|says|saying|said|tells? (?!you\b)|telling (?!you\b)|speak|"
+    r"announce|announces|"
+    r"acknowledge|reply|replies|report back|let (?:them|him|her|the person|the owner) know|"
+    r"(?:post|drop|leave) (?:a |one )?\w*\s?(?:note|line|message)|"
+    r"give (?:them )?a heads[- ]up|message them|write to (?:them|the person)|"
+    r"send (?:one |a |ONE |the )?(?:short |quick )?(?:line|message|note|word)|"
+    # português
+    r"diga|dizer|avise|avisar|fale|falar|responda|responder|conte|contar|"
+    r"mande (?:uma )?(?:linha|mensagem|recado)|manda (?:uma )?(?:linha|mensagem)"
 )
 
-# O que TORNA a frase segura. Uma instrução de falar só é legítima quando diz,
-# na mesma vizinhança, que a fala encerra o turno.
+# O que, DEPOIS da fala, denuncia que o turno continua. Deliberadamente largo:
+# qualquer trabalho que venha atrás de uma fala, no mesmo fôlego.
+SEGUE = (
+    # `before you SAY` é sempre a direção segura -- a fala é a subordinada, e o
+    # que vem antes é a evidência ("o bloco do veredito antes de você dizer que
+    # o clipe passou"). Só conta como "e siga" quando o que vem depois do
+    # `before you` é TRABALHO.
+    r"then|and then|e siga|e continue|e depois|"
+    r"before you (?!say|says|tell|tells|speak|announce|reply|mention)|"
+    r"before rendering|"
+    r"antes de|keep going|keeps going|carry on|carrying on|proceed|proceeds|"
+    r"continue|continues|continuing|immediately|right away|without (?:stopping|"
+    r"pausing)|sem parar|while it (?:runs|is running)|in the SAME turn|"
+    r"no mesmo turno|kick off|first, then|while (?:it|the \w+(?: \w+)?) (?:runs|is running)"
+)
+
+# As AÇÕES que, vindo depois da fala, fecham a acusação. Também largo.
+ACAO = (
+    r"run|runs|render|renders|rendering|cut|cuts|upload|uploads|publish|"
+    r"publishes|post|posts|download|downloads|send|sends|queue|begin|batch|"
+    r"job|command|clip|window|start|starts|starting|rode|rodar|renderiz|corta|cortar|publicar|postar"
+)
+
+# A DIREÇÃO É O TUDO. `DIZER ... then ... AÇÃO` é o defeito de 16/09. O inverso,
+# `AÇÃO ... before you say`, é a regra mais antiga deste projeto -- verificar com
+# o comando ANTES de afirmar qualquer coisa -- e uma versão anterior desta rede
+# acusava as sete ocorrências dela. Uma rede que reprova a regra certa é
+# desligada na mesma semana.
+FORMAS = (
+    (r"(?:%s)\b[^.!?]{0,140}?\b(?:%s)\b[^.!?]{0,60}?\b(?:%s)" % (DIZER, SEGUE, ACAO),
+     "falar e seguir trabalhando no mesmo turno"),
+    # "Before you run a single command, SEND one short line" -- a frase de
+    # 16/09. Aqui o "before you" abre a oração SUBORDINADA e o imperativo é o
+    # de DIZER: fala primeiro, trabalha depois. É o oposto de "read it back
+    # before you say a word", onde o imperativo é o de agir e a fala vem
+    # depois da verificação -- e essa é a regra mais antiga do projeto.
+    (r"(?:^|[.!?]\s+)\s*before (?:you )?(?:%s)\b[^.!?]{0,90}?,\s*(?:%s)"
+     % (ACAO, DIZER),
+     "falar ANTES de trabalhar, no mesmo turno"),
+    # "Tell the person what you are doing WHILE the render runs" -- aqui o
+    # trabalho não vem depois da fala, corre JUNTO dela, e o turno é o mesmo.
+    (r"(?:%s)\b[^.!?]{0,120}?\bwhile\b[^.!?]{0,60}?\b(?:%s)" % (DIZER, ACAO),
+     "falar enquanto o trabalho corre, no mesmo turno"),
+)
+
+# EXCEÇÕES NOMEADAS. Cada uma é uma frase real deste repositório que a rede
+# acusa e que está CERTA, com o motivo escrito. Auditável, ao contrário de um
+# regex estreito: quem acrescentar uma aqui está declarando o que está fazendo.
+EXCECOES = (
+    # A fala que acompanha o clipe VAI na mensagem final, junto do MEDIA:.
+    "beside the clip",
+    "beside a clip",
+    "ao lado do clipe",
+    # O comando imprime o que a pessoa deve ouvir; quem fala é o modelo, depois.
+    "in THEIR language",
+    "in their own language",
+    "na língua dela",
+)
+
+# `on the next` SOZINHO era chave-mestra: qualquer parágrafo com "on the next
+# pass/render" a 260 chars desarmava a acusação, e este repositório usa a
+# expressão o tempo todo. Agora só conta quando fala de TURNO.
 SEGURO = re.compile(
-    r"(?i)(final message|last message|END (?:a|that|your) turn|ends that turn|"
-    r"ENDS THAT TURN|never between two tool calls|on the next)")
+    r"(?i)(final message|last message|END (?:a|that|your|this) turn|"
+    r"ends that turn|ENDS THIS TURN|never between two tool calls|"
+    r"on the next turn|encerra o turno|mensagem final)")
 
 JANELA = 260
 
@@ -107,12 +159,26 @@ def textos_da_imagem():
 
 
 def strings_impressas():
-    """(rótulo, texto) de cada literal que os scripts do warden imprimem.
+    """(rótulo, texto) de cada literal que os scripts do warden mandam ao modelo.
 
     A saída de ferramenta é o caso MAIS grave, e não o menos: a persona diz, com
     todas as letras, que o que a ferramenta imprime vence a memória dela --
     "tool output reaches you whole even when this page and the skills have been
     pruned". Uma ordem errada aqui sobrevive à poda que apaga a regra certa.
+
+    TRÊS CEGUEIRAS QUE UMA AUDITORIA MEDIU EM 16/09, e que esta função teve de
+    aprender a enxergar:
+
+    1. CONSTANTE DE MÓDULO IMPRESSA POR NOME. `print(ROTULO_PRONTAS, ...)` não
+       tem literal nenhum nos argumentos, e a versão anterior só olhava
+       `ast.Constant`. As três linhas invisíveis eram justamente
+       `ROTULO_PRONTAS`, `MANDA_AS_LINHAS` e `RUBRICA_DO_CLIPE` -- ou seja, O
+       BLOCO DE ENTREGA, o texto mais load-bearing do sistema.
+    2. `die()`, `fala()`, `diz()`. Escrevem em stderr pelo mesmo canal e o
+       modelo os lê igual. Só `print` era varrido.
+    3. FRASE PARTIDA EM DOIS `print()` SEGUIDOS -- o padrão dominante em
+       `warden.py`. Cada um era um alvo isolado, então a forma proibida podia
+       viver na emenda. Agora `print`s adjacentes são costurados antes de casar.
     """
     saida = []
     for nome in sorted(os.listdir(SCRIPTS)):
@@ -123,19 +189,55 @@ def strings_impressas():
             arvore = ast.parse(open(caminho, encoding="utf-8").read())
         except SyntaxError:  # pragma: no cover
             continue
-        for no in ast.walk(arvore):
-            if not (isinstance(no, ast.Call)
-                    and isinstance(no.func, ast.Name)
-                    and no.func.id == "print"):
-                continue
+
+        # As constantes de módulo, para resolver `print(NOME)` e `NOME.format()`.
+        constantes = {}
+        for no in arvore.body:
+            if isinstance(no, ast.Assign) and isinstance(no.value, ast.Constant) \
+                    and isinstance(no.value.value, str):
+                for alvo in no.targets:
+                    if isinstance(alvo, ast.Name):
+                        constantes[alvo.id] = no.value.value
+
+        def texto_de(no):
+            """Todo pedaço de string alcançável a partir deste nó."""
             pedacos = []
-            for arg in no.args:
-                for sub in ast.walk(arg):
-                    if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
-                        pedacos.append(sub.value)
-            if pedacos:
-                saida.append((f"warden-shared/scripts/{nome}:{no.lineno}",
-                              " ".join(pedacos)))
+            for sub in ast.walk(no):
+                if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                    pedacos.append(sub.value)
+                elif isinstance(sub, ast.Name) and sub.id in constantes:
+                    pedacos.append(constantes[sub.id])
+            return pedacos
+
+        # Uma lista por bloco, para costurar chamadas adjacentes.
+        blocos = []
+        for pai in ast.walk(arvore):
+            corpo = getattr(pai, "body", None)
+            if not isinstance(corpo, list):
+                continue
+            atual = []
+            for no in corpo:
+                fala = None
+                if isinstance(no, ast.Expr) and isinstance(no.value, ast.Call):
+                    chamada = no.value
+                    alvo = chamada.func
+                    quem = (alvo.id if isinstance(alvo, ast.Name)
+                            else getattr(alvo, "attr", ""))
+                    if quem in ("print", "die", "fala", "diz"):
+                        fala = (no.lineno, texto_de(chamada))
+                if fala and fala[1]:
+                    atual.append(fala)
+                else:
+                    if atual:
+                        blocos.append(atual)
+                    atual = []
+            if atual:
+                blocos.append(atual)
+
+        for bloco in blocos:
+            linha = bloco[0][0]
+            junto = " ".join(t for _l, ts in bloco for t in ts)
+            saida.append((f"warden-shared/scripts/{nome}:{linha}", junto))
     return saida
 
 
@@ -146,7 +248,10 @@ def _acusacoes(alvos):
         for padrao, porque in FORMAS:
             for achado in re.finditer(padrao, corrido, re.IGNORECASE):
                 ini = max(0, achado.start() - JANELA)
-                if SEGURO.search(corrido[ini:achado.end() + JANELA]):
+                vizinhanca = corrido[ini:achado.end() + JANELA]
+                if SEGURO.search(vizinhanca):
+                    continue
+                if any(e.lower() in vizinhanca.lower() for e in EXCECOES):
                     continue
                 faltas.append(
                     "%s: %s -- %r"
@@ -180,19 +285,91 @@ class NadaMandaFalarNoMeioDoTurno(unittest.TestCase):
             "ferramenta imprime ACIMA da própria memória, então esta ordem "
             "sobrevive à poda que apaga a regra certa:\n  " + "\n  ".join(faltas))
 
-    def test_a_varredura_pega_a_frase_que_custou_a_gravacao(self):
-        """A rede tem de pegar o peixe. A frase exata de warden-run, de 16/09."""
-        veneno = ("Before you run a single command, send ONE short line saying "
-                  "you are on it. Then work without stopping.")
-        self.assertTrue(
-            _acusacoes([("teste", veneno)]),
-            "a varredura NÃO pega a frase que custou a quarta gravação")
+    def test_a_rede_pega_doze_formas_diferentes(self):
+        """A rede tem de pegar peixe que ela não conhece.
 
-    def test_a_varredura_nao_reprova_a_redacao_certa(self):
-        """E não pode pegar quem está certo, ou alguém a desliga."""
-        bom = ("Start the job in the BACKGROUND with notify on, then END that "
-               "turn with ONE short line saying you are on it.")
-        self.assertEqual([], _acusacoes([("teste", bom)]))
+        A primeira versão deste arquivo tinha dois testes aqui, e uma auditoria
+        os chamou pelo nome: tautologias. Um afirmava que o regex casava a
+        frase de onde o regex tinha sido copiado. Medido: a rede pegava 2 destas
+        12. Estas doze formas foram escritas POR OUTRA PESSOA, sem olhar os
+        padrões, e é isso que as faz valerem alguma coisa.
+        """
+        veneno = (
+            ("controle 16/09", "Before you run a single command, send ONE short "
+             "line saying you are on it. Then work without stopping."),
+            ("4a copia", "If they ask for another attempt, say what you are "
+             "changing and why BEFORE you start it."),
+            ("let them know", "Let the person know you are starting, and carry "
+             "on with the remaining clips."),
+            ("post a note", "Post a quick note in the chat acknowledging the "
+             "request, then kick off the render."),
+            ("then immediately", "Say you are on it, then immediately call "
+             "`lote render` for the next window."),
+            ("while it runs", "Tell the person what you are doing while the "
+             "render job runs in the background."),
+            ("before you upload", "Send one short line to the person before you "
+             "upload the clip to TikTok."),
+            ("heads-up", "Give them a heads-up before you render so they are "
+             "not left staring at nothing."),
+            ("em portugues", "Avise a pessoa em uma linha antes de rodar "
+             "qualquer comando, e siga trabalhando sem parar."),
+            ("do not stay silent", "Do not stay silent: drop a line in chat "
+             "first, then continue the batch without pausing."),
+            ("say so and proceed", "Say so in the chat and proceed with the "
+             "second window right away."),
+            ("send a message first", "Send a message to the person first, then "
+             "run the three renders back to back."),
+        )
+        escaparam = [nome for nome, frase in veneno
+                     if not _acusacoes([(nome, frase)])]
+        self.assertEqual(
+            [], escaparam,
+            "a rede não pega %d de %d formas de mandar falar no meio do turno. "
+            "Cada uma que escapa é a 5ª cópia entrando com a suíte verde: %s"
+            % (len(escaparam), len(veneno), escaparam))
+
+    def test_a_rede_nao_reprova_quem_esta_certo(self):
+        """Uma rede barulhenta é desligada, e aí não pega mais nada.
+
+        As cinco são formas legítimas que versões anteriores desta varredura
+        acusaram -- inclusive a regra mais antiga do projeto, "verifique com o
+        comando ANTES de afirmar", que tem sete ocorrências no repositório.
+        """
+        legitimas = (
+            ("ordem entre comandos",
+             "Run `warden delivered` before you render anything else."),
+            ("ponteiro entre arquivos",
+             "Section 5 tells you to read this reference before you cut one."),
+            ("aviso que encerra o turno",
+             "Start the job in the BACKGROUND with notify on, then END that "
+             "turn with ONE short line saying you are on it."),
+            ("evidencia antes da fala",
+             "`stored and verified` with a path before you say one is stored."),
+            ("clausula ao lado do clipe",
+             "Repass the warning in ONE clause beside the clip, in their "
+             "language."),
+        )
+        acusadas = [nome for nome, frase in legitimas
+                    if _acusacoes([(nome, frase)])]
+        self.assertEqual([], acusadas,
+                         "a rede acusa quem está certo, e vai ser desligada: %s"
+                         % acusadas)
+
+    def test_a_rede_le_o_bloco_de_entrega(self):
+        """As três linhas mais load-bearing do sistema eram invisíveis.
+
+        `ROTULO_PRONTAS`, `MANDA_AS_LINHAS` e `RUBRICA_DO_CLIPE` são impressas
+        por NOME, e a versão anterior só lia `ast.Constant` dentro do `print`.
+        São exatamente o texto que `warden-clip/SKILL.md` manda obedecer ACIMA
+        da memória do agente -- e a rede que existe para proteger a regra não
+        conseguia lê-las.
+        """
+        todo = " ".join(t for _r, t in strings_impressas())
+        for frase in ("END YOUR TURN NOW",
+                      "send these lines in your FINAL reply",
+                      "caption, in the person"):
+            self.assertIn(frase, todo,
+                          "a varredura não enxerga o bloco de entrega: %r" % frase)
 
 
 if __name__ == "__main__":

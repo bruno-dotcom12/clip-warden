@@ -55,7 +55,7 @@ Never search the process list for the command's name: it matches the shell
 running it, so it never ends.
 
 **The wait step is still NOT MEASURED clean**: every run so far fell back to
-polling. If it misbehaves, say so in one line and read the log.
+polling. If it misbehaves, read the log first and say so in the message that ends the turn.
 
 ## 0. The link may be one message behind
 

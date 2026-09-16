@@ -62,10 +62,10 @@ a rule from a rejection notice.
 
 ## When it rejects
 
-Say which single change fixes it, with the number the tool gave -- one change
-and its size, not a list. If the fix is a re-render and you are the one
-delivering, re-render and deliver: you know the source and the window. Do not
-offer and wait.
+Name the single change that fixes it, with the number the tool gave -- one
+change and its size, not a list. If the fix is a re-render and you are the one
+delivering, re-render and deliver it in the final message of that turn: you know
+the source and the window. Do not offer and wait.
 
 ## When they were rejected by the campaign itself
 
