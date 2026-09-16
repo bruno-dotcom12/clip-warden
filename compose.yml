@@ -20,6 +20,11 @@ services:
       # below, not localhost: the provider is a sibling container, and the
       # tool's own default (127.0.0.1) is for someone running it on the host.
       WARDEN_POT_URL: ${WARDEN_POT_URL:-http://pot:4416}
+      # Quantos clipes de um lote renderizam ao mesmo tempo. Dois, medido em
+      # 16/09/2026: o lote de dois clipes levava 105s em fila e o render é o
+      # que sobrou de lento depois que o download deixou de trazer o vídeo
+      # inteiro. O container tem 8 CPUs e um render sozinho usava 278% delas.
+      WARDEN_RENDER_PARALELO: ${WARDEN_RENDER_PARALELO:-2}
       # ── A REGRA DESTE BLOCO ────────────────────────────────────────────
       # O QUE ENTRA NA IMAGEM É PÚBLICO, porque este agente é publicado.
       # Credencial, cookie e chave de API entram da MÁQUINA DE QUEM INSTALA,
@@ -110,7 +115,12 @@ services:
     # the number to lower, or raise the VM -- the agent needs about 2 GiB to
     # transcribe and render at once, and saying so here beats a stranger
     # discovering it as a kill.
-    mem_limit: 3g
+    # 4g e não 3g desde 16/09/2026, e o motivo é o render em paralelo.
+    # `WARDEN_RENDER_PARALELO=2` corta o tempo do lote pela metade, e dois
+    # ffmpeg ao mesmo tempo não cabiam nos 3 GiB com folga nenhuma: o pico de
+    # UM render com transcrição junto já era 1815 MiB. Velocidade que o OOM
+    # killer interrompe não é velocidade.
+    mem_limit: 4g
     mem_reservation: 768m
 
     # 99 tasks measured at peak; ffmpeg's threads are most of it. 512 is five
