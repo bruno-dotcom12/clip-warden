@@ -203,7 +203,7 @@ services:
     # A saída escolhida foi levantar a VM, não baixar o teto: o maior pico
     # medido neste projeto é 1815 MiB. (Ressalva honesta: os dois lugares que
     # citam esse número discordam sobre QUAL carga o produziu --
-    # RELATORIO-AUDITORIA-13-09.md:108 diz transcrição + corte juntos, em
+    # notas/RELATORIO-AUDITORIA-13-09.md:108 diz transcrição + corte juntos, em
     # 13/09, e tests/test_lote.py diz lote SEQUENCIAL de dois clipes, em 16/09.
     # Não está resolvido, e o valor do teto não depende de resolver.) O único
     # número do 7a -- 1,024 GiB -- não é pico nenhum:

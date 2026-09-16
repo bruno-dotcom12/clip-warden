@@ -76,7 +76,7 @@ projeto é **1815 MiB**. Baixar o teto para caber na VM de hoje daria 2800m, ou
 1,54× esse pico, contra os 2,26× de agora — e apertaria justamente o passo mais
 pesado, que é a transcrição junto com o render. Ressalva honesta: os dois
 lugares que citam 1815 MiB discordam sobre qual carga o produziu
-(`RELATORIO-AUDITORIA-13-09.md:108` diz transcrição + corte juntos, em 13/09;
+(`notas/RELATORIO-AUDITORIA-13-09.md:108` diz transcrição + corte juntos, em 13/09;
 `tests/test_lote.py` diz lote sequencial de dois clipes, em 16/09). O teto não
 depende de resolver isso.
 

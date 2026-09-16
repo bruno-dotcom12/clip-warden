@@ -3,7 +3,7 @@
 
 A suíte inteira troca `warden_tiktok._http`, que é a única porta para fora do
 processo. O que ela mede não é se o TikTok responde — isso foi medido à mão em
-14/09/2026 e está registrado em `CRITERIO-TESTE-TIKTOK-INBOX.md` — e sim as
+14/09/2026 e está registrado em `notas/CRITERIO-TESTE-TIKTOK-INBOX.md` — e sim as
 três coisas que decaem em silêncio quando ninguém trava nelas:
 
 1. O corpo do init tem QUATRO campos. Não tem legenda, não tem título, não tem

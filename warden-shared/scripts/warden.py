@@ -1270,7 +1270,7 @@ def cmd_tiktok(args):
         # NÃO se promete quanto tempo falta, e a primeira versão desta linha
         # prometia: dizia que "usually reaches SEND_TO_USER_INBOX within a
         # minute". A medição de 14/09 é UMA amostra (~21s), e
-        # CRITERIO-TESTE-TIKTOK-INBOX.md registra que quanto tempo o rascunho
+        # notas/CRITERIO-TESTE-TIKTOK-INBOX.md registra que quanto tempo o rascunho
         # leva para aparecer continua não provado. Uma amostra não é "usually".
         print(f"the upload finished and TikTok last reported {estado}, which is "
               f"not the inbox yet. How long it takes from here has not been "

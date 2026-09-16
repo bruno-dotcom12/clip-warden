@@ -31,7 +31,7 @@ defeitos é invisível para aritmética. É real, e é por isso que o `warden cu
 passou a escrever um contact sheet do próprio render. Até 16/09/2026 abrir essa
 imagem era condição de envio: o `deliver` recusava imprimir `MEDIA:` sem isso.
 
-A evidência daquele clipe está no repositório: `evidencia-clipe-reprovado.jpg`.
+A evidência daquele clipe está no repositório: `notas/evidencia-clipe-reprovado.jpg`.
 
 ## Por que mudou, e quanto custou
 

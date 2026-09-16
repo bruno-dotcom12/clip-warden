@@ -18,8 +18,8 @@ key `sbawmkiukayqqc1740`, escopo concedido `user.info.basic,video.upload` — se
 O dono abriu o app, publicou, entrou em OUTRA conta e viu o vídeo. Então a trava
 de `SELF_ONLY` para cliente não auditado não alcança este fluxo. O registro
 inteiro, com o critério escrito ANTES do teste, está em
-`CRITERIO-TESTE-TIKTOK-INBOX.md`; o mapa das três redes está em
-`ANALISE-POSTAGEM-REDES.md`.
+`notas/CRITERIO-TESTE-TIKTOK-INBOX.md`; o mapa das três redes está em
+`notas/ANALISE-POSTAGEM-REDES.md`.
 
 Duas coisas que custaram tempo e que este módulo diz em voz alta, toda vez:
 
