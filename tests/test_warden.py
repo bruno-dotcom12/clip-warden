@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 import re
 import shutil
 import io
+import sqlite3
 import sys
 import time
 import tempfile
@@ -4488,6 +4489,36 @@ class ContagemDeEntregas(unittest.TestCase):
         self._log_antigo = warden.GATEWAY_LOG
         warden.GATEWAY_LOG = self.log
         self.addCleanup(setattr, warden, "GATEWAY_LOG", self._log_antigo)
+        # E o mesmo vale para o state.db, que entrou na verificação depois
+        # destes testes e não tinha sido isolado. Sem isto eles liam o banco
+        # REAL da máquina: no Mac ele não existe e o comando risca o clipe
+        # dizendo "não verificado", então passavam; dentro do container ele
+        # existe, nenhuma mensagem de verdade cita `corte-01.mp4`, e os mesmos
+        # dois testes falhavam. Um teste que só passa onde falta um arquivo não
+        # estava medindo a contagem, estava medindo a ausência do banco.
+        self.db = os.path.join(self.dir, "state.db")
+        con = sqlite3.connect(self.db)
+        con.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, role TEXT, "
+                    "content TEXT, timestamp REAL, finish_reason TEXT)")
+        con.commit()
+        con.close()
+        self._db_antigo = warden.STATE_DB
+        warden.STATE_DB = self.db
+        self.addCleanup(setattr, warden, "STATE_DB", self._db_antigo)
+
+    def _citou(self, caminho, final=True):
+        """Escreve no state.db a mensagem do agente que carregou este MEDIA:.
+
+        `final=True` é a mensagem que o gateway lê (finish_reason 'stop');
+        `final=False` é a do meio do turno, cujo anexo é descartado.
+        """
+        con = sqlite3.connect(self.db)
+        con.execute("INSERT INTO messages (role, content, timestamp, "
+                    "finish_reason) VALUES ('assistant', ?, ?, ?)",
+                    (f"Aqui está.\nMEDIA:{os.path.abspath(caminho)}",
+                     time.time() - 60, "stop" if final else "tool_calls"))
+        con.commit()
+        con.close()
 
     def _restaura(self):
         if self._antigo is None:
@@ -4507,6 +4538,7 @@ class ContagemDeEntregas(unittest.TestCase):
         clipe = self._clipe("corte-01.mp4")
         warden.entregas_registra(clipe)
         self.assertEqual(warden.main(["delivered"]), 1)
+        self._citou(clipe)
         self.assertEqual(warden.main(["delivered", clipe]), 0)
         self.assertEqual(warden.main(["delivered"]), 0)
 
@@ -4521,6 +4553,8 @@ class ContagemDeEntregas(unittest.TestCase):
         um, dois = self._clipe("corte-01.mp4"), self._clipe("corte-02.mp4")
         warden.entregas_registra(um)
         warden.entregas_registra(dois)
+        self._citou(um)
+        self._citou(dois)
         erro = io.StringIO()
         with redirect_stderr(erro):
             code = warden.main(["delivered", um])
