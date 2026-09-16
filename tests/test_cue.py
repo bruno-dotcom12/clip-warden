@@ -408,3 +408,40 @@ class PronomeObjetoDepoisDeVerboFechaBem(unittest.TestCase):
         self.assertTrue(S._fecha_apesar_da_lista("desistir de voce".split(), 2))
         self.assertFalse(S._fecha_apesar_da_lista("para voce entender".split(), 1))
         self.assertFalse(S._fecha_apesar_da_lista("entre ele e ela".split(), 1))
+
+
+class MarcadorNaoTravaALegendaQueEleNemVaiAparecer(unittest.TestCase):
+    """Medido duas vezes em dois testes reais, 15 e 16/09/2026.
+
+    `warden_style` apaga marcação decorativa antes de montar a cue, então
+    `[risadas]` e o `[ __ ]` de palavrão censurado nunca chegam à tela. Mas a
+    checagem de linha suspeita lia o SRT CRU, via o marcador, e travava a
+    legenda inteira por causa de um texto que seria apagado de qualquer jeito.
+
+    Nos dois testes os DOIS clipes do pedido saíram sem legenda, e o agente teve
+    de passar `--keep` para um marcador -- confirmar que leu e aprovou um texto
+    que não existe no produto final.
+    """
+
+    def suspeitas(self, *textos):
+        import warden
+        return [r[0]["text"] for r in
+                warden.linhas_suspeitas([{"text": t} for t in textos])]
+
+    def test_marcador_de_risada_nao_e_suspeito(self):
+        self.assertEqual(self.suspeitas("[risadas]"), [])
+
+    def test_palavrao_censurado_nao_trava_a_linha(self):
+        self.assertEqual(self.suspeitas("Ai, que [ __ ] mano. Mas é que"), [])
+
+    def test_mas_o_numero_continua_suspeito(self):
+        self.assertEqual(self.suspeitas("Em 1826 ele disse"),
+                         ["Em 1826 ele disse"])
+
+    def test_e_a_palavra_repetida_tambem(self):
+        self.assertEqual(self.suspeitas("jokovic jokovic venceu"),
+                         ["jokovic jokovic venceu"])
+
+    def test_linha_que_era_SO_marcacao_some_da_lista(self):
+        # Não há o que aprovar numa linha que não vai existir.
+        self.assertEqual(self.suspeitas("[Music]", "[risadas]"), [])

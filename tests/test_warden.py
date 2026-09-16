@@ -5721,12 +5721,25 @@ class UmPortaoQueQuemPassaPorEleContornaNaoEUmPortao(unittest.TestCase):
         self.assertEqual(len(achadas), 1)
         self.assertIn("repeats a word", achadas[0][1])
 
-    def test_marca_de_legenda_automatica_e_suspeita(self):
-        for texto in (">> para gravação. Vamos respirar.",
-                      "e realmente [risadas] mogou os locais"):
-            achadas = self.W.linhas_suspeitas([self._linha(texto)])
-            self.assertEqual(len(achadas), 1, texto)
-            self.assertIn("auto-subtitle marker", achadas[0][1])
+    def test_marca_de_locutor_e_suspeita(self):
+        """`>>` VAI para a tela, então quem assina tem de tê-la lido."""
+        texto = ">> para gravação. Vamos respirar."
+        achadas = self.W.linhas_suspeitas([self._linha(texto)])
+        self.assertEqual(len(achadas), 1, texto)
+        self.assertIn("auto-subtitle marker", achadas[0][1])
+
+    def test_marcacao_decorativa_NAO_e_suspeita_porque_nao_chega_a_tela(self):
+        """`[risadas]` some antes de virar cue, então travar a legenda por
+        causa dela é cobrar aprovação de um texto que não existe no produto.
+
+        Até 16/09/2026 era suspeita, e isso derrubou a legenda dos DOIS clipes
+        de dois pedidos reais. A checagem passou a julgar o texto LIMPO, que é
+        o que vai para a tela -- ver `MarcadorNaoTravaALegenda...` em
+        tests/test_cue.py.
+        """
+        self.assertEqual(
+            self.W.linhas_suspeitas(
+                [self._linha("e realmente [risadas] mogou os locais")]), [])
 
     def test_uma_frase_comum_nao_e_suspeita(self):
         self.assertEqual(self.W.linhas_suspeitas(

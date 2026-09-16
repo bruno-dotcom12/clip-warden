@@ -3283,7 +3283,30 @@ def linhas_suspeitas(window):
     """[(linha, motivo)] do que não se assina sem olhar."""
     saiu = []
     for r in window:
-        texto = r.get("text") or ""
+        # A LIMPEZA VEM PRIMEIRO, e isso é um conserto.
+        #
+        # `warden_style` apaga marcação decorativa -- o símbolo musical,
+        # `[Music]`, `[risadas]`, o `[ __ ]` de palavrão censurado -- ANTES de
+        # montar a cue, então nada disso chega à tela. Mas esta checagem lia o
+        # SRT cru, via o marcador, e travava a legenda inteira por causa de um
+        # texto que seria apagado de qualquer jeito.
+        #
+        # Medido duas vezes em dois testes reais, 15 e 16/09/2026: `[risadas]`
+        # e `[ __ ]` entraram na lista de linhas suspeitas e os DOIS clipes do
+        # pedido saíram sem legenda. O agente teve de passar `--keep` para um
+        # marcador -- confirmar que leu e aprovou um texto que não existe no
+        # produto final.
+        #
+        # Julgar o que vai para a tela é o ponto desta função. Então ela julga
+        # o que vai para a tela.
+        bruto = r.get("text") or ""
+        try:
+            import warden_style as _S
+            texto = _S._limpa_marcacao(bruto)
+        except Exception:
+            texto = bruto
+        if not texto.strip():
+            continue          # só marcação: some na queima, nada a aprovar
         motivos = []
         if _SUSPEITA_NUMERO.search(texto):
             motivos.append("carries a number, which is what Whisper gets wrong "
