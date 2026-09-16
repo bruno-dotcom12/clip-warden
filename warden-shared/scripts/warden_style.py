@@ -138,6 +138,39 @@ def caption_size(height):
 # Limites de uma cue. Um segmento do Whisper de sete segundos vira um bloco de
 # seis linhas parado na tela: estes três números são o que impede isso.
 MAX_CHARS_PER_LINE = 26
+# ============================================================================
+# O QUE BLOQUEIA UMA ENTREGA, E O QUE APENAS A ACOMPANHA
+# ============================================================================
+# Decisão do dono, 16/09/2026, depois do degrau 4 do demo falhar.
+#
+# O vídeo tinha tela dividida e uma faixa escura em duas bordas. `cross_check`
+# leu a faixa como moldura e reprovou OS DOIS cortes; o `lote render` saiu com
+# código 1 e NADA foi entregue -- com os dois arquivos prontos em disco, cada
+# um com o seu hook.png e o seu .ass. A pessoa pediu dois clipes com legenda,
+# os dois clipes com legenda existiam, e ela não recebeu nenhum.
+#
+# A regra passou a ser:
+#
+#   OBRIGACAO  -- gancho e legenda, e só. Sem uma delas não é o produto, e o
+#                 clipe não sai. Isto é o que a pessoa pediu com todas as
+#                 letras.
+#   OBSERVACAO -- toda conferência visual ou de estilo: moldura, faixa escura,
+#                 texto queimado da fonte, enquadramento, mosaico, margens,
+#                 movimento, duração. O clipe SAI, e o agente conta em uma
+#                 frase o que a ferramenta notou.
+#
+# O que NÃO mudou: regra escrita no briefing de uma campanha continua
+# bloqueando, e ela vive noutro caminho (`blocking`, em warden.py), que só
+# existe quando há campanha ligada ao pedido.
+#
+# Por que uma observação não é um portão fraco: ela chega à pessoa. O risco que
+# os portões defendiam -- entregar um clipe torto sem ninguém saber -- vira
+# entregar um clipe torto DIZENDO o que tem de torto, e quem decide re-cortar
+# é quem pediu. O risco que eles criaram, medido duas vezes (15/09 e 16/09), é
+# não entregar nada e o trabalho morrer em disco.
+OBRIGACAO = "REJECT"
+OBSERVACAO = "WARN"
+
 MAX_LINES = 2
 MAX_CUE_S = 2.2
 MIN_CUE_S = 0.5
@@ -2595,21 +2628,21 @@ def check_sidecar(side):
     if hook.get("width_px") is not None and hook.get("usable_px"):
         ratio = hook["width_px"] / hook["usable_px"]
         if ratio > 1.0:
-            out.append(("REJECT", f"the hook is {hook['width_px']}px wide against "
+            out.append((OBSERVACAO, f"the hook is {hook['width_px']}px wide against "
                                   f"{hook['usable_px']}px of usable width "
                                   f"({ratio:.2f}x): it is cropped at the frame edge"))
         else:
             out.append(("ok", f"hook fits: {hook['width_px']}px of "
                               f"{hook['usable_px']}px usable ({ratio:.2f}x)"))
     if hook.get("complete") is False:
-        out.append(("REJECT",
+        out.append((OBRIGACAO,
                     f"the hook is {hook.get('chars')} characters and does not fit "
                     f"in {MAX_LINES} lines even at the {hook.get('size_px')}px "
                     "floor, so words were dropped from it. A hook missing words "
                     "is worse than one cropped at the edge: cropped shows on the "
                     "contact sheet, missing does not. Write a shorter hook."))
     if hook.get("lines") and hook["lines"] > MAX_LINES:
-        out.append(("REJECT", f"the hook is on {hook['lines']} lines; at most "
+        out.append((OBSERVACAO, f"the hook is on {hook['lines']} lines; at most "
                               f"{MAX_LINES} fit above the picture"))
     # As três margens da interface, medidas contra o que foi desenhado. Até
     # aqui o único portão de posição era a LARGURA do hook contra os 854px
@@ -2622,7 +2655,7 @@ def check_sidecar(side):
     if margens_ and quadro:
         topo = margens_.get("top")
         if hook.get("top_px") is not None and topo and hook["top_px"] < topo:
-            out.append(("REJECT",
+            out.append((OBSERVACAO,
                         f"the hook starts {hook['top_px']}px from the top and the "
                         f"app's own tabs and search icon cover the first {topo}px: "
                         f"the first line lands under them"))
@@ -2635,7 +2668,7 @@ def check_sidecar(side):
             if not bloco or bloco.get("right_px") is None or not limite_x:
                 continue
             if bloco["right_px"] > limite_x:
-                out.append(("REJECT",
+                out.append((OBSERVACAO,
                             f"the {nome} reaches {bloco['right_px']}px across and "
                             f"the like/comment/share column owns the last "
                             f"{direita}px (from {limite_x}px): it sits under the "
@@ -2644,7 +2677,7 @@ def check_sidecar(side):
         fundo = cap_margem(side).get("bottom_px") if cap_margem(side) else None
         limite_y = (quadro.get("h") or 0) - (base or 0)
         if fundo is not None and limite_y and fundo > limite_y:
-            out.append(("REJECT",
+            out.append((OBSERVACAO,
                         f"the caption ends {fundo}px down and the app's caption, "
                         f"handle and sound own the last {base}px (from "
                         f"{limite_y}px): the last line is behind them"))
@@ -2658,7 +2691,7 @@ def check_sidecar(side):
         ficou = float(hook["seconds_on_screen"])
         clipe = float(side["duration_s"])
         if clipe > HOOK_SECONDS + 1.0 and ficou > HOOK_SECONDS + 0.5:
-            out.append(("REJECT",
+            out.append((OBSERVACAO,
                         f"the hook stays {ficou:.1f}s of a {clipe:.1f}s clip. It "
                         f"should leave at {HOOK_SECONDS:.0f}s: after that it is "
                         f"not a promise any more, it is a sign parked on the "
@@ -2710,7 +2743,7 @@ def check_sidecar(side):
                         "--end has nothing to reach, and the same numbers would "
                         "come back. Move the START, or choose a window that "
                         "ends on a full stop.")
-        out.append(("REJECT",
+        out.append((OBSERVACAO,
                     f"this clip ENDS mid-sentence, on \"…{pendurados[-1]}\". The "
                     f"speech goes on past --end, so the last thing the viewer "
                     f"hears is half a clause. No caption setting fixes this."
@@ -2719,18 +2752,18 @@ def check_sidecar(side):
               if not (cap.get("ends_mid_sentence") and t == pendurados[-1])]
     if outros:
         amostra = "; ".join(f"…{t}" for t in outros[:3])
-        out.append(("REJECT",
+        out.append((OBSERVACAO,
                     f"{len(outros)} caption cue(s) end on a word that needs "
                     f"what comes next ({amostra}). That is the 'HATE THE' and "
                     f"'CARA, EU VOTARIA NO' of 14/09: each half is grammatical "
                     f"and neither says anything"))
     if cap.get("cues") and cap.get("karaoke") is False:
-        out.append(("REJECT",
+        out.append((OBSERVACAO,
                     "the caption was burned with no word-by-word timing, so the "
                     "whole cue lights at once. The per-word times come from the "
                     "reflow; a cue without them means they were lost on the way"))
     if cap.get("max_lines") and cap["max_lines"] > MAX_LINES:
-        out.append(("REJECT", f"a caption cue is {cap['max_lines']} lines; the "
+        out.append((OBSERVACAO, f"a caption cue is {cap['max_lines']} lines; the "
                               "six-line block that covered a face was this"))
     elif cap.get("cues"):
         out.append(("ok", f"{cap['cues']} cues, at most {cap['max_lines']} lines"))
@@ -2739,7 +2772,7 @@ def check_sidecar(side):
     # fronteira sintática; acima disso já não é a fronteira, é um bloco parado.
     teto_cue = round(MAX_CUE_S_TETO + 0.2, 2)
     if cap.get("max_cue_s") and cap["max_cue_s"] > teto_cue:
-        out.append(("REJECT", f"a cue stays {cap['max_cue_s']}s on screen; over "
+        out.append((OBSERVACAO, f"a cue stays {cap['max_cue_s']}s on screen; over "
                               f"{teto_cue}s it is a block parked on the picture"))
     elif cap.get("max_cue_s"):
         out.append(("ok", f"longest cue {cap['max_cue_s']}s"))
@@ -2758,19 +2791,19 @@ def check_sidecar(side):
     tem_texto_do_acervo = fonte.get("bottom")
     suspeito = fonte.get("bottom_suspect")
     if cap.get("cues") and tem_texto_do_acervo and not side.get("footer_covered"):
-        out.append(("REJECT", "this footage burns its own text along the bottom "
+        out.append((OBSERVACAO, "this footage burns its own text along the bottom "
                               "and it was not covered, so our caption sits on "
                               "top of it: two captions in one frame"))
     elif cap.get("cues") and suspeito and not side.get("footer_covered"):
         porque = ", ".join(fonte.get("bottom_why") or ["-"])
-        out.append(("REJECT",
+        out.append((OBSERVACAO,
                     f"this footage shows signs of its own burned text along the "
                     f"bottom ({porque}) and it was not covered, so our caption "
                     f"may be sitting on top of it. Cover it, or re-cut without "
                     f"--subtitles: 'probably clean' is not a thing this can "
                     f"ship on, and the contact sheet is where you settle it."))
     if side.get("motion") is False:
-        out.append(("REJECT", "no scale movement at all: this reads as raw footage"))
+        out.append((OBSERVACAO, "no scale movement at all: this reads as raw footage"))
     # O número que a pessoa pediu contra o que o arquivo tem. Quando a campanha
     # obrigou a sair do pedido, `cut` já disse qual regra obrigou -- e aí a
     # diferença é legítima e aparece nas notas, não aqui. O que este portão pega
@@ -2785,7 +2818,7 @@ def check_sidecar(side):
     elif pedido and tem:
         folga = abs(float(tem) - float(pedido))
         if folga > 0.3:
-            out.append(("REJECT",
+            out.append((OBSERVACAO,
                         f"the person asked for {float(pedido):.0f}s and this "
                         f"file is {float(tem):.2f}s ({folga:.2f}s off). A number "
                         f"a person says is the request. Only a campaign rule may "
@@ -2800,7 +2833,7 @@ def check_against(measured, spec):
     """[(nível, mensagem)] de um render contra os limites, com a faixa ao lado."""
     out = []
     if measured.get("measured") is False:
-        return [("REJECT", "no frame of this file could be opened, so nothing "
+        return [(OBRIGACAO, "no frame of this file could be opened, so nothing "
                            "was measured. 'inside the range' on zero evidence "
                            "is the failure this command exists to avoid.")]
     ranges = spec or {}
@@ -2813,7 +2846,7 @@ def check_against(measured, spec):
             # faixa em todas as métricas aplicadas", que era verdade e era vazio:
             # nenhuma foi aplicada. Falta de medição não é aprovação.
             porque = measured.get(name + "_why") or "it was not measured"
-            out.append(("REJECT",
+            out.append((OBSERVACAO,
                         f"{name} could not be measured ({porque}), and it is "
                         f"the only limit that rejects anything. Without it this "
                         f"command has no opinion about this file -- do not read "
@@ -2823,10 +2856,10 @@ def check_against(measured, spec):
         contexto = (f" (approved clips: {band['min']}–{band['max']})"
                     if "min" in band else "")
         if hi is not None and got > hi:
-            out.append(("REJECT", f"{what}\n           measured {got}, the limit "
+            out.append((OBSERVACAO, f"{what}\n           measured {got}, the limit "
                                   f"is {hi}{contexto}"))
         elif lo is not None and got < lo:
-            out.append(("REJECT", f"{what}\n           measured {got}, the floor "
+            out.append((OBSERVACAO, f"{what}\n           measured {got}, the floor "
                                   f"is {lo}{contexto}"))
         else:
             out.append(("ok", f"{name}: {got}{contexto}"))
@@ -2917,7 +2950,7 @@ def _linhas_demais(side, medida):
     mediana = ordenado[len(ordenado) // 2]
     limite = orcamento + LINHAS_DEMAIS_FOLGA
     if mediana >= limite:
-        return [("REJECT",
+        return [(OBSERVACAO,
                  f"the finished file shows {mediana} bands of text in most "
                  f"frames and we only drew {orcamento} line(s) of our own "
                  f"(caption {cap.get('max_lines') or 0}"
@@ -2954,7 +2987,7 @@ def _barra_preta_reprova(medida):
     if not barras:
         porque = (medida or {}).get("black_bars_why")
         if porque:
-            return [("REJECT", f"the edges of this render were not looked at: "
+            return [(OBSERVACAO, f"the edges of this render were not looked at: "
                                f"{porque}. A black bar is invisible to every "
                                f"other measurement here.")]
         return []
@@ -2964,7 +2997,7 @@ def _barra_preta_reprova(medida):
     partes = []
     for borda, fracao in sorted(achadas.items(), key=lambda kv: -kv[1]):
         partes.append(f"{borda} {fracao * 100:.1f}%")
-    return [("REJECT",
+    return [(OBSERVACAO,
              f"this render has a black bar on {len(achadas)} edge(s): "
              + ", ".join(partes)
              + ". It is there in most frames, so it reads as a frame around the "
@@ -3022,7 +3055,7 @@ def cross_check(side, medida):
         return out
     nosso = largura / float(util)
     if px > 1.0 and nosso > 1.0:
-        out.append(("REJECT",
+        out.append((OBSERVACAO,
                     f"text wider than the frame on BOTH instruments: {px} "
                     f"measured in the file's pixels and {nosso:.2f}x measured "
                     f"by PIL on the hook ({largura}px against {util}px usable). "

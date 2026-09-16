@@ -16,8 +16,8 @@ there; this is the shape of the file it reads.
 - `sound` is `platform` when the campaign puts its own track on after upload,
   which is what drops the audio from the render.
 - `seconds` at the top is the default for the batch; inside a clip it overrides
-  that one. **It is the number the person said**, and the delivery gate rejects
-  a file that misses it.
+  that one. **It is the number the person said**, and a file that misses it
+  comes back with a `LOOK:` -- said to the person, not held back.
 - `start` and `end` are on the clock of the file in `source`. When that file
   came from `warden archive --window`, they start at its `IN_POINT:`, never at
   the original video's timestamps.

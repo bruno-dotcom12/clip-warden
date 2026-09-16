@@ -1497,33 +1497,36 @@ class OPortaoNuncaMandaCortarNOMESMONUMERO(unittest.TestCase):
                             "ends_mid_sentence": True,
                             "sentence_closes_at_s": fecha}}
 
-    def _reprova(self, side):
+    def _aponta(self, side):
         import warden_style as S
-        return [m for nivel, m in S.check_sidecar(side) if nivel == "REJECT"]
+        # OBSERVAÇÃO, não reprovação: desde 16/09 a frase cortada no meio é
+        # dita e o clipe sai. O conselho que este portão dá continua sendo
+        # cobrado aqui -- ele é a razão de o portão existir.
+        return [m for nivel, m in S.check_sidecar(side) if nivel == "WARN"]
 
     def test_a_frase_que_fecha_NO_FIM_do_corte_nao_vira_cut_X_instead_of_X(self):
         """`fecha == duração`: era `cut 30.0s instead of 30.0s`."""
-        for msg in self._reprova(self._side(30.0)):
+        for msg in self._aponta(self._side(30.0)):
             self.assertNotIn("cut 30.0s instead of 30.0s", msg)
             self.assertNotIn("closes 0.0s later", msg)
 
     def test_nem_quando_o_fim_da_frase_fica_ANTES_do_fim_do_corte(self):
         """`fecha < duração` dava um `falta` negativo e um `--end` menor que o
         corte, que não é 'onde a frase fecha' -- é encurtar às cegas."""
-        for msg in self._reprova(self._side(29.2)):
+        for msg in self._aponta(self._side(29.2)):
             self.assertNotIn("cut 29.2s instead of 30.0s", msg)
 
-    def test_a_reprovacao_continua_existindo_e_diz_a_outra_saida(self):
+    def test_a_observacao_continua_existindo_e_diz_a_outra_saida(self):
         """Calar o portão não é a correção: o clipe ENDS mid-sentence de
         verdade. O que muda é o conselho."""
-        msgs = self._reprova(self._side(30.0))
+        msgs = self._aponta(self._side(30.0))
         self.assertTrue(any("ENDS mid-sentence" in m for m in msgs), msgs)
         texto = " ".join(msgs).lower()
         self.assertIn("move the start", texto)
 
     def test_quando_a_frase_fecha_DEPOIS_o_conselho_continua_sendo_o_numero(self):
         """O caso que sempre funcionou não pode ter sido perdido no conserto."""
-        msgs = self._reprova(self._side(31.6))
+        msgs = self._aponta(self._side(31.6))
         self.assertTrue(any("31.6s" in m for m in msgs), msgs)
 
     def test_nenhum_conselho_do_portao_repete_o_numero_atual(self):
@@ -1532,7 +1535,7 @@ class OPortaoNuncaMandaCortarNOMESMONUMERO(unittest.TestCase):
         import itertools
         for dur, fecha in itertools.product((15.0, 20.0, 30.0, 31.1),
                                             (14.0, 15.0, 20.0, 30.0, 31.1, 44.0)):
-            for msg in self._reprova(self._side(fecha, dur)):
+            for msg in self._aponta(self._side(fecha, dur)):
                 self.assertNotIn(f"cut {dur:.1f}s instead of {dur:.1f}s", msg)
                 self.assertNotIn("closes 0.0s later", msg)
 

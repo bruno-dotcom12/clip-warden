@@ -6369,11 +6369,24 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
     breaches += S.cross_check(style_facts,
                               {"black_bars": barras,
                                "black_bars_why": porque_barras})
+    # Desde 16/09/2026 a conferência visual NÃO impede a entrega -- ver o bloco
+    # "O QUE BLOQUEIA UMA ENTREGA" no topo de warden_style.py. O que ela produz
+    # agora é uma OBSERVAÇÃO, e o destino de uma observação é a pessoa: entra
+    # nas notas, o agente a repassa em uma frase, e o clipe sai.
+    #
+    # O prefixo é diferente de propósito. `STYLE REJECT:` treinou o agente a
+    # parar (foi o que ele fez no degrau 4 do demo, com os dois clipes prontos
+    # em disco). `LOOK:` não manda fazer nada -- descreve o que a ferramenta
+    # viu, que é tudo o que ela sabe fazer.
     for level, message in breaches:
-        if level == "REJECT":
+        if level == S.OBRIGACAO:
             notes.append(f"STYLE REJECT: {message}")
+        else:
+            notes.append(f"LOOK: {message}")
     return {"out": out, "duration_s": measured, "asked_s": round(length, 2),
             "asked_for_captions": bool(caption_srt),
+            "asked_for_hook": bool(hook),
             "notes": notes, "grid": grid, "sheet": sheet,
             "style": style_facts, "style_path": style_path,
-            "style_breaches": [m for lv, m in breaches if lv == "REJECT"]}
+            "style_breaches": [m for lv, m in breaches if lv == S.OBRIGACAO],
+            "style_looks": [m for lv, m in breaches if lv == S.OBSERVACAO]}

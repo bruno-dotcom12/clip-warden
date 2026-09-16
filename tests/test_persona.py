@@ -726,9 +726,14 @@ def test_o_que_a_ferramenta_imprime_se_traduz_ao_repassar(soul):
         "entre <>, um caminho, um link ou um número sai literal."
     )
 
+    # A persona é quebrada em ~79 colunas, e a quebra de linha NÃO pode decidir
+    # se uma regra existe. Este teste já falhou uma vez por isso: a ordem dizia
+    # "in their\nlanguage" e a busca por "their language" não a achou. Mesmo
+    # critério de tests/test_ponteiros.py -- normaliza antes de procurar.
+    corrido = " ".join(nossa.split())
     ordens = [
-        nossa[max(0, m.start() - 200) : m.start() + 200]
-        for m in re.finditer(r"(?i)\brepass", nossa)
+        corrido[max(0, m.start() - 200) : m.start() + 200]
+        for m in re.finditer(r"(?i)\brepass", corrido)
     ]
     assert len(ordens) >= 2, (
         "a varredura das ordens de repassar não achou nada em "
@@ -822,6 +827,56 @@ def test_a_primeira_mensagem_encerra_o_turno(soul):
         "persona"
     )
 
+
+
+def test_o_aviso_de_inicio_sai_uma_vez_so(soul):
+    """Degrau 4 do demo, 16/09/2026: "On it." saiu DUAS vezes.
+
+    A primeira no lugar certo (msg 10, antes do prep). A segunda colada na
+    mensagem que contava a falha (msg 26), onde não abre coisa nenhuma: a
+    pessoa leu "On it." e logo abaixo "nothing went out", o que lê como um
+    segundo trabalho começando em vez de o primeiro terminando.
+
+    A regra existia -- "your FIRST message ... ENDS THAT TURN" -- e não dizia
+    quantas vezes. Uma regra sobre a PRIMEIRA mensagem não é uma regra sobre a
+    ÚNICA, e o modelo leu isso corretamente.
+    """
+    corrido = " ".join(soul.split())
+    marca = re.search(r"(?i)\bONCE per request\b", corrido)
+    assert marca, (
+        "a persona não diz que o aviso de início sai UMA vez por pedido. "
+        "Sem isso ele reaparece colado na entrega e na falha, que foi o "
+        "medido no degrau 4 do demo."
+    )
+    janela = corrido[max(0, marca.start() - 400): marca.start() + 300]
+    assert re.search(r"(?i)never said again|not said again|never again", janela), (
+        "o 'ONCE per request' não diz que não se repete depois: %r" % janela
+    )
+
+
+def test_a_conferencia_visual_nao_para_a_entrega(soul):
+    """A decisão do dono de 16/09, do lado do texto.
+
+    O código é `warden_style.OBSERVACAO` e tem os seus próprios testes em
+    tests/test_entrega_nao_e_estetica.py. Aqui se cobra a outra metade: que a
+    persona mande o agente ENTREGAR e dizer, em vez de segurar. As duas
+    precisam concordar, porque foi a persona que o agente leu quando decidiu
+    não mandar nada.
+    """
+    corrido = " ".join(soul.split())
+    assert re.search(r"(?i)only those two stop a delivery", corrido), (
+        "a persona não diz que só gancho e legenda param uma entrega"
+    )
+    assert "LOOK:" in corrido, (
+        "a persona não nomeia o rótulo `LOOK:` que a ferramenta imprime; sem "
+        "o nome, o agente não liga uma coisa à outra"
+    )
+    marca = re.search(r"(?i)only those two stop a delivery", corrido)
+    janela = corrido[marca.start(): marca.start() + 420]
+    assert re.search(r"(?i)goes out anyway|is delivered anyway", janela), (
+        "a persona nomeia as observações mas não diz que o clipe SAI: %r"
+        % janela
+    )
 
 def test_a_persona_nao_se_contradiz_sobre_a_prosa_no_meio_do_turno(soul):
     """Achado 7, a outra metade: duas afirmações sobre o MESMO fato do runtime.

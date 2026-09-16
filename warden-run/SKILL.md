@@ -75,14 +75,19 @@ captions (5), and **`warden delivered` before you render anything** ("Deliver
 first, cut second"). The contact sheet is not a step: a warning about anything
 but the hook and the caption is repassed in ONE line beside the clip.
 
-**A gate that names a fix gets ONE attempt at it**, and then you hand over what
-cleared and say in one line what you could not do. Captions are the exception: a
-clip without the words is not the product.
+**Only two things stop a delivery: the hook and the captions.** Everything else
+the render looks at -- a dark band, a frame, split screen, the source's burned
+text, framing, margins, movement, an odd second -- comes back as `LOOK:` and
+the clip GOES OUT: say in one clause what it noticed, never re-cut for it. On
+16/09 a dark strip on two edges held BOTH clips, hook and captions already on
+disk, and the person got nothing.
 
-**Fix what the gate named. Never drop what was asked for.** Dropping `--hook`,
-swapping the srt for the approval signature or trading `--seconds` for
-`--any-length` until nothing complains ships a clip missing the product: 15/09,
-both clips went out with no captions and no hook.
+**A missing hook or captions gets ONE attempt at a fix**, then you hand over
+what cleared and say in one line what you could not do.
+
+**Never drop what was asked for to quiet it.** Dropping `--hook` or trading the
+srt until nothing complains ships a clip missing the product: 15/09, both clips
+went out with no captions and no hook.
 
 **How a file is handed over is in the persona, under "Handing the file over".**
 With every clip goes the caption from `warden-package` and the one thing they do

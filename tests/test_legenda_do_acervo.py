@@ -187,18 +187,20 @@ class PortaoDoSidecar(unittest.TestCase):
         lado.update(over)
         return lado
 
-    def _rejeicoes(self, lado):
-        return [m for lv, m in S.check_sidecar(lado) if lv == "REJECT"]
+    # Observações, não reprovações: ver o bloco "O QUE BLOQUEIA UMA ENTREGA"
+    # no topo de warden_style.py. O clipe sai; o que o portão viu é dito.
+    def _apontamentos(self, lado):
+        return [m for lv, m in S.check_sidecar(lado) if lv == "WARN"]
 
-    def test_suspeito_e_sem_cobrir_reprova(self):
+    def test_suspeito_e_sem_cobrir_e_apontado(self):
         """A conjunção começava pelo booleano duro, então uma suspeita não
         reprovava nada. O portão não pode ser mais estreito que a detecção que
         o alimenta."""
         lado = self._lado(source_text={"bottom": False, "bottom_suspect": True,
                                        "bottom_why": ["1 frame(s) over 1.9x"]})
         self.assertTrue(any("signs of its own burned text" in m
-                            for m in self._rejeicoes(lado)),
-                        self._rejeicoes(lado))
+                            for m in self._apontamentos(lado)),
+                        self._apontamentos(lado))
 
     def test_suspeito_e_coberto_passa(self):
         """Cobrir é a saída, e quem cobriu não pode ser reprovado por ter
@@ -206,15 +208,15 @@ class PortaoDoSidecar(unittest.TestCase):
         lado = self._lado(footer_covered=True,
                           source_text={"bottom": False, "bottom_suspect": True,
                                        "bottom_why": ["1 frame(s) over 1.9x"]})
-        self.assertFalse(any("burned text" in m for m in self._rejeicoes(lado)),
-                         self._rejeicoes(lado))
+        self.assertFalse(any("burned text" in m for m in self._apontamentos(lado)),
+                         self._apontamentos(lado))
 
     def test_material_limpo_com_legenda_nossa_passa(self):
         """O outro lado do mesmo portão: contar camadas sem perguntar se havia
         texto do acervo reprovava clipe cujo material é limpo."""
         self.assertFalse(any("burned text" in m
-                             for m in self._rejeicoes(self._lado())),
-                         self._rejeicoes(self._lado()))
+                             for m in self._apontamentos(self._lado())),
+                         self._apontamentos(self._lado()))
 
     def test_sem_legenda_nossa_a_suspeita_nao_reprova(self):
         """Texto do acervo sozinho no quadro não é legenda dupla: é o material
@@ -222,8 +224,8 @@ class PortaoDoSidecar(unittest.TestCase):
         lado = self._lado(caption=None,
                           source_text={"bottom": False, "bottom_suspect": True,
                                        "bottom_why": ["1 frame(s) over 1.9x"]})
-        self.assertFalse(any("burned text" in m for m in self._rejeicoes(lado)),
-                         self._rejeicoes(lado))
+        self.assertFalse(any("burned text" in m for m in self._apontamentos(lado)),
+                         self._apontamentos(lado))
 
 
 class SegundaOpiniaoNoRenderPronto(unittest.TestCase):
@@ -247,7 +249,7 @@ class SegundaOpiniaoNoRenderPronto(unittest.TestCase):
         """Nossa cue de 2 linhas mais uma legenda de acervo de 2: 4 faixas onde
         cabem 2. Medido num render sintético, 4 em todos os dez quadros."""
         achados = self._cruz(self._lado(), [4] * 10)
-        self.assertEqual([lv for lv, _m in achados], ["REJECT"], achados)
+        self.assertEqual([lv for lv, _m in achados], ["WARN"], achados)
 
     def test_legenda_nossa_de_duas_linhas_nao_e_legenda_dupla(self):
         """Uma cue de DUAS linhas lê como DUAS faixas: entre uma linha e outra
@@ -268,7 +270,7 @@ class SegundaOpiniaoNoRenderPronto(unittest.TestCase):
         # O mesmo arquivo defeituoso do primeiro teste, agora com hook.
         achados = self._cruz(self._lado(hook_linhas=1, ficou=3.0, dur=20.0),
                              [3, 3] + [4] * 8)
-        self.assertEqual([lv for lv, _m in achados], ["REJECT"], achados)
+        self.assertEqual([lv for lv, _m in achados], ["WARN"], achados)
         # E o corte curto, onde o hook É o quadro mediano, mantém o crédito.
         achados = self._cruz(self._lado(hook_linhas=1, ficou=3.0, dur=5.0),
                              [3] * 10)

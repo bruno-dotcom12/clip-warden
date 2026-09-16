@@ -181,8 +181,9 @@ non-zero.
 ## 5b. Duration, and the batch
 
 Pass `--seconds <n>` whenever a person said a duration: the cut moves to it from
-the same start and the delivery gate rejects a file that misses it. Without the
-flag, two clips asked for at 20s came back 22% over and 23% under. Only a
+the same start, and a file that misses it comes back with a `LOOK:` saying so
+-- since 16/09 that is an observation and the clip is delivered anyway. Without
+the flag, two clips asked for at 20s came back 22% over and 23% under. Only a
 campaign rule overrides it, and then `cut` names it and you repeat it.
 
 A batch renders one clip at a time and its progress line is for YOU, not to

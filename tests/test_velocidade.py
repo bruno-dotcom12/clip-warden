@@ -1549,20 +1549,20 @@ class ATarjaPRETAReprovaNOCUT(unittest.TestCase):
 
     @staticmethod
     def _tarjas(resultado):
-        return [b for b in resultado["style_breaches"] if "black bar" in b]
+        return [b for b in resultado["style_looks"] if "black bar" in b]
 
-    def test_um_render_com_tarja_no_pe_e_REPROVADO_pelo_cut(self):
+    def test_um_render_com_tarja_no_pe_e_APONTADO_e_entregue(self):
         """O caso medido: 288px de preto no pé de um vertical. Sem este teste,
         o único portão que o pegava era uma pessoa olhando o contact sheet."""
         fonte = _fonte_vertical(os.path.join(self.dir, "com-tarja.mp4"),
                                 tarja=288)
         r = self._corta(fonte)
         tarjas = self._tarjas(r)
-        self.assertTrue(tarjas, f"nenhum REJECT de tarja: {r['style_breaches']}")
+        self.assertTrue(tarjas, f"nenhum LOOK de tarja: {r['style_breaches']}")
         self.assertIn("bottom", tarjas[0])
         # E quem entrega lê as notas, não só a lista: a reprovação tem de estar
         # nas duas, porque são dois leitores diferentes.
-        self.assertTrue(any("STYLE REJECT" in n and "black bar" in n
+        self.assertTrue(any("LOOK:" in n and "black bar" in n
                             for n in r["notes"]), r["notes"])
 
     def test_um_render_limpo_NAO_e_reprovado(self):
@@ -1597,7 +1597,7 @@ class ATarjaPRETAReprovaNOCUT(unittest.TestCase):
         self.addCleanup(setattr, S, "barras_pretas", real)
         r = self._corta(fonte)
         self.assertTrue(any("were not looked at" in b
-                            for b in r["style_breaches"]), r["style_breaches"])
+                            for b in r["style_looks"]), r["style_looks"])
 
 
 # ------------------------------------------------------- playlist, uma só vez

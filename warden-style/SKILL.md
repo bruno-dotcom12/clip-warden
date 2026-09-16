@@ -35,8 +35,8 @@ text with its ends under the platform's own furniture, or off the edge entirely.
   seconds; after that it is a sign parked on the picture, fighting the caption
   for the same frame. Measured: the two cuts of 14/09 carried theirs through all
   eight tiles of the contact sheet, 1.2s to 18.8s. `cut` writes the seconds it
-  stayed into the `-estilo.json` and the delivery gate rejects a hook that never
-  left.
+  stayed into the `-estilo.json` and prints a `LOOK:` for a hook that never
+  left. It does not hold the clip: only a missing hook or missing captions do.
 
 **Write the hook to about nine words.** The measured fact: at the 76px body,
 roughly 44 characters fit on a line, so two lines is about 88 characters. Past

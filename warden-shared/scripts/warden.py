@@ -2822,9 +2822,33 @@ def deliver(result, rules, campaign, ledger):
             + ". A podcast cut with no speech on screen is not the clip that "
               "was asked for -- fix what the note says, or cut without "
               "--subtitles on purpose.")
-    if breaches:
-        print("this render breaks the style rules, so it is not delivered:",
+    # A SEGUNDA OBRIGAÇÃO, que não existia e custou o degrau 4 do demo pelo
+    # outro lado: o portão do gancho só sabia dizer que ele estava TRUNCADO
+    # (`hook.complete is False`, em warden_style). Pedir `--hooks` e não sair
+    # gancho nenhum -- a fonte sem área útil, o PNG que não foi escrito -- não
+    # era pego por nada, porque `style_facts["hook"]` simplesmente não existe
+    # quando nada foi desenhado, e um portão que lê um campo ausente não
+    # dispara. É o mesmo defeito do clipe mudo de 15/09, do outro lado da tela.
+    if result.get("asked_for_hook") and not (result.get("style") or {}).get("hook"):
+        breaches.append(
+            "a hook was asked for and none was drawn on the picture. A cut "
+            "with no opening line is not the clip that was asked for -- fix "
+            "what the notes say, or cut without --hooks on purpose.")
+    # AS OBSERVAÇÕES. Elas NÃO param nada, e estão aqui de propósito: ficam no
+    # stdout do sucesso, ao lado do MEDIA:, onde o agente as lê no mesmo fôlego
+    # em que copia o caminho. Decisão do dono, 16/09/2026, depois de a
+    # conferência visual segurar dois clipes prontos com gancho e legenda.
+    for observacao in result.get("style_looks") or []:
+        print(f"  LOOK: {observacao}", file=sys.stderr)
+    if result.get("style_looks"):
+        print("  ^ Those are OBSERVATIONS, not gates. The clip IS delivered. "
+              "Say in ONE clause, in the person's language, what the tool "
+              "noticed -- and never re-cut on your own because of it: whoever "
+              "asked for the clip decides whether it is worth another take.",
               file=sys.stderr)
+    if breaches:
+        print("this render is missing what was asked for, so it is not "
+              "delivered:", file=sys.stderr)
         for message in breaches:
             print(f"  REJECT {message}", file=sys.stderr)
         # A ordem imperativa de re-cortar existe só no corte AVULSO, onde não
@@ -2843,13 +2867,13 @@ def deliver(result, rules, campaign, ledger):
         # o que passou, dizer numa linha o que falhou, e re-cortar só se a
         # pessoa pedir.
         if _DENTRO_DE_UM_LOTE:
-            print("  another take would need a shorter hook, a different "
-                  "window, or no --subtitles -- but do NOT start one now. The "
+            print("  what is missing here is the hook or the captions, not "
+                  "the look of it -- but do NOT start another take now. The "
                   "single order for this batch is at the END of this output.",
                   file=sys.stderr)
         else:
-            print("  re-cut it: a shorter hook, a different window, or no "
-                  "--subtitles.", file=sys.stderr)
+            print("  what is missing here is the hook or the captions, not the "
+                  "look of it. Fix that and cut again.", file=sys.stderr)
         # A linha que faltava, e a falta dela custou os dois clipes de
         # 15/09/2026. O agente levou dois REPROVADO, tirou o `--hook`, o portão
         # calou, e ele entregou dois clipes sem legenda E sem hook dizendo que
@@ -2857,11 +2881,12 @@ def deliver(result, rules, campaign, ledger):
         # recusa; juntas, eram o pedido do dono sendo apagado até a ferramenta
         # parar de reclamar. O portão que só diz "não" ensina a tirar coisas.
         print("  DO NOT drop what the person asked for to make this quiet. "
-              "Removing --hook, --subtitles or the length silences the gate "
-              "and delivers a clip nobody asked for: on 15/09 that shipped two "
-              "cuts with no caption and no hook, reported as done. If you "
-              "cannot clear this, say what is blocking it -- that is a real "
-              "answer; a stripped clip is not.", file=sys.stderr)
+              "Removing --hook or --subtitles silences this and delivers a "
+              "clip nobody asked for: on 15/09 that shipped two cuts with no "
+              "caption and no hook, reported as done. Since 16/09 only these "
+              "two stop a delivery, exactly so that dropping them is never "
+              "the way out. If you cannot fix it, say what is missing -- that "
+              "is a real answer; a stripped clip is not.", file=sys.stderr)
         return 1
     # Os avisos que `check` repete em todo veredito DE PROPÓSITO morriam aqui: o
     # caminho da entrega lia `findings` e só imprimia o nível REJECT. Medido: um

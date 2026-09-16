@@ -2336,18 +2336,18 @@ class StyleSpec(unittest.TestCase):
         # E que todo aprovado se mexe. É a faixa que sustenta o limite de escala.
         self.assertGreater(faixas["scale_variation"]["min"], 0.05)
 
-    def test_a_clip_with_no_movement_is_rejected(self):
+    def test_a_clip_with_no_movement_is_flagged_not_blocked(self):
         achados = self.S.check_against(
             {"scale_variation": 0.0},
             {"scale_variation": {"min": 0.12, "max": 0.83}})
-        self.assertTrue(any(lv == "REJECT" and "raw twenty-second stretch" in m
+        self.assertTrue(any(lv == "WARN" and "raw twenty-second stretch" in m
                             for lv, m in achados), achados)
 
     def test_a_clip_that_moves_is_not_rejected(self):
         achados = self.S.check_against(
             {"scale_variation": 0.5},
             {"scale_variation": {"min": 0.12, "max": 0.83}})
-        self.assertFalse([m for lv, m in achados if lv == "REJECT"], achados)
+        self.assertFalse([m for lv, m in achados if lv == "WARN"], achados)
 
     def test_the_unreliable_metrics_do_not_get_a_vote(self):
         """text_width_ratio medido em pixels deu 1,14 num aprovado cujo texto
@@ -2357,7 +2357,7 @@ class StyleSpec(unittest.TestCase):
             {"text_width_ratio": 1.14, "text_rows": 3.0,
              "caption_lines_max": 4, "scale_variation": 0.5},
             {"scale_variation": {"min": 0.12, "max": 0.83}})
-        self.assertFalse([m for lv, m in achados if lv == "REJECT"], achados)
+        self.assertFalse([m for lv, m in achados if lv == "WARN"], achados)
         self.assertIn("text_width_ratio", " ".join(m for _lv, m in achados))
 
 
@@ -2373,14 +2373,14 @@ class StyleSidecar(unittest.TestCase):
         achados = self.S.check_sidecar(
             {"hook": {"width_px": 1100, "usable_px": 854, "lines": 1,
                       "complete": True}})
-        self.assertTrue(any(lv == "REJECT" and "cropped" in m
+        self.assertTrue(any(lv == "WARN" and "cropped" in m
                             for lv, m in achados), achados)
 
     def test_a_hook_that_fits_passes(self):
         achados = self.S.check_sidecar(
             {"hook": {"width_px": 840, "usable_px": 854, "lines": 2,
                       "complete": True}})
-        self.assertFalse([m for lv, m in achados if lv == "REJECT"], achados)
+        self.assertFalse([m for lv, m in achados if lv == "WARN"], achados)
 
     def test_a_truncated_hook_is_rejected_and_says_words_were_dropped(self):
         """Entregar um hook ao qual faltam palavras, sem dizer, é pior que
@@ -2394,20 +2394,20 @@ class StyleSidecar(unittest.TestCase):
     def test_a_cue_over_two_and_a_half_seconds_is_rejected(self):
         achados = self.S.check_sidecar(
             {"caption": {"cues": 3, "max_lines": 2, "max_cue_s": 7.0}})
-        self.assertTrue(any(lv == "REJECT" and "3.4s" in m
+        self.assertTrue(any(lv == "WARN" and "3.4s" in m
                             for lv, m in achados), achados)
 
     def test_a_three_line_cue_is_rejected(self):
         achados = self.S.check_sidecar(
             {"caption": {"cues": 3, "max_lines": 6, "max_cue_s": 2.0}})
-        self.assertTrue(any(lv == "REJECT" and "6 lines" in m
+        self.assertTrue(any(lv == "WARN" and "6 lines" in m
                             for lv, m in achados), achados)
 
     def test_our_caption_over_the_archives_uncovered_caption_is_rejected(self):
         achados = self.S.check_sidecar(
             {"caption": {"cues": 8, "max_lines": 2, "max_cue_s": 2.0},
              "source_text": {"bottom": True}, "footer_covered": False})
-        self.assertTrue(any(lv == "REJECT" and "two captions" in m
+        self.assertTrue(any(lv == "WARN" and "two captions" in m
                             for lv, m in achados), achados)
 
     def test_clean_footage_with_our_caption_is_not_called_two_captions(self):
@@ -2418,7 +2418,7 @@ class StyleSidecar(unittest.TestCase):
              "hook": {"width_px": 849, "usable_px": 854, "lines": 2,
                       "complete": True},
              "source_text": {"bottom": False}, "footer_covered": False})
-        self.assertFalse([m for lv, m in achados if lv == "REJECT"], achados)
+        self.assertFalse([m for lv, m in achados if lv == "WARN"], achados)
 
 
 class DefinitionOfDone(unittest.TestCase):
@@ -2887,7 +2887,7 @@ class HookSai(unittest.TestCase):
                          "size_px": 76, "chars": 40, "complete": True,
                          "seconds_on_screen": 20.0},
                 "duration_s": 20.0, "motion": True}
-        piores = [m for lv, m in self.S.check_sidecar(lado) if lv == "REJECT"]
+        piores = [m for lv, m in self.S.check_sidecar(lado) if lv == "WARN"]
         self.assertTrue(any("stays 20.0s" in m for m in piores), piores)
 
     def test_tres_segundos_num_clipe_de_vinte_passa(self):
@@ -2896,7 +2896,7 @@ class HookSai(unittest.TestCase):
                          "seconds_on_screen": 3.0},
                 "duration_s": 20.0, "motion": True}
         self.assertEqual([m for lv, m in self.S.check_sidecar(lado)
-                          if lv == "REJECT"], [])
+                          if lv == "WARN"], [])
 
     def test_um_clipe_de_dois_segundos_nao_e_reprovado_por_isso(self):
         """O hook cobre um clipe curto inteiro porque o clipe inteiro são os
@@ -2906,7 +2906,7 @@ class HookSai(unittest.TestCase):
                          "seconds_on_screen": 2.0},
                 "duration_s": 2.0, "motion": True}
         self.assertEqual([m for lv, m in self.S.check_sidecar(lado)
-                          if lv == "REJECT"], [])
+                          if lv == "WARN"], [])
 
 
 class FronteiraDaCue(unittest.TestCase):
@@ -3060,21 +3060,21 @@ class SinalADois(unittest.TestCase):
 
     def test_os_dois_concordando_que_esta_largo_reprova(self):
         achados = self.S.cross_check(self._lado(900), {"text_width_ratio": 1.22})
-        self.assertTrue([m for lv, m in achados if lv == "REJECT"], achados)
+        self.assertTrue([m for lv, m in achados if lv == "WARN"], achados)
 
     def test_o_pixel_sozinho_nao_reprova_e_diz_o_que_viu(self):
         """1,14 de largura em pixel num clipe cujo hook o PIL mediu cabendo foi
         medido num APROVADO do dono. Uma métrica que reprova um aprovado não
         pode reprovar nada sozinha."""
         achados = self.S.cross_check(self._lado(800), {"text_width_ratio": 1.14})
-        self.assertEqual([m for lv, m in achados if lv == "REJECT"], [])
+        self.assertEqual([m for lv, m in achados if lv == "WARN"], [])
         self.assertTrue(any("the two instruments disagree" in m
                             for lv, m in achados), achados)
 
     def test_a_metrica_continua_aparecendo_quando_nao_ha_sidecar(self):
         achados = self.S.cross_check(None, {"text_width_ratio": 1.22})
         self.assertTrue(achados)
-        self.assertEqual([m for lv, m in achados if lv == "REJECT"], [])
+        self.assertEqual([m for lv, m in achados if lv == "WARN"], [])
 
 
 class NadaSomeCalado(unittest.TestCase):
@@ -3105,7 +3105,7 @@ class NadaSomeCalado(unittest.TestCase):
         medida = {"measured": True, "duration_s": 20.0, "scale_variation": None,
                   "scale_variation_why": "só 1 quadro abriu"}
         achados = self.S.check_against(medida, {})
-        piores = [m for lv, m in achados if lv == "REJECT"]
+        piores = [m for lv, m in achados if lv == "WARN"]
         self.assertTrue(piores, achados)
         self.assertIn("só 1 quadro abriu", piores[0])
 
@@ -3465,7 +3465,7 @@ class PedidoVencidoPelaCampanha(unittest.TestCase):
     def test_com_a_regra_nomeada_nao_reprova_e_diz_qual_regra(self):
         achados = self.S.check_sidecar(
             self._lado(asked_overridden_by="video.duration_max_s = 15"))
-        self.assertEqual([m for lv, m in achados if lv == "REJECT"], [], achados)
+        self.assertEqual([m for lv, m in achados if lv == "WARN"], [], achados)
         oks = [m for lv, m in achados if lv == "ok"]
         self.assertTrue(oks, achados)
         self.assertTrue(any("video.duration_max_s = 15" in m for m in oks),
@@ -3474,14 +3474,14 @@ class PedidoVencidoPelaCampanha(unittest.TestCase):
 
     def test_sem_a_regra_a_mesma_diferenca_continua_reprovando(self):
         achados = self.S.check_sidecar(self._lado())
-        piores = [m for lv, m in achados if lv == "REJECT"]
+        piores = [m for lv, m in achados if lv == "WARN"]
         self.assertTrue(piores, achados)
         self.assertIn("20s", piores[0])
         self.assertIn("15.00s", piores[0])
 
     def test_o_pedido_atendido_continua_saindo_como_ok(self):
         achados = self.S.check_sidecar({"asked_s": 15, "duration_s": 15.02})
-        self.assertEqual([m for lv, m in achados if lv == "REJECT"], [], achados)
+        self.assertEqual([m for lv, m in achados if lv == "WARN"], [], achados)
 
 
 class KQueSomeEKQueVem(unittest.TestCase):
@@ -4825,9 +4825,12 @@ class AsTresMargensDaInterface(unittest.TestCase):
             side[bloco][campo] = valor
         return side
 
-    def _rejeitos(self, side):
+    # Desde 16/09/2026 estes portões NÃO reprovam: são observações, e o clipe
+    # sai com elas ditas em uma frase. O nome mudou junto -- um helper chamado
+    # `_rejeitos` devolvendo aviso é a mentira que se descobre tarde.
+    def _apontamentos(self, side):
         import warden_style as S
-        return [m for nivel, m in S.check_sidecar(side) if nivel == "REJECT"]
+        return [m for nivel, m in S.check_sidecar(side) if nivel == "WARN"]
 
     def test_as_tres_margens_ficam_gravadas_no_sidecar(self):
         import warden_style as S
@@ -4840,19 +4843,19 @@ class AsTresMargensDaInterface(unittest.TestCase):
         self.assertEqual(S.margens(720, 1280),
                          {"top": 187, "bottom": 180, "right": 67})
 
-    def test_um_clipe_dentro_das_tres_margens_nao_e_reprovado(self):
-        self.assertEqual(self._rejeitos(self._side()), [])
+    def test_um_clipe_dentro_das_tres_margens_nao_e_apontado(self):
+        self.assertEqual(self._apontamentos(self._side()), [])
 
-    def test_o_hook_de_14_09_a_184px_e_reprovado(self):
-        achados = self._rejeitos(self._side(hook__top_px=184))
+    def test_o_hook_de_14_09_a_184px_e_apontado(self):
+        achados = self._apontamentos(self._side(hook__top_px=184))
         self.assertTrue(any("184px from the top" in m for m in achados), achados)
 
-    def test_a_legenda_dentro_da_faixa_de_baixo_e_reprovada(self):
-        achados = self._rejeitos(self._side(caption__bottom_px=1700))
+    def test_a_legenda_dentro_da_faixa_de_baixo_e_apontada(self):
+        achados = self._apontamentos(self._side(caption__bottom_px=1700))
         self.assertTrue(any("1700px down" in m for m in achados), achados)
 
-    def test_texto_sob_a_coluna_de_botoes_e_reprovado(self):
-        achados = self._rejeitos(self._side(hook__right_px=1010))
+    def test_texto_sob_a_coluna_de_botoes_e_apontado(self):
+        achados = self._apontamentos(self._side(hook__right_px=1010))
         self.assertTrue(any("like/comment/share" in m for m in achados), achados)
 
     def test_a_legenda_mira_mais_alto_do_que_o_limite(self):
@@ -4868,7 +4871,7 @@ class AsTresMargensDaInterface(unittest.TestCase):
     def test_um_clipe_sem_legenda_nao_quebra_o_portao_de_margem(self):
         side = self._side()
         side["caption"] = None
-        self._rejeitos(side)          # não levanta
+        self._apontamentos(side)          # não levanta
 
 
 class OHookComecaAbaixoDaInterface(unittest.TestCase):
@@ -5820,11 +5823,11 @@ class ATarjaPretaReprovaOClipe(unittest.TestCase):
         barras, _p = self.S.barras_pretas(quadros)
         self.assertEqual(barras["bottom"], 0.0)
 
-    def test_a_barra_reprova_o_render(self):
+    def test_a_barra_e_apontada_sem_barrar_o_render(self):
         medida = {"black_bars": {"top": 0.0, "bottom": 0.15,
                                  "left": 0.0, "right": 0.0}}
         achados = self.S._barra_preta_reprova(medida)
-        self.assertEqual(achados[0][0], "REJECT")
+        self.assertEqual(achados[0][0], "WARN")
         self.assertIn("bottom 15.0%", achados[0][1])
 
     def test_nao_ter_olhado_as_bordas_tambem_reprova(self):
@@ -5832,7 +5835,7 @@ class ATarjaPretaReprovaOClipe(unittest.TestCase):
         # para todas as outras medições deste projeto.
         achados = self.S._barra_preta_reprova(
             {"black_bars": None, "black_bars_why": "no frame was opened"})
-        self.assertEqual(achados[0][0], "REJECT")
+        self.assertEqual(achados[0][0], "WARN")
 
     def test_o_degrade_do_rodape_nunca_satura(self):
         # O conserto: o alfa sobe até o pé sem travar num platô opaco. Uma

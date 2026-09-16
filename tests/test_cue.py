@@ -274,7 +274,7 @@ class PortaoDeEstilo(unittest.TestCase):
         self.assertEqual(rejeitos, [],
                          "cues: %r" % ([c["text"] for c in cues],))
 
-    def test_o_portao_continua_reprovando_cue_ruim(self):
+    def test_o_portao_continua_apontando_cue_ruim(self):
         """O conserto é a cue sair boa, nunca o portão aceitar cue ruim."""
         side = {"duration_s": 12.0,
                 "caption": {"cues": 2, "max_lines": 2, "max_cue_s": 2.0,
@@ -282,7 +282,11 @@ class PortaoDeEstilo(unittest.TestCase):
                             "hanging_endings": ["O JOGO. DON'T HATE THE",
                                                 "CARA, EU VOTARIA NO"],
                             "ends_mid_sentence": False}}
-        rejeitos = [m for nivel, m in S.check_sidecar(side) if nivel == "REJECT"]
+        # Desde 16/09 a cue pendurada é OBSERVAÇÃO: o clipe sai e o agente diz.
+        # O portão continua existindo e continua dizendo a mesma coisa -- o que
+        # mudou é que ele não segura mais o arquivo. Ver o bloco "O QUE BLOQUEIA
+        # UMA ENTREGA" no topo de warden_style.py.
+        rejeitos = [m for nivel, m in S.check_sidecar(side) if nivel == "WARN"]
         self.assertTrue(any("end on a word that needs" in m for m in rejeitos),
                         rejeitos)
 
