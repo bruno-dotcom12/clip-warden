@@ -1432,7 +1432,13 @@ def cmd_post(args):
         die("the publishing intermediary is OFF: there is no key on this "
             "install -- not in WARDEN_POST_API_KEY and not in this machine's "
             "own file. Nothing was sent and nothing was tried. Do NOT claim "
-            "anything was published. Two roads: hand the finished file over in "
+            "anything was published. Two roads: give them the title and the "
+            "description written out, and ATTACH THE FILE ONLY IF THEY DO NOT "
+            "ALREADY HAVE IT -- `warden delivered <clip>` says whether it went "
+            "out in this conversation. Measured 16/09/2026: the clip had been "
+            "delivered forty seconds earlier and was attached again with the "
+            "three steps, and the owner counted it as a third clip he never "
+            "asked for. The file goes in "
             "your final message, with the title and the description written "
             # "em menos de um minuto" saiu daqui: ninguém cronometrou um upload
             # manual do dono, e esta frase existe justamente para ser a única
@@ -1478,11 +1484,25 @@ def cmd_post(args):
                   f"why it would not publish. The same link fixes it.",
                   file=sys.stderr)
         print(saida["url"])
-        print("  GIVE THAT ADDRESS TO THE PERSON, on its own, and say in one "
-              "line what it does: it opens Google's own screen, they pick the "
-              "channel and press Allow. Their password is typed on Google's "
-              "page and nowhere else. Then run `warden post connect` again -- "
-              "it says `already connected` when it worked.", file=sys.stderr)
+        # WHOLE, e essa palavra custou uma gravação. Em 16/09/2026 o endereço
+        # saiu como `?token=eyJhbG...Xooc` -- abreviado do jeito que se abrevia
+        # um SEGREDO. O agente aplicou ao ENDEREÇO a regra que existe para a
+        # CHAVE ("nunca repita, nem um prefixo"), e as duas coisas são opostas:
+        # a chave é da pessoa e não pode voltar; o endereço é de uso único, não
+        # serve para mais ninguém, e sem os caracteres do meio não serve nem
+        # para ela. A página respondeu `invalid or expired token`, o dono tinha
+        # feito tudo certo, e o link estava quebrado antes de ele clicar.
+        print("  GIVE THAT ADDRESS TO THE PERSON **WHOLE** -- every character, "
+              "`?token=` and all, on its own line. NEVER shorten it, never put "
+              "`...` in the middle, never wrap it, never put it in backticks. "
+              "It is NOT the key: the key never comes back to the chat, and "
+              "this address is single-use and useless to anyone else. Measured "
+              "16/09/2026: it went out abbreviated and the page answered "
+              "`invalid or expired token`. Say in one line what it does: it "
+              "opens Google's own screen, they pick the channel and press "
+              "Allow. Their password is typed on Google's page and nowhere "
+              "else. Then run `warden post connect` again -- it says "
+              "`already connected` when it worked.", file=sys.stderr)
         return 0
 
     # `and not args.file`, e a ausência dessa condição era um defeito.
