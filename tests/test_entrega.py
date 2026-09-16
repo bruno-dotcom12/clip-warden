@@ -1315,3 +1315,59 @@ class OInboxEsperaOBastanteParaNaoPerguntarAToa(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ADividaDeEntregaEDaCONVERSA(unittest.TestCase):
+    """Medido em 16/09/2026, no segundo teste real pela linha da Plow.
+
+    O dono mandou `/new` e o pedido. A sessão nova abriu cobrando CINCO clipes
+    da sessão anterior -- duas versões intermediárias de um ciclo de rerender
+    entre eles -- e o agente respondeu, com essas palavras:
+
+        "Achei — essa mesma tarefa já tinha sido feita ontem e os dois cortes
+        ficaram prontos, só nunca confirmaram como entregues. Reenviando agora"
+
+    Ele REENVIOU os clipes de ontem em vez de atender o pedido novo. E não é só
+    desperdício: um clipe devido numa conversa que não existe mais não pode ser
+    entregue na nova, porque o texto que o acompanhava também não existe mais.
+    """
+
+    def setUp(self):
+        self.dir = _temp(self, "warden-divida-")
+        os.environ["WARDEN_DIR"] = self.dir
+        self.clip = os.path.join(self.dir, "corte.mp4")
+        open(self.clip, "wb").write(b"x")
+        self._sessao = os.environ.get("WARDEN_SESSION_ID")
+
+    def tearDown(self):
+        if self._sessao is None:
+            os.environ.pop("WARDEN_SESSION_ID", None)
+        else:
+            os.environ["WARDEN_SESSION_ID"] = self._sessao
+
+    def test_o_clipe_de_outra_conversa_NAO_e_cobrado(self):
+        os.environ["WARDEN_SESSION_ID"] = "conversa-de-ontem"
+        warden.entregas_registra(self.clip)
+        os.environ["WARDEN_SESSION_ID"] = "conversa-de-hoje"
+        pendentes = [r["clip"] for r in warden.entregas_pendentes()]
+        self.assertNotIn(self.clip, pendentes,
+                         "a conversa nova abriu cobrando dívida da anterior")
+
+    def test_o_clipe_DESTA_conversa_continua_cobrado(self):
+        os.environ["WARDEN_SESSION_ID"] = "conversa-de-hoje"
+        warden.entregas_registra(self.clip)
+        pendentes = [r["clip"] for r in warden.entregas_pendentes()]
+        self.assertIn(self.clip, pendentes,
+                      "o portão parou de cobrar o que é desta conversa")
+
+    def test_livro_antigo_sem_conversa_anotada_continua_valendo(self):
+        # Um livro escrito por uma versão anterior não tem o campo. Perder a
+        # cobrança inteira seria pior que cobrar demais.
+        os.environ["WARDEN_SESSION_ID"] = "conversa-de-hoje"
+        warden.entregas_registra(self.clip)
+        rows = warden.entregas_all()
+        for r in rows:
+            r.pop("session", None)
+        warden._entregas_grava(rows)
+        pendentes = [r["clip"] for r in warden.entregas_pendentes()]
+        self.assertIn(self.clip, pendentes)

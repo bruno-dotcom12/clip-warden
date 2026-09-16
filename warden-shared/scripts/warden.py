@@ -767,6 +767,44 @@ def _recente(row):
     return idade.total_seconds() < PRAZO_ENTREGA_H * 3600
 
 
+def conversa_de_agora():
+    """O id da conversa que roda AGORA, ou None quando não dá para saber.
+
+    Existe porque a dívida de entrega é com uma CONVERSA, não com a máquina.
+    Medido em 16/09/2026, no segundo teste real: o dono mandou `/new`, e a
+    sessão nova abriu tentando acertar cinco clipes da sessão anterior -- duas
+    versões intermediárias de um ciclo de rerender entre elas. O agente gastou
+    quatro chamadas conferindo arquivo antigo e vasculhando sessões passadas em
+    vez de atender o pedido novo.
+
+    E não é só desperdício: um clipe devido numa conversa que não existe mais
+    NÃO PODE ser entregue na nova. Quem recebesse veria um arquivo que não
+    pediu, sem o texto que o acompanhava.
+
+    `WARDEN_SESSION_ID` primeiro, porque é exato; depois a sessão da mensagem
+    mais nova do state.db, que é a deste turno. `None` quando o banco não dá
+    para ler -- e aí o livro volta a valer por tempo, como antes, porque perder
+    a cobrança inteira seria pior que cobrar demais.
+    """
+    explicita = (os.environ.get("WARDEN_SESSION_ID") or "").strip()
+    if explicita:
+        return explicita
+    caminho = os.environ.get("WARDEN_STATE_DB", "/var/lib/hermes/state.db")
+    if not os.path.isfile(caminho):
+        return None
+    try:
+        import sqlite3 as _sq
+        con = _sq.connect("file:" + caminho + "?mode=ro", uri=True, timeout=2.0)
+        try:
+            linha = con.execute(
+                "select session_id from messages order by id desc limit 1").fetchone()
+        finally:
+            con.close()
+        return linha[0] if linha and linha[0] else None
+    except Exception:
+        return None
+
+
 def entregas_pendentes():
     """Os clipes liberados que ninguém confirmou ter enviado, ainda de pé.
 
@@ -775,8 +813,17 @@ def entregas_pendentes():
     conversa sem virar um bloqueio permanente na primeira vez que alguém fechar
     o terminal no meio de um lote.
     """
+    agora = conversa_de_agora()
+    def desta_conversa(r):
+        # Sem saber a conversa de agora, ou sem a conversa anotada na linha
+        # (livro escrito por uma versão anterior), vale o prazo como antes:
+        # cobrar demais é ruim, não cobrar nada é pior.
+        if agora is None or r.get("session") is None:
+            return True
+        return r.get("session") == agora
     return [r for r in entregas_all()
-            if not r.get("sent") and _recente(r) and os.path.isfile(r.get("clip", ""))]
+            if not r.get("sent") and _recente(r) and desta_conversa(r)
+            and os.path.isfile(r.get("clip", ""))]
 
 
 def entregas_registra(clip):
@@ -785,6 +832,7 @@ def entregas_registra(clip):
     rows = [r for r in entregas_all() if _recente(r) and r.get("clip") != clip]
     rows.append({"clip": clip,
                  "at": datetime.now(timezone.utc).isoformat(),
+                 "session": conversa_de_agora(),
                  "sent": False, "sent_at": None})
     try:
         _entregas_grava(rows)
