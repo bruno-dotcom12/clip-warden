@@ -3418,11 +3418,26 @@ def _loudness_envelope(source):
 # nessa faixa que a memória também acaba. 1200s é onde a espera deixa de ser
 # aceitável, não onde a máquina quebra: o objetivo é nunca chegar perto.
 VARREDURA_LIMIAR_S = 1200
-# Quanto dura cada candidato, e quantos. Três minutos porque um clipe pede 20 a
-# 60 segundos e o modelo precisa de contexto em volta para escolher o in/out;
-# menos que isso entrega frase cortada ao meio e ele escolhe mal.
-VARREDURA_JANELA_S = 180
-VARREDURA_CANDIDATOS = 6
+# Quanto dura cada candidato, e quantos.
+#
+# DOIS minutos e QUATRO candidatos desde 17/09/2026, e o corte veio de uma
+# medição: o texto da fonte serve SÓ para escolher o momento -- a legenda é
+# transcrita de novo, janela a janela, na hora do render (ver `proposito`). Uma
+# varredura generosa paga por texto que ninguém queima.
+#
+# Dois minutos ainda dão contexto de sobra para um clipe de 20 a 60 segundos;
+# menos que isso entregaria frase cortada ao meio. Quatro candidatos dão escolha
+# ao modelo sem virar orçamento.
+#
+# A conta, com o `base` medido a 7,8x o tempo real: 4 x 2 min = 8 min de áudio,
+# ~1 min de transcrição num VOD de três horas. Com os padrões antigos (6 x 3)
+# eram 18 min de áudio e ~2,3 min.
+VARREDURA_JANELA_S = 120
+VARREDURA_CANDIDATOS = 4
+# Teto de quanto da fonte a varredura pode ler. Um quarto, e o número saiu de
+# uma medição em 17/09/2026: com 6 janelas fixas de 3 min, uma fonte de 25
+# minutos era lida em 18 -- 72% dela, economia nenhuma. Ver `picos_para_janelas`.
+VARREDURA_COBERTURA_MAX = 0.15
 
 
 def picos_para_janelas(env, quantos=VARREDURA_CANDIDATOS,
@@ -3454,6 +3469,17 @@ def picos_para_janelas(env, quantos=VARREDURA_CANDIDATOS,
     fim_da_fonte = float(duracao) if duracao else max(t for t, _ in leituras)
     if fim_da_fonte <= janela_s:
         return []                       # cabe inteira: não há o que recortar
+    # O TETO DE COBERTURA, e ele é conserto de um erro meu que só apareceu no
+    # teste de ponta a ponta, em 17/09/2026: com 6 janelas FIXAS de 3 min, uma
+    # fonte de 25 minutos era lida em 18 -- 72% dela. A varredura existe para
+    # ler pouco, e naquele tamanho ela não economizava nada.
+    #
+    # O número de janelas passa a escalar com a duração: no máximo um quarto da
+    # fonte. Três horas continuam em 6 janelas (18 min, 10%); 25 minutos caem
+    # para 2 (6 min, 24%). O mínimo é 2 porque uma janela só não dá ao modelo
+    # escolha nenhuma -- ele receberia um trecho e teria de cortar dali.
+    cabe = int(fim_da_fonte * VARREDURA_COBERTURA_MAX / janela_s)
+    quantos = max(2, min(int(quantos), cabe))
     # Baldes do tamanho da janela, meio balde de passo. O passo pela metade é o
     # que impede um pico bom de cair na emenda entre dois baldes e ser diluído
     # nos dois -- sem ele, um grito exatamente no minuto 3 perde para um trecho
@@ -3514,7 +3540,7 @@ def transcreve_por_picos(path, seconds=None, quantos=VARREDURA_CANDIDATOS,
                                  duracao=seconds)
     if not janelas:
         return None, [], "the source did not split into peaks"
-    segmentos, linguas = [], []
+    segmentos, linguas, falhas = [], [], []
     for i, (lo, hi) in enumerate(janelas, 1):
         if diz:
             diz(f"warden: reading the words of peak {i}/{len(janelas)} "
@@ -3524,15 +3550,27 @@ def transcreve_por_picos(path, seconds=None, quantos=VARREDURA_CANDIDATOS,
         except Exception as erro:
             # Um pico que falha não derruba os outros: o que sobra ainda é
             # material para escolher, e um clipe é melhor que nenhum.
+            #
+            # A MENSAGEM VAI JUNTO, e isso é conserto de um defeito que este
+            # teste pegou em 17/09/2026: a versão anterior imprimia só
+            # `RuntimeError` e engolia o texto. Os seis picos falharam por falta
+            # do modelo whisper -- uma causa de uma linha, com conserto óbvio --
+            # e a saída não permitia saber disso. Um erro que esconde a própria
+            # causa custa mais que o erro.
+            falhas.append("%d: %s: %s" % (i, type(erro).__name__, erro))
             if diz:
-                diz(f"warden: peak {i} could not be read ({type(erro).__name__}), "
-                    f"skipping it")
+                diz(f"warden: peak {i} could not be read -- "
+                    f"{type(erro).__name__}: {erro}")
             continue
         segmentos.extend(parte.get("segments") or [])
         if parte.get("language"):
             linguas.append(parte["language"])
     if not segmentos:
-        return None, [], "no peak could be transcribed"
+        # O PORQUÊ VAI JUNTO. "no peak could be transcribed" sozinho manda quem
+        # lê procurar no escuro; com as falhas, a causa comum -- o modelo que
+        # ainda não baixou, por exemplo -- se lê na hora.
+        return None, [], ("no peak could be transcribed -- " + "; ".join(falhas)
+                          if falhas else "no peak could be transcribed")
     segmentos.sort(key=lambda s: (s.get("start") or 0.0))
     transcricao = {
         "segments": segmentos,

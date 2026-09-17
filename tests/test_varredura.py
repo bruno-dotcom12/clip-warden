@@ -62,14 +62,54 @@ class OsPicosViramJanelas(unittest.TestCase):
         self.assertEqual(M.picos_para_janelas(env, janela_s=180, duracao=100), [])
 
     def test_o_trecho_alto_e_escolhido(self):
-        """Uma hora de fonte com um pico aos 30 min: a janela cai nele."""
+        """Uma hora de fonte com um pico aos 30 min: uma janela cai nele.
+
+        Pede 1 candidato e recebe 2, porque o mínimo é 2 -- uma janela só não
+        dá escolha nenhuma ao modelo, ele receberia um trecho e teria de cortar
+        dali. O que se afirma aqui é que o PICO está coberto, não quantas
+        janelas saíram.
+        """
         env = envelope([(1800, 1980, -10.0)], duracao=3600)
         janelas = M.picos_para_janelas(env, quantos=1, janela_s=180,
                                        duracao=3600)
-        self.assertEqual(len(janelas), 1)
-        ini, fim = janelas[0]
-        self.assertLessEqual(ini, 1800, "a janela tem de começar no pico ou antes")
-        self.assertGreaterEqual(fim, 1980 - 1, "e cobrir o pico")
+        self.assertGreaterEqual(len(janelas), 1)
+        cobre = [(a, b) for a, b in janelas if a <= 1850 <= b]
+        self.assertTrue(cobre, "nenhuma janela cobriu o pico dos 30 min: %r"
+                        % (janelas,))
+
+    def test_a_cobertura_escala_com_a_duracao(self):
+        """O erro que o teste de ponta a ponta pegou em 17/09/2026.
+
+        Com 6 janelas FIXAS de 3 min, uma fonte de 25 minutos era lida em 18 --
+        72% dela, e a varredura existe justamente para ler pouco. O número de
+        janelas passou a escalar com a duração, com teto de um quarto.
+        """
+        import math
+        def onda(dur):
+            return [(t, -20.0 - 10 * math.sin(t / 300.0)) for t in range(0, dur)]
+        # O PISO VENCE O TETO, e a precedência é deliberada: uma janela só não
+        # dá escolha nenhuma ao modelo, então duas é o mínimo mesmo quando isso
+        # passa da fração. Numa fonte de 25 min, 2 x 2 min = 4 min são 16% em
+        # vez dos 15% do teto -- e é assim que tem de ser.
+        piso = 2 * M.VARREDURA_JANELA_S
+        for dur in (1500, 3600, 10800):
+            janelas = M.picos_para_janelas(onda(dur), duracao=dur)
+            coberto = sum(b - a for a, b in janelas)
+            teto = max(dur * M.VARREDURA_COBERTURA_MAX, piso)
+            self.assertLessEqual(coberto, teto + 1,
+                                 "fonte de %ds leu %ds, acima do teto" % (dur, coberto))
+            self.assertGreaterEqual(len(janelas), 2,
+                                    "menos de duas janelas não dá escolha ao modelo")
+
+    def test_numa_fonte_de_tres_horas_le_menos_de_um_decimo(self):
+        """O caso que motivou tudo: o VOD de live que estourou a memória."""
+        import math
+        env = [(t, -20.0 - 10 * math.sin(t / 300.0)) for t in range(0, 10800)]
+        janelas = M.picos_para_janelas(env, duracao=10800)
+        coberto = sum(b - a for a, b in janelas)
+        self.assertLess(coberto, 0.10 * 10800,
+                        "três horas de fonte têm de ser lidas em menos de um "
+                        "décimo; leu %.0f min" % (coberto / 60))
 
     def test_energia_sustentada_ganha_de_estouro_de_microfone(self):
         """A MÉDIA e não o máximo, e este teste prende essa escolha.
