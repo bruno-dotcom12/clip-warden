@@ -3404,6 +3404,153 @@ def _loudness_envelope(source):
     return env, None
 
 
+# A partir de que duração a fonte deixa de ser transcrita inteira.
+#
+# POR QUE ESTE NÚMERO EXISTE, e ele é o conserto de uma falha medida em
+# 17/09/2026, na nuvem: um VOD de live foi mandado para `lote prep`, o passo da
+# transcrição carregou a fonte inteira e o transcritor ESTOUROU A MEMÓRIA. Não
+# foi lentidão -- foi o passo não escalar com a duração, e o dono ficou sem
+# clipe nenhum.
+#
+# A conta que sustenta o limiar, com os números que este arquivo já mediu: o
+# `base` faz 120s de áudio em 15,4s, ou seja ~7,8x o tempo real. Vinte minutos
+# de fonte são ~2,5min de transcrição, que passa. Três horas são ~23min -- e é
+# nessa faixa que a memória também acaba. 1200s é onde a espera deixa de ser
+# aceitável, não onde a máquina quebra: o objetivo é nunca chegar perto.
+VARREDURA_LIMIAR_S = 1200
+# Quanto dura cada candidato, e quantos. Três minutos porque um clipe pede 20 a
+# 60 segundos e o modelo precisa de contexto em volta para escolher o in/out;
+# menos que isso entrega frase cortada ao meio e ele escolhe mal.
+VARREDURA_JANELA_S = 180
+VARREDURA_CANDIDATOS = 6
+
+
+def picos_para_janelas(env, quantos=VARREDURA_CANDIDATOS,
+                       janela_s=VARREDURA_JANELA_S, duracao=None):
+    """Os trechos mais altos da fonte, como (início, fim) em segundos dela.
+
+    `env` é [(segundo, LUFS momentâneo)] -- o que `_loudness_envelope` devolve
+    numa passada de ffmpeg, sem whisper e sem carregar áudio na memória. É por
+    isso que esta escolha pode acontecer ANTES da transcrição: ela custa uma
+    leitura do áudio, não uma inferência sobre ele.
+
+    O QUE ISTO É, E O QUE NÃO É. O dono pediu "o pico de visualização". Isto é o
+    pico de SOM, que é outra coisa e é a que dá para medir daqui: nem a Twitch
+    nem o YouTube entregam audiência ao longo do vídeo por esta porta. Momento
+    alto costuma ser momento bom -- grito, treta, punchline -- mas pega barulho
+    de plateia e perde a fala quieta que era o melhor corte. Por isso a saída é
+    uma LISTA DE CANDIDATOS e não um veredito: quem escolhe é o modelo, lendo o
+    texto deles. É a mesma regra que `loud_segment_indexes` já escreve: "um
+    quarto é um limiar, não uma verdade -- ele diz onde o som está, e o modelo
+    diz se aquilo é um momento".
+
+    Devolve [] quando não há envelope. Quem chama trata isso como "não deu para
+    varrer" e segue pelo caminho de sempre -- nunca como "não há nada bom".
+    """
+    leituras = [(float(t), float(v)) for t, v in (env or [])
+                if v is not None and float(v) > -70]
+    if not leituras or janela_s <= 0 or quantos <= 0:
+        return []
+    fim_da_fonte = float(duracao) if duracao else max(t for t, _ in leituras)
+    if fim_da_fonte <= janela_s:
+        return []                       # cabe inteira: não há o que recortar
+    # Baldes do tamanho da janela, meio balde de passo. O passo pela metade é o
+    # que impede um pico bom de cair na emenda entre dois baldes e ser diluído
+    # nos dois -- sem ele, um grito exatamente no minuto 3 perde para um trecho
+    # morno que por acaso ficou centralizado.
+    passo = janela_s / 2.0
+    baldes = []
+    inicio = 0.0
+    import bisect
+    tempos = [t for t, _ in leituras]
+    while inicio < fim_da_fonte:
+        fim = min(inicio + janela_s, fim_da_fonte)
+        i = bisect.bisect_left(tempos, inicio)
+        j = bisect.bisect_right(tempos, fim)
+        vals = [v for _, v in leituras[i:j]]
+        if vals:
+            # A MÉDIA, não o máximo. Um estouro de microfone de um décimo de
+            # segundo tem o maior máximo da fonte inteira e não é momento
+            # nenhum; três minutos de sala alta têm a maior média. O que se
+            # procura é energia sustentada.
+            baldes.append((sum(vals) / len(vals), inicio, fim))
+        inicio += passo
+    if not baldes:
+        return []
+    escolhidos = []
+    for media, ini, fim in sorted(baldes, key=lambda b: -b[0]):
+        # Sem sobreposição: dois candidatos que se cruzam são o mesmo momento
+        # contado duas vezes, e gastariam metade do orçamento de transcrição
+        # com o mesmo áudio.
+        if any(not (fim <= a or ini >= b) for _, a, b in escolhidos):
+            continue
+        escolhidos.append((media, ini, fim))
+        if len(escolhidos) >= quantos:
+            break
+    return [(round(ini, 2), round(fim, 2))
+            for _, ini, fim in sorted(escolhidos, key=lambda e: e[1])]
+
+
+def transcreve_por_picos(path, seconds=None, quantos=VARREDURA_CANDIDATOS,
+                         janela_s=VARREDURA_JANELA_S, diz=None):
+    """Transcreve SÓ os trechos mais altos de uma fonte longa.
+
+    Devolve (transcricao, janelas, porque) com a mesma forma que `transcribe`
+    devolve -- `segments` em tempo da FONTE, não da janela. Isso não é cuidado
+    meu: `transcribe(window=...)` já soma o offset em cada `start`/`end`
+    (ver `s.start + offset`), então juntar as janelas é concatenar e ordenar.
+    Se algum dia esse offset sair de lá, os clipes saem do lugar errado e
+    PARECEM certos, que é o pior defeito possível aqui.
+
+    `porque` é None quando a varredura aconteceu. Quando não deu -- sem
+    envelope, fonte curta, ffmpeg ausente -- devolve (None, [], motivo), e quem
+    chamou segue pelo caminho inteiro de sempre. Degradar é obrigatório: uma
+    varredura que falha não pode custar o clipe.
+    """
+    env, porque_env = _loudness_envelope(path)
+    if not env:
+        return None, [], (porque_env or "no loudness envelope")
+    janelas = picos_para_janelas(env, quantos=quantos, janela_s=janela_s,
+                                 duracao=seconds)
+    if not janelas:
+        return None, [], "the source did not split into peaks"
+    segmentos, linguas = [], []
+    for i, (lo, hi) in enumerate(janelas, 1):
+        if diz:
+            diz(f"warden: reading the words of peak {i}/{len(janelas)} "
+                f"({lo / 60:.1f}-{hi / 60:.1f} min)")
+        try:
+            parte = transcribe(path, window=(lo, hi), proposito="fonte")
+        except Exception as erro:
+            # Um pico que falha não derruba os outros: o que sobra ainda é
+            # material para escolher, e um clipe é melhor que nenhum.
+            if diz:
+                diz(f"warden: peak {i} could not be read ({type(erro).__name__}), "
+                    f"skipping it")
+            continue
+        segmentos.extend(parte.get("segments") or [])
+        if parte.get("language"):
+            linguas.append(parte["language"])
+    if not segmentos:
+        return None, [], "no peak could be transcribed"
+    segmentos.sort(key=lambda s: (s.get("start") or 0.0))
+    transcricao = {
+        "segments": segmentos,
+        "language": linguas[0] if linguas else None,
+        # O SINAL, e ele precisa viajar junto: quem ler esta transcrição tem de
+        # saber que ela NÃO cobre a fonte inteira. Sem isto, um modelo lendo
+        # buracos entre 12 e 47 minutos concluiria que ali não se falou nada --
+        # e escolheria janelas com base numa ausência que é da varredura, não
+        # do material.
+        "source": "peaks only (%d window(s), %.0f min of %.0f min)" % (
+            len(janelas), sum(h - l for l, h in janelas) / 60.0,
+            (float(seconds) / 60.0) if seconds else 0.0),
+        "varredura": {"janelas": janelas, "cobertura_s":
+                      round(sum(h - l for l, h in janelas), 1)},
+    }
+    return transcricao, janelas, None
+
+
 def loud_segment_indexes(segments, source, top_fraction=0.25):
     """Which segments sit in the loudest quarter of the source.
 
