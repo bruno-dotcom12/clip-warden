@@ -14,7 +14,7 @@
 # without the flag the same thing happens with a warning that reads like a
 # problem somebody should fix, and there is nothing to fix until the base ships
 # arm64.
-FROM --platform=linux/amd64 public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-80ef5024eb4b770e727a618a9b55421c73da6228@sha256:864771e8165db16c11a55635df85696f39d91020f258576dd62b7cab0515514f
+FROM --platform=linux/amd64 public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-51f83158a70a383f03a4d03dbd8b6ea102cf0361@sha256:253d7ed3409effa7fa59113d93b4b79bb731d8264cdaf4cd60294924d0110a2e
 
 # ffmpeg decides every number this agent states about a clip. The base carries
 # it; if a future base stops carrying it, the build is where that should be
