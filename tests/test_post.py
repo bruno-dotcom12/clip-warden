@@ -1078,7 +1078,7 @@ if __name__ == "__main__":
 
 
 class OLinkDeConexaoSobreviveAoRedator(unittest.TestCase):
-    """O gateway mascara todo JWT, e o token deste link é um JWT.
+    r"""O gateway mascara todo JWT, e o token deste link é um JWT.
 
     Duas gravações seguidas morreram aqui, em 16/09/2026. O endereço chegou ao
     agente já mascarado -- `?token=eyJhbG...J_mI` -- ele repassou o que tinha, e

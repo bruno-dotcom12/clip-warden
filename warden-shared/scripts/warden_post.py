@@ -766,7 +766,7 @@ class Provedor:
 
 
 def _sobrevive_ao_redator(url):
-    """Percent-encode o `e` de cada `eyJ` do token, para o link chegar INTEIRO.
+    r"""Percent-encode o `e` de cada `eyJ` do token, para o link chegar INTEIRO.
 
     O gateway do Hermes mascara todo JWT antes de entregar qualquer saída de
     ferramenta ao modelo (`agent/redact.py`):
@@ -799,6 +799,15 @@ def _sobrevive_ao_redator(url):
     O que isto NÃO resolve: um servidor que compare a query string CRUA, sem
     decodificar. Se um dia o `connect` recusar um link que parece certo, é o
     primeiro lugar para olhar.
+
+    O `r` desta docstring é load-bearing: ela cita o `\.` do `_JWT_RE` acima, e
+    sem o prefixo o Python 3.12+ trata isso como sequência de escape inválida e
+    emite um `SyntaxWarning` na PRIMEIRA importação do módulo. Isso não quebra
+    nada, mas sai no meio do `warden status` -- medido em 17/09/2026, dentro da
+    imagem publicada -- e um aviso de Python cru no diagnóstico faz quem lê
+    desconfiar do resto da saída. O Python 3.9 do Mac não o mostra (lá é
+    `DeprecationWarning`, silenciosa por padrão), então a suíte daqui não pega
+    este caso: ele só aparece com o 3.13 da imagem.
     """
     corte = url.find("token=")
     if corte < 0 or "eyJ" not in url:
