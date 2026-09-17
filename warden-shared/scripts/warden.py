@@ -4689,11 +4689,47 @@ def _lote_prep(args):
     # para que serve e é o que escolhe o modelo barato para esta passada: o
     # texto que vira legenda é transcrito de novo, janela a janela, na hora do
     # render.
+    # A FONTE LONGA NÃO É TRANSCRITA INTEIRA, e isto conserta uma falha medida
+    # em 17/09/2026 na nuvem: um VOD de live entrou aqui e o transcritor
+    # ESTOUROU A MEMÓRIA. O dono ficou sem clipe -- não foi demora, foi o passo
+    # não escalar com a duração.
+    #
+    # Acima de `VARREDURA_LIMIAR_S`, o áudio é MEDIDO antes de ser lido: uma
+    # passada de `ebur128` (sem whisper, memória constante) diz onde a fonte
+    # fica alta, e só esses trechos vão para a transcrição. Os tempos voltam em
+    # segundos da FONTE, porque `transcribe(window=...)` já soma o offset.
+    #
+    # Aditivo de propósito: abaixo do limiar, e sempre que a varredura não der
+    # certo, o caminho é exatamente o de antes. Nenhuma fonte que funcionava
+    # passa a depender disto.
+    M = _media()
+    duracao_fonte = None
     try:
-        transcricao = _media().transcribe(caminho, proposito="fonte")
-    except Exception as exc:
-        die(f"could not read the words of {os.path.basename(caminho)}: "
-            f"{type(exc).__name__}: {exc}", code=1)
+        duracao_fonte = M.duration_of(caminho)
+    except Exception:
+        duracao_fonte = None
+    transcricao = None
+    if duracao_fonte and float(duracao_fonte) > M.VARREDURA_LIMIAR_S:
+        print(f"# the source is {float(duracao_fonte) / 60:.0f} min: reading "
+              f"the loudest windows instead of all of it, so the transcriber "
+              f"is never handed hours at once.", file=sys.stderr)
+        try:
+            transcricao, janelas_pico, porque = M.transcreve_por_picos(
+                caminho, seconds=float(duracao_fonte),
+                diz=lambda m: print(m, file=sys.stderr))
+        except Exception as exc:
+            transcricao, porque = None, f"{type(exc).__name__}: {exc}"
+        if transcricao is None:
+            print(f"# the peak scan did not happen ({porque}); reading the "
+                  f"whole source, as before.", file=sys.stderr)
+        else:
+            print(f"# peaks read: {transcricao['source']}", file=sys.stderr)
+    if transcricao is None:
+        try:
+            transcricao = M.transcribe(caminho, proposito="fonte")
+        except Exception as exc:
+            die(f"could not read the words of {os.path.basename(caminho)}: "
+                f"{type(exc).__name__}: {exc}", code=1)
     alvo = safe_out(os.path.join(out, "lote.transcript.json"), "transcript")
     try:
         with open(alvo, "w", encoding="utf-8") as fh:
