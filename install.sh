@@ -106,6 +106,41 @@ fi
 PA="$RAIZ/.plow-agents/bin/plow-agents"
 [ -x "$PA" ] || pare "o clone do plow-agents não trouxe bin/plow-agents."
 
+# O `plow-agents` abre com `#!/usr/bin/env python3` e importa `tomllib`, que só
+# entrou na biblioteca padrão no Python 3.11. O `python3` que vem no macOS é o
+# 3.9, então num Mac de fábrica o passo 3 morre assim:
+#
+#     ModuleNotFoundError: No module named 'tomllib'
+#
+# Medido em 16/09/2026 num clone limpo. Quem instala vê um traceback de Python
+# no lugar de uma instrução, e o script deles não é nosso para consertar -- mas
+# quem quebra na frente de quem está avaliando é ESTE arquivo. Então procuramos
+# um interpretador que sirva, em vez de torcer para o `env` achar o certo.
+PY311=""
+for _py in python3.13 python3.12 python3.11 python3 \
+           /opt/homebrew/bin/python3 /usr/local/bin/python3 /opt/anaconda3/bin/python3; do
+    _cam="$(command -v "$_py" 2>/dev/null)" || continue
+    [ -n "$_cam" ] || continue
+    if "$_cam" -c 'import sys,tomllib; sys.exit(0)' >/dev/null 2>&1; then
+        PY311="$_cam"; break
+    fi
+done
+if [ -z "$PY311" ]; then
+    pare "o plow-agents precisa de Python 3.11 ou mais novo (ele importa
+'tomllib', que não existe antes disso). Este Mac tem $(python3 -V 2>&1) em
+'python3', e não achei outro instalado.
+
+  Instale um e rode este script de novo:
+    brew install python@3.12
+  ou baixe em https://www.python.org/downloads/
+
+  Nada foi criado nem baixado além de .plow-agents/, que você pode apagar."
+fi
+printf '  python para o plow-agents: %s (%s)\n' "$PY311" "$("$PY311" -V 2>&1)"
+# Chamado pelo interpretador, e não pelo shebang: é o shebang que aponta para o
+# python errado.
+PA_RUN() { "$PY311" "$PA" "$@"; }
+
 # ---------------------------------------------------------------- 3. a linha
 
 diga "3/5  a linha do agente"
@@ -121,9 +156,9 @@ Rode 'docker compose down' e 'rmdir plow-credentials', depois este script."
 else
     if [ "${LINHA:-}" = "" ]; then
         printf '  o login manda uma frase de ativação para o seu telefone.\n'
-        rode "$PA" login
+        rode "$PY311" "$PA" login
         printf '\n  suas linhas:\n'
-        "$PA" lines
+        PA_RUN lines
         printf '\n  qual linha o agente usa? (o UID ln_..., não o número): '
         read -r LINHA
     fi
@@ -131,7 +166,7 @@ else
         ln_*) ;;
         *) pare "'$LINHA' não parece um UID de linha. É o ln_... que 'plow-agents lines' imprime." ;;
     esac
-    rode "$PA" mint "$LINHA"
+    rode "$PY311" "$PA" mint "$LINHA"
     [ -s plow-credentials ] || pare "o mint não escreveu plow-credentials."
 fi
 

@@ -35,3 +35,11 @@ campaigns/
 footage/
 clips/
 cookies.txt
+
+# Gravações de demo e o material editado delas. São dezenas de MB de vídeo, e um
+# repositório de código não é onde eles moram -- todo mundo que clonasse pagaria
+# o download. `video demo.mov` (44,8 MB) entrou por um `git add -A` em 16/09/2026
+# e foi tirado no mesmo dia; isto existe para não entrar de novo.
+*.mov
+*.mp4
+demo-editado/
