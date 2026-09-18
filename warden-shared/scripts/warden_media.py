@@ -3908,9 +3908,15 @@ def _face_crop_fraction(faces, hint, kept):
 # faixa centrada nele leva junto meia página de navegador; nos quadros em que
 # não achou, o corte caiu no centro, que nesse material é o pior lugar possível.
 #
-# A saída não é um enquadramento melhor: é outro LAYOUT. A webcam em cima, a
-# tela inteira embaixo, a legenda por baixo das duas. Nada some, tudo fica
+# A saída não é um enquadramento melhor: é outro LAYOUT. Nada some, tudo fica
 # legível, e funciona mesmo quando o detector não acha ninguém.
+#
+# A ORDEM DAS FAIXAS INVERTEU EM 17/09/2026, e este parágrafo dizia o contrário
+# até 18/09: era "a webcam em cima, a tela inteira embaixo", porque o material
+# medido era uma live de NAVEGADOR. Hoje é TELA EM CIMA, inteira e encaixada
+# por largura, e a PESSOA EMBAIXO. Medido numa live de gameplay: com o rosto em
+# cima, a cara grande e a webcam que aparece dentro do jogo ficam a 297px uma
+# da outra contra 753px embaixo, e leem como erro de render.
 
 # Quanto do quadro não tem textura NENHUMA -- o pixel é idêntico aos oito
 # vizinhos. É a assinatura de uma tela: interface é feita de áreas chapadas, e
@@ -3973,7 +3979,7 @@ PIP_QUADROS_MIN = 3
 # adesivo mede 0,010 a 0,014 de largura do quadro e o rosto da webcam de canto
 # mede 0,042 a 0,060, três vezes mais. Sem este piso, num quadro em que a pessoa
 # está olhando para baixo e não é detectada, o adesivo vira "o maior rosto" e a
-# faixa de cima passa a seguir um desenho: foi o que apareceu em 2 dos 8 quadros
+# faixa da pessoa (hoje a de baixo) passa a seguir um desenho: foi o que apareceu em 2 dos 8 quadros
 # do mosaico, com a espuma acústica da parede ocupando a faixa inteira.
 ROSTO_MIN_LARGURA = 0.025
 PIP_CELULAS = (16, 9)
@@ -4012,17 +4018,26 @@ ESCALA_FONTE_MAX = 1.8
 # TELA encolhe, não o contrário.
 #
 # O número não é novo: `layout_dividido` já reservava `int(height * 0.20)` para
-# a faixa da pessoa, e `test_a_webcam_fica_em_cima_e_encosta_na_tela` já o
-# prendia com `assertGreater(wh, 1920 * 0.2)`. O que mudou em 17/09/2026 é a
-# ORDEM da conta. Antes a tela entrava por largura e a pessoa ficava com a
-# sobra; agora a pessoa tem o piso e a tela encolhe até caber, porque foi essa
-# a escolha do dono olhando quatro maquetes do quadro real dos 4s:
+# a faixa da pessoa, e o teste que hoje se chama
+# `test_a_tela_fica_em_cima_e_a_pessoa_embaixo` continua o prendendo. O que
+# mudou em 17/09/2026 é a ORDEM da conta: antes a tela entrava por largura e a
+# pessoa ficava com a sobra; agora a pessoa tem o piso e a tela encolhe até
+# caber, porque foi essa a escolha do dono olhando quatro maquetes.
 #
-#   tela cheia 1080x608 -> rosto 552x320 (1,25x do PiP)
-#   tela  996x560       -> rosto 663x384 (1,51x)        <- escolhida
+# CUIDADO COM OS NÚMEROS DAQUELAS MAQUETES -- correção de 18/09/2026, achada
+# numa auditoria do próprio ramo. Elas foram desenhadas com a webcam MEDIDA A
+# OLHO na fonte (440x255, 1,73:1) e mostravam rosto 663x384. O código usa a
+# caixa que o DETECTOR acha, que é grosseira (480x360, 1,33:1, com a barra de
+# "Último sub" dentro), e entrega 512x384.
 #
-# 12% menos de tela por 21% mais de rosto. A tela continua INTEIRA nas duas: o
-# que encolhe é a escala, nunca o enquadramento.
+# A escolha continua de pé, medida na MESMA régua -- a do detector:
+#
+#   tela cheia 1080x608 -> rosto 448x336
+#   tela  996x560       -> rosto 512x384        <- escolhida
+#
+# São 14% mais de rosto por 8% menos de tela, e não os 21% que a maquete
+# sugeria. A tela continua INTEIRA nas duas: o que encolhe é a escala, nunca
+# o enquadramento.
 ROSTO_FAIXA_MIN = 0.20
 
 
@@ -4144,7 +4159,7 @@ def _quadros_coloridos(source, start, length, samples):
 
     Meio segundo não seria nada num vídeo parado. Nesta live a fonte troca de
     layout a cada 1 a 3 segundos -- webcam cheia, foto em tela cheia, tela com
-    webcam de canto -- e meio passo fora de fase é a faixa de cima recortando o
+    webcam de canto -- e meio passo fora de fase é a faixa da pessoa (hoje a de baixo) recortando o
     canto inferior direito de um quadro que já mudou: foi assim que ela saiu
     mostrando a boca e o queixo dele aos 3,8s e um pedaço do porco aos 1,2s.
 
@@ -4258,7 +4273,7 @@ def trilha_do_rosto(por_quadro, pip=None):
 # Uma rampa contínua entre amostras é errada aqui, e o mosaico mostrou por quê:
 # entre uma amostra com a webcam no canto e a seguinte com a pessoa em tela
 # cheia, a interpolação linear varre o quadro inteiro -- e no meio do caminho a
-# faixa de cima para numa parede de espuma acústica, sem rosto nenhum. Medido em
+# faixa da pessoa (hoje a de baixo) para numa parede de espuma acústica, sem rosto nenhum. Medido em
 # 15/09/2026 na janela 82-106: era o quadro de 8,8s do mosaico.
 #
 # Então cada amostra é SEGURADA e a troca acontece num terço de segundo em volta
@@ -4311,6 +4326,14 @@ def _expressao_por_quadro(pontos):
 
 
 def zoompan_do_rosto(trilha, banda_w, banda_h, sw, sh, fps=30, motion=True):
+    # A GUARDA DE FAIXA DEGENERADA, e ela é conserto de uma auditoria de
+    # 18/09/2026. `layout_dividido(pip=None)` devolve a faixa da pessoa com
+    # ALTURA ZERO -- não há webcam para pôr nela --, e `alvo = banda_w/banda_h`
+    # estourava ZeroDivisionError. Antes da inversão do layout a faixa sem pip
+    # tinha altura real e a conta passava; depois dela, não.
+    #
+    # Devolver (None, None) é o que esta função já faz quando não há trilha, e
+    # quem chama já trata: sem seguidor e sem recorte, não sai faixa de pessoa.
     """O filtro que faz a faixa de cima seguir a pessoa, ou None sem trilha.
 
     LEIA ISTO ANTES DO RESTO, se a data for depois de 17/09/2026: tudo que este
@@ -4332,7 +4355,7 @@ def zoompan_do_rosto(trilha, banda_w, banda_h, sw, sh, fps=30, motion=True):
     pré-recortada para a proporção da faixa -- senão a faixa de cima sai
     esticada.
     """
-    if not trilha:
+    if not trilha or not banda_w or not banda_h:
         return None, None
     # Pré-recorte para a proporção da faixa, para o zoompan não esticar.
     alvo = banda_w / float(banda_h)
@@ -4819,9 +4842,15 @@ def layout_dividido(width, height, sw, sh, pip=None, rosto=None, legenda=True):
     tela_w = width
     tela_h = int(round(tela_w * float(sh) / float(sw)))
     if disponivel - tela_h < minimo_rosto:
-        tela_h = max(2, disponivel - minimo_rosto)
-        tela_w = min(width, int(round(tela_h * float(sw) / float(sh))))
-        tela_h = int(round(tela_w * float(sh) / float(sw)))
+        orcamento = max(2, disponivel - minimo_rosto)
+        tela_w = min(width, int(round(orcamento * float(sw) / float(sh))))
+        # O `min` com o orçamento não é redundante: re-derivar a altura a
+        # partir da largura arredondada PARA CIMA devolvia uma tela mais alta
+        # do que o orçamento que acabara de ser calculado, e a faixa da pessoa
+        # ficava abaixo do piso que a docstring promete. Medido com sw=50,
+        # sh=1920: alvo 560, saía 576, e a pessoa ficava com 368 contra 384.
+        tela_h = min(orcamento,
+                     max(2, int(round(tela_w * float(sh) / float(sw)))))
     tela_w -= tela_w % 2
     tela_h -= tela_h % 2
     tela_x = (width - tela_w) // 2
@@ -4865,8 +4894,14 @@ def layout_dividido(width, height, sw, sh, pip=None, rosto=None, legenda=True):
     if caixa_w > teto_w:
         caixa_w = teto_w
         caixa_h = max(2, int(round(caixa_w * ph / pw)))
-    caixa_w -= caixa_w % 2
-    caixa_h -= caixa_h % 2
+    # `max(2, ...)` nos DOIS, e não só na altura: com um PiP altíssimo e
+    # estreito -- o que sobra quando a moldura come a coluna onde a webcam mora
+    # -- `caixa_w` saía 1, a paridade zerava, e a cadeia pedia `scale=0:384`,
+    # que faz o ffmpeg recusar o filtergraph inteiro. Achado por auditoria em
+    # 18/09/2026, não por render: o caso é raro e sai como erro, não como clipe
+    # feio, que é o pior jeito de descobrir.
+    caixa_w = max(2, caixa_w - caixa_w % 2)
+    caixa_h = max(2, caixa_h - caixa_h % 2)
     faixa["webcam"] = ((width - caixa_w) // 2,
                        banda_y + max(0, (banda_h - caixa_h) // 2),
                        caixa_w, caixa_h)
@@ -4888,9 +4923,15 @@ def layout_dividido(width, height, sw, sh, pip=None, rosto=None, legenda=True):
         cx = x0
         alvo_y = (rosto[1] * sh - ch * ROSTO_NA_FAIXA) if rosto else (y0 + (ph - ch) / 2)
         cy = min(max(alvo_y, y0), y0 + ph - ch)
-    faixa["corte_webcam"] = (int(round(cx)), int(round(cy)),
-                             max(2, int(round(cw)) - int(round(cw)) % 2),
-                             max(2, int(round(ch)) - int(round(ch)) % 2))
+    _cw = max(2, int(round(cw)) - int(round(cw)) % 2)
+    _ch = max(2, int(round(ch)) - int(round(ch)) % 2)
+    # E o recorte é grampeado DENTRO da fonte. Com um PiP degenerado o `x` saía
+    # 1921 numa fonte de 1920 e o ffmpeg recusava o `crop`. É defeito
+    # pré-existente -- a `main` também produzia 1920 --, e sai agora porque a
+    # auditoria o encontrou junto com o de cima.
+    faixa["corte_webcam"] = (max(0, min(int(round(cx)), int(sw) - _cw)),
+                             max(0, min(int(round(cy)), int(sh) - _ch)),
+                             _cw, _ch)
     return faixa
 
 
@@ -4907,16 +4948,25 @@ def cadeia_dividida(width, height, faixa, motion=True, length=None,
     """A cadeia de filtros do clipe dividido, de uma entrada e uma saída.
 
     Sai como `split` + dois `overlay` sobre o fundo borrado, e não como
-    `vstack` + `pad`: o pad pintaria os 472px abaixo da tela de preto, e preto
-    no pé do quadro é exatamente o que `barras_pretas` reprova.
+    `vstack` + `pad`: o pad pintaria de preto tudo o que sobra
+    abaixo da imagem -- hoje 680px, com a legenda reservada --, e preto no pé
+    do quadro é exatamente o que `barras_pretas` reprova.
 
-    A faixa de cima sai do RASTREIO do rosto quando há trilha (ver
-    `zoompan_do_rosto`), e do recorte fixo do PiP só quando não há -- que é o
-    caso em que a detecção achou a webcam pela planura e não achou rosto em
-    quadro nenhum.
+    A faixa da PESSOA -- que desde 17/09/2026 é a de BAIXO -- sai do recorte
+    fixo do PiP sempre que há caixa de webcam, e do rastreio só quando não há.
+    Era o contrário, e a inversão foi medida: a webcam de canto é uma caixa
+    parada, rastreá-la só tremia, e a cara sumia aos 1,3s.
 
-    A de baixo sai RECORTADA quando o layout achou a webcam (`corte_tela`): sem
-    isso a pessoa aparece duas vezes no mesmo quadro. Ver `_corte_sem_webcam`.
+    NA PRÁTICA O RASTREIO NÃO RODA por aqui, e quem ler tem de saber:
+    `decide_enquadramento` só devolve "dividido" com PiP, e com PiP
+    `layout_dividido` sempre define `corte_webcam`. O ramo do rastreio é a
+    saída de quem chamar esta função com um layout sem caixa fixa.
+
+    A TELA NÃO É MAIS RECORTADA: `layout_dividido` deixou de produzir
+    `corte_tela` em 17/09/2026, por escolha do dono -- nesta live a webcam fica
+    POR CIMA do jogo e a lasca que a excluiria custaria um quarto da cena, com
+    o HUD de munição dentro. O ramo continua aqui porque `_corte_sem_webcam`
+    continua certo para o caso lado a lado.
 
     `cheios` são os trechos em que a fonte não é uma tela (ver
     `trechos_de_camera`). Neles o dividido não tem o que dividir, então uma
@@ -4947,7 +4997,7 @@ def cadeia_dividida(width, height, faixa, motion=True, length=None,
     # ALTERNA entre webcam de canto e câmera cheia -- hoje é coberto pelo
     # `cheios`, que desenha a fonte inteira por cima nesses trechos.
     seguidor, rastreio = (None, None)
-    if trilha and sw and sh and not corte:
+    if trilha and sw and sh and not corte and ww > 0 and wh > 0:
         seguidor, rastreio = zoompan_do_rosto(trilha, ww, wh, sw, sh,
                                               motion=bool(motion))
     tem_webcam = bool(seguidor or corte)
@@ -6415,7 +6465,7 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         #
         # O quanto descer não é um número novo: `burned_text_bands` olha os
         # 16% de cima da fonte, então é essa mesma fração da faixa da tela que
-        # o hook pula. Com 560px de tela dá 90px, e o bloco vai de 386 a 588 --
+        # o hook pula. Com 560px de tela dá 89px, e o bloco vai de 385 a 587 --
         # abaixo do texto do jogo e ainda bem acima da faixa da pessoa.
         #
         # O teto existe porque a conta tem de continuar cabendo: se a tela for

@@ -493,15 +493,70 @@ class ACadeiaNaoPintaPretoNoPe(unittest.TestCase):
 
     def test_SEM_caixa_de_webcam_a_trilha_volta_a_mandar(self):
         """O rastreio não foi apagado: ele é o caminho quando não há caixa
-        fixa para recortar."""
-        faixa = M.layout_dividido(1080, 1920, 1920, 1080,
-                                  pip=(0.75, 0.667, 1.0, 1.0), rosto=(0.87, 0.89))
+        fixa para recortar.
+
+        A VERSÃO ANTERIOR DESTE TESTE DAVA FALSA CONFIANÇA, e uma auditoria a
+        pegou em 18/09/2026: ela montava a faixa COM pip e depois fazia
+        `faixa.pop("corte_webcam")`, o que deixa uma caixa de pessoa de 512x384
+        que `layout_dividido` nunca produz sem pip. O estado real sem pip tem a
+        caixa com ALTURA ZERO, e nele o rastreio estourava ZeroDivisionError --
+        exatamente o ramo que o teste dizia cobrir.
+        """
+        faixa = dict(M.layout_dividido(1080, 1920, 1920, 1080,
+                                       pip=(0.75, 0.667, 1.0, 1.0),
+                                       rosto=(0.87, 0.89)))
         faixa.pop("corte_webcam")
         trilha = [(0.5, 0.60, 0.61, 0.45), (2.5, 0.86, 0.89, 0.14)]
         cadeia, rastreio = M.cadeia_dividida(1080, 1920, faixa, length=20,
                                              trilha=trilha, sw=1920, sh=1080)
         self.assertIn("zoompan", cadeia)
         self.assertEqual(rastreio["pontos"], 2)
+
+    def test_o_estado_REAL_sem_pip_nao_estoura_com_trilha(self):
+        """O que `layout_dividido(pip=None)` devolve de verdade, com trilha.
+
+        A faixa da pessoa sai com altura ZERO -- não há webcam para pôr nela --
+        e até 18/09/2026 isso virava `ZeroDivisionError` dentro de
+        `zoompan_do_rosto`, num `banda_w / banda_h`. Na main de antes da
+        inversão a faixa sem pip tinha altura real e a conta passava; depois
+        dela, não. Nenhum teste pegava, porque o teste acima montava outro
+        estado.
+        """
+        faixa = M.layout_dividido(1080, 1920, 1920, 1080)
+        self.assertEqual(faixa["webcam"][3], 0, "o estado que importa é este")
+        cadeia, rastreio = M.cadeia_dividida(
+            1080, 1920, faixa, length=20,
+            trilha=[(0.5, 0.60, 0.61, 0.45)], sw=1920, sh=1080)
+        self.assertIsNone(rastreio, "não há faixa para rastrear")
+        self.assertNotIn("zoompan", cadeia)
+        self.assertIn("overlay", cadeia, "a tela tem de sair mesmo assim")
+
+    def test_um_pip_degenerado_nao_pede_scale_zero_ao_ffmpeg(self):
+        """Um PiP colapsado em uma coluna dava `caixa_w = 1`, a paridade
+        zerava, e a cadeia pedia `scale=0:384` -- o ffmpeg recusa o filtergraph
+        inteiro. Achado por auditoria, não por render: sai como erro e não como
+        clipe feio, que é o pior jeito de descobrir."""
+        for pip in ((1.0, 0.0, 1.0, 1.0), (0.75, 0.0, 0.7501, 1.0)):
+            faixa = M.layout_dividido(1080, 1920, 1920, 1080, pip=pip)
+            wx, wy, ww, wh = faixa["webcam"]
+            self.assertGreaterEqual(ww, 2, f"{pip} -> scale={ww}:{wh}")
+            self.assertGreaterEqual(wh, 2, f"{pip} -> scale={ww}:{wh}")
+            cx, cy, cw, ch = faixa["corte_webcam"]
+            self.assertGreaterEqual(cx, 0)
+            self.assertLessEqual(cx + cw, 1920, "o crop pede pixel fora da fonte")
+            self.assertLessEqual(cy + ch, 1080, "o crop pede pixel fora da fonte")
+
+    def test_o_piso_do_rosto_vale_ate_numa_proporcao_absurda(self):
+        """Re-derivar a altura da tela a partir da largura arredondada PARA
+        CIMA devolvia uma tela mais alta que o orçamento, e a pessoa ficava
+        abaixo do piso que a docstring promete. Medido com sw=50, sh=1920:
+        alvo 560, saía 576, e a faixa da pessoa ficava com 368 contra 384."""
+        for sw, sh in ((50, 1920), (1920, 1080), (1080, 1080), (720, 1280)):
+            faixa = M.layout_dividido(1080, 1920, sw, sh,
+                                      pip=(0.75, 0.0, 1.0, 0.3333))
+            self.assertGreaterEqual(
+                faixa["faixa_rosto"][3], int(1920 * M.ROSTO_FAIXA_MIN),
+                f"fonte {sw}x{sh}: {faixa['faixa_rosto']}")
 
 
 class AFaixaDeCimaSegueAPessoa(unittest.TestCase):

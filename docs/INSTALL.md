@@ -485,8 +485,21 @@ docker run --rm \
   -u 10000:10000 \
   -v "$PWD:/src" -w /src \
   ghcr.io/bruno-dotcom12/clip-warden:latest \
-  -m unittest discover -s tests
+  -m pytest tests -q
 ```
+
+**`pytest`, not `unittest discover`, and that word is the whole point.**
+Measured 18/09/2026: `tests/test_persona.py` (32 cases) and
+`tests/test_ponteiros.py` (42) are plain pytest functions with no `TestCase`,
+so `unittest discover` collects **zero** of them and reports two import errors
+instead. Seventy-four cases — including the ones that catch the SOUL.md
+truncation and pointers that leave the image — were never exercised in there.
+Installing pytest without changing this line would be worse than leaving it:
+the two import errors go quiet and the 74 stay uncollected.
+
+`pytest` is in the image from the commit that added this paragraph. **On an
+image built before it, `-m pytest` fails with `No module named pytest`** — fall
+back to `-m unittest discover -s tests` and know that those 74 did not run.
 
 `--entrypoint` is not optional: the image's own entrypoint starts the s6
 supervision tree and the agent, not a test run. `-u 10000:10000` is the same
