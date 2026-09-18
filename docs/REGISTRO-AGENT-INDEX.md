@@ -83,7 +83,7 @@ cd /Users/brunoarantes/Projetos/clip-warden
 
 # O mesmo commit que a imagem usa (vendor/client.pin). O arquivo já está
 # no .gitignore, então ele fica solto aqui sem entrar no repositório.
-curl -O https://raw.githubusercontent.com/plow-pbc/agent-index-client/87901f8b182a8a7c65ee3dd7267f8f835ee2a545/standalone/agent_index_client.py
+curl -O https://raw.githubusercontent.com/plow-pbc/agent-index-client/3f116994930cb3d1c23a485851953dd6c1eef039/standalone/agent_index_client.py
 
 set -a; . ./plow-credentials; set +a
 
@@ -111,7 +111,7 @@ conteúdo delas.
 ```
 
 Duas armadilhas medidas no código do cliente
-(`standalone/agent_index_client.py`, linhas 839-847):
+(`standalone/agent_index_client.py`, linhas 843-851):
 
 - **`--video` recebe o ID do vídeo no YouTube, NÃO a URL.** De
   `https://www.youtube.com/watch?v=Q_RAgwbsjGw`, o que entra é `Q_RAgwbsjGw`.
