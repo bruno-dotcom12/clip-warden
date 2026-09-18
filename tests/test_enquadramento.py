@@ -180,8 +180,14 @@ class NoMaterialRealAClassificacaoAcerta(unittest.TestCase):
         if faltando:
             raise unittest.SkipTest(
                 f"a filmagem de referência não está em {LOTE} ({faltando[0]} e "
-                f"companhia). Ela vive na imagem do agente; passe "
-                f"WARDEN_FOOTAGE_TESTE para apontar outro lugar.")
+                f"companhia). ELA NÃO ESTÁ NA IMAGEM PUBLICADA -- verificado em "
+                f"18/09/2026, o diretório não existe lá, embora este texto "
+                f"dissesse que sim. Então esta classe NÃO RODA EM LUGAR NENHUM: "
+                f"pula no Mac por falta de OpenCV e pula na imagem por falta do "
+                f"material, e uma suíte verde não diz nada sobre a detecção. "
+                f"Quem cobre a janela real hoje é "
+                f"`AJanelaRealDe1709VirouNUMEROS`, com os números medidos à mão. "
+                f"Passe WARDEN_FOOTAGE_TESTE para apontar onde o material estiver.")
 
     def test_quarenta_e_oito_segundos_de_live_sao_classificados_um_a_um(self):
         erros = []
@@ -207,7 +213,11 @@ class ADetecaoAchaAWebcamDeCanto(unittest.TestCase):
         _cv2_ou_pula()
         for nome in ROTULOS:
             if not os.path.isfile(os.path.join(LOTE, nome)):
-                raise unittest.SkipTest(f"a filmagem de referência não está em {LOTE}")
+                raise unittest.SkipTest(
+                    f"a filmagem de referência não está em {LOTE}, e NÃO está "
+                    f"na imagem publicada também (verificado em 18/09/2026): "
+                    f"esta classe não roda em lugar nenhum. Ver "
+                    f"`AJanelaRealDe1709VirouNUMEROS`.")
 
     def test_as_duas_janelas_reprovadas_viram_dividido(self):
         for nome in ROTULOS:
@@ -1082,3 +1092,116 @@ class OEncodeCarregaOPresetEOTeto(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AJanelaRealDe1709VirouNUMEROS(unittest.TestCase):
+    """As duas janelas que o dono reprovou, congeladas como aritmética.
+
+    ISTO EXISTE PORQUE A SUÍTE NÃO COBRIA O QUE EU MEXI. Medido em 18/09/2026:
+    `ADetecaoAchaAWebcamDeCanto` e `NoMaterialRealAClassificacaoAcerta` pulam no
+    Mac (sem OpenCV) E pulam na imagem -- a filmagem `7893834d2c` não está lá,
+    embora o texto do skip diga que "vive na imagem do agente". Os quatro testes
+    que sustentavam a detecção não rodavam em lugar nenhum, e foi assim que o
+    gatilho pôde ficar errado numa live de gameplay sem nada acusar.
+
+    O conserto de verdade seria a filmagem estar em algum lugar. Enquanto não
+    está, o que dá para congelar são os NÚMEROS que eu medi rodando a detecção
+    de verdade, dentro da imagem, nas duas janelas reais
+    (`kZAAnNJHaUc`, 481-502 e 2422-2444). Eles entram aqui como constantes e
+    exercitam a mesma aritmética que decide o layout -- sem ffmpeg, sem OpenCV,
+    sem vídeo, o que significa que rodam em TODA máquina, inclusive nesta.
+
+    Se alguém mexer no gatilho e estes números deixarem de dar o layout que o
+    dono aprovou olhando o clipe, o teste cai aqui e não no contact sheet.
+    """
+
+    # Medido dentro da imagem, `tela_compartilhada` nas duas janelas.
+    JANELA_01 = {
+        "quadros": 39, "de_tela": 18,          # planura >= 0.32
+        "pip": (0.75, 0.0, 1.0, 0.3333),
+        "rosto": (0.8622, 0.1378),
+        "pip_em_quantos": 15,                  # 38% dos quadros amostrados
+        "maior_rosto_area": 0.0128,            # o MAIOR de qualquer quadro
+    }
+    JANELA_02 = {
+        "quadros": 40, "de_tela": 33,
+        "pip": (0.75, 0.0, 1.0, 0.3333),
+        "rosto": (0.8567, 0.1441),
+        "pip_em_quantos": 11,                  # 28%
+        "maior_rosto_area": 0.0114,
+    }
+
+    def _planuras(self, j):
+        """Uma lista com a MESMA fração de quadros de tela que a janela real."""
+        return [0.50] * j["de_tela"] + [0.10] * (j["quadros"] - j["de_tela"])
+
+    def test_as_duas_janelas_viram_dividido(self):
+        """Era o defeito: as duas saíam `normal` e com a tela fatiada."""
+        for nome, j in (("01", self.JANELA_01), ("02", self.JANELA_02)):
+            modo, porque = M.decide_enquadramento(self._planuras(j), True)
+            self.assertEqual(modo, "dividido", f"janela {nome}: {porque}")
+
+    def test_a_webcam_das_duas_passa_no_portao_de_estabilidade(self):
+        """O portão antigo era `em_quantos*2 >= quadros_de_tela`, e a janela 02
+        falhava nele (22 >= 33) apesar de a webcam estar em todo quadro."""
+        for nome, j in (("01", self.JANELA_01), ("02", self.JANELA_02)):
+            n, lidos = j["pip_em_quantos"], j["quadros"]
+            self.assertGreaterEqual(n, M.PIP_QUADROS_MIN, f"janela {nome}")
+            self.assertGreaterEqual(n, M.PIP_FRACAO_MIN * lidos, f"janela {nome}")
+            # e o portão ANTIGO reprovava a 02: é o que este teste protege
+            if nome == "02":
+                self.assertLess(n * 2, j["de_tela"],
+                                "se isto deixar de ser verdade, o teste perdeu "
+                                "o caso que ele existe para prender")
+
+    def test_uma_foto_numa_pagina_continua_recusada(self):
+        """O outro lado do portão. O defeito do Yuri Gagarin: uma foto de rosto
+        na página aparece em 1 ou 2 quadros de 40."""
+        for aparece in (1, 2):
+            self.assertLess(aparece, M.PIP_FRACAO_MIN * 40)
+            self.assertLess(aparece, M.PIP_QUADROS_MIN)
+
+    def test_nenhuma_das_duas_tem_trecho_de_camera(self):
+        """O ramo que comia as bordas. Com o sinal de planura ele cobria 73% da
+        janela 01; com o sinal de rosto grande ele some, e é a resposta certa:
+        o maior rosto de qualquer quadro é 0,0128 contra o limiar de 0,05."""
+        for nome, j in (("01", self.JANELA_01), ("02", self.JANELA_02)):
+            self.assertLess(j["maior_rosto_area"], M.PIP_ROSTO_AREA_MAX,
+                            f"janela {nome}")
+            n = j["quadros"]
+            tempos = [i * 0.5 for i in range(n)]
+            trechos = M.trechos_de_camera(
+                tempos, self._planuras(j), n * 0.5,
+                rosto_grande=[False] * n)
+            self.assertEqual(trechos, [], f"janela {nome}: {trechos}")
+
+    def test_a_geometria_das_duas_e_a_que_o_dono_aprovou(self):
+        """996x560 de tela e 512x384 de rosto -- os números do clipe que ele
+        olhou e aprovou em 17/09/2026."""
+        for nome, j in (("01", self.JANELA_01), ("02", self.JANELA_02)):
+            faixa = M.layout_dividido(1080, 1920, 1920, 1080,
+                                      pip=j["pip"], rosto=j["rosto"],
+                                      legenda=True)
+            self.assertEqual(faixa["tela"], (42, 280, 996, 560), f"janela {nome}")
+            self.assertEqual(faixa["webcam"], (284, 856, 512, 384), f"janela {nome}")
+            # e a tela na proporção da fonte: é o que garante o "nada cortado"
+            self.assertAlmostEqual(996 / 560, 1920 / 1080, places=2)
+
+    def test_o_recorte_do_rosto_e_a_caixa_INTEIRA_da_webcam(self):
+        """É por isso que o rosto nunca sai da faixa: medido, ele anda 238px na
+        horizontal e 118px na vertical DENTRO da webcam, e o recorte é a webcam
+        toda. O rastreio recortava uma sub-região, e por isso perdia o cara."""
+        j = self.JANELA_01
+        faixa = M.layout_dividido(1080, 1920, 1920, 1080,
+                                  pip=j["pip"], rosto=j["rosto"], legenda=True)
+        cx, cy, cw, ch = faixa["corte_webcam"]
+        px0, py0, px1, py1 = j["pip"]
+        self.assertLessEqual(cx, int(px0 * 1920) + 1)
+        self.assertLessEqual(cy, int(py0 * 1080) + 1)
+        self.assertGreaterEqual(cx + cw, int(px1 * 1920) - 2)
+        self.assertGreaterEqual(cy + ch, int(py1 * 1080) - 2)
+        # os extremos MEDIDOS do rosto, em pixels da fonte
+        for x0, y0, x1, y1 in ((1485, 28, 1867, 291),):
+            self.assertLessEqual(cx, x0); self.assertLessEqual(cy, y0)
+            self.assertGreaterEqual(cx + cw, x1)
+            self.assertGreaterEqual(cy + ch, y1)

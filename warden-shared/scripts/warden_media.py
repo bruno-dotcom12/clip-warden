@@ -4189,6 +4189,14 @@ def _quadros_coloridos(source, start, length, samples):
 def trilha_do_rosto(por_quadro, pip=None):
     """[(t, cx, cy, altura_do_rosto)] -- onde a pessoa está, quadro a quadro.
 
+    LEIA ISTO ANTES DO RESTO, se a data for depois de 17/09/2026: tudo que este
+    docstring e os comentários abaixo chamam de "faixa de cima" HOJE É A FAIXA
+    DE BAIXO. O layout foi invertido -- tela em cima, pessoa embaixo -- e as
+    medições continuam valendo porque são sobre o recorte, não sobre a posição.
+    E este caminho virou EXCEÇÃO: com webcam de canto quem manda é o recorte
+    fixo (ver `cadeia_dividida`), porque rastrear uma caixa parada só tremia.
+    O rastreio fica para quando não há caixa fixa para recortar.
+
     É o conserto do caso MISTO, e ele custou um clipe olhado com olhos.
 
     A primeira versão recortava SEMPRE o mesmo retângulo, o do PiP. Numa janela
@@ -4304,6 +4312,14 @@ def _expressao_por_quadro(pontos):
 
 def zoompan_do_rosto(trilha, banda_w, banda_h, sw, sh, fps=30, motion=True):
     """O filtro que faz a faixa de cima seguir a pessoa, ou None sem trilha.
+
+    LEIA ISTO ANTES DO RESTO, se a data for depois de 17/09/2026: tudo que este
+    docstring e os comentários abaixo chamam de "faixa de cima" HOJE É A FAIXA
+    DE BAIXO. O layout foi invertido -- tela em cima, pessoa embaixo -- e as
+    medições continuam valendo porque são sobre o recorte, não sobre a posição.
+    E este caminho virou EXCEÇÃO: com webcam de canto quem manda é o recorte
+    fixo (ver `cadeia_dividida`), porque rastrear uma caixa parada só tremia.
+    O rastreio fica para quando não há caixa fixa para recortar.
 
     `crop` não serve aqui, e a razão é do ffmpeg: as expressões de LARGURA e
     ALTURA do `crop` são avaliadas uma vez, na configuração do filtro -- só x e

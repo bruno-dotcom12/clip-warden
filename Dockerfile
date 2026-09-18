@@ -38,9 +38,22 @@ RUN command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null \
 # side-by-side. cv2's YuNet DNN detector finds those faces (measured: 7 of 7
 # sampled frames on the test footage). headless because the container has no
 # display, which drops the GUI libs and most of the weight.
+# E `pytest`, que não é dependência do agente e está aqui pelo PORTÃO.
+#
+# Medido em 18/09/2026: `tests/test_persona.py` (32 testes) e
+# `tests/test_ponteiros.py` (42) são pytest puro -- funções de módulo, sem
+# `TestCase` --, então o `unittest discover` colhe ZERO deles e ainda erra ao
+# importar, porque os dois fazem `import pytest`. Setenta e quatro testes não
+# rodavam dentro da imagem, e entre eles estão os que pegam o truncamento do
+# SOUL.md e os ponteiros que apontam para fora da imagem: exatamente a classe
+# de regressão que esses arquivos foram escritos para pegar, cega justamente
+# onde ela acontece.
+#
+# São ~5 MB. O venv da imagem não tem `pip` nem `ensurepip`, então instalar na
+# hora do teste não é uma saída -- ou entra aqui, ou não roda.
 RUN set -eu; \
     PY=/opt/hermes/.venv/bin/python3; \
-    PKGS="yt-dlp>=2026.08.19 gdown>=5.2 faster-whisper>=1.1 opencv-python-headless>=4.9 pillow>=10.0 numpy>=1.24 curl_cffi>=0.7"; \
+    PKGS="yt-dlp>=2026.08.19 gdown>=5.2 faster-whisper>=1.1 opencv-python-headless>=4.9 pillow>=10.0 numpy>=1.24 curl_cffi>=0.7 pytest>=8.0"; \
     if "$PY" -m pip --version >/dev/null 2>&1; then \
       "$PY" -m pip install --no-cache-dir $PKGS; \
     elif command -v uv >/dev/null 2>&1; then \
