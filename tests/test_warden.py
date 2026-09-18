@@ -6248,3 +6248,64 @@ class OPortaoDoESTILONaoMorreAntesDoVeredito(unittest.TestCase):
                      encoding="utf-8").read()
         self.assertIn("rotulo.get(lv, lv)", fonte)
         self.assertNotIn("{rotulo[lv]}", fonte)
+
+    def test_NENHUMA_nota_manda_largar_a_legenda_por_texto_DETECTADO(self):
+        """Visto ao vivo em 18/09/2026, num clipe que o dono pediu COM legenda.
+
+        A nota do degradê terminava com *"re-cut with cover_footer=False and
+        drop --subtitles"*. O que a detecção tinha achado não era legenda de
+        acervo nem marca d'água: era o HUD do jogo -- `Piss`, `HOT DOG PACK`,
+        `HOME TRAILER`, `BATHTUB`, `Cursor`. `burned_text_bands` mede DENSIDADE
+        DE BORDA e não distingue os três.
+
+        O agente leu a instrução, entregou o clipe sem legenda e disse ao dono
+        que *"esse vídeo já vem com legenda embutida"*. Não vinha.
+
+        É a mesma forma do portão da legenda: uma frase que aparece no MOMENTO
+        DA DECISÃO é obedecida. A regra que este caso guarda: nenhuma saída
+        pode mandar largar `--subtitles` por causa de texto DETECTADO na fonte.
+        Largar a legenda que a pessoa pediu é o erro caro; um degradê sobre
+        mobília é o barato.
+
+        O que continua PERMITIDO, e por isso a varredura é por vizinhança: a
+        recusa da colagem de meias-frases, que é medida e não é sobre detecção.
+        """
+        import glob
+        raiz = os.path.dirname(HERE)
+        alvos = [os.path.join(raiz, "runtime", "persona.md")]
+        for pasta in sorted(glob.glob(os.path.join(raiz, "warden-*"))):
+            alvos += sorted(glob.glob(os.path.join(pasta, "SKILL.md")))
+            alvos += sorted(glob.glob(os.path.join(pasta, "references", "*.md")))
+        alvos += sorted(glob.glob(os.path.join(raiz, "warden-shared", "scripts",
+                                               "*.py")))
+        achados = []
+        for caminho in alvos:
+            with open(caminho, encoding="utf-8") as fh:
+                texto = fh.read()
+            py = caminho.endswith(".py")
+            for n, linha in enumerate(texto.splitlines(), 1):
+                # Comentário de código NÃO chega ao agente: da imagem ele lê a
+                # persona, as SKILL.md, os references e as strings IMPRESSAS.
+                # Registrar no comentário a frase que foi removida, e por quê, é
+                # o que este projeto faz de propósito -- e foi o que esta
+                # varredura acusou na primeira versão dela.
+                if py and linha.lstrip().startswith("#"):
+                    continue
+                if "drop --subtitles" not in linha and "--subtitles" not in linha:
+                    continue
+                perto = " ".join(texto.splitlines()[max(0, n - 6):n + 2]).lower()
+                manda = re.search(r"drop\s+--subtitles|without\s+--subtitles", linha)
+                # a colagem é recusa medida, não detecção: ela fala de frases
+                # partidas, nunca de texto achado na fonte.
+                por_deteccao = re.search(
+                    r"burned text|bottom text|watermark|already carries|"
+                    r"carries burned|cover_footer", perto)
+                if manda and por_deteccao:
+                    achados.append(f"{os.path.relpath(caminho, raiz)}:{n}: "
+                                   f"{linha.strip()[:110]}")
+        self.assertEqual(
+            [], achados,
+            "alguma saída voltou a mandar largar a legenda por causa de texto "
+            "DETECTADO na fonte. Em 18/09 isso entregou um clipe sem legenda "
+            "sobre um HUD de jogo que a detecção chamou de legenda:\n  "
+            + "\n  ".join(achados))
