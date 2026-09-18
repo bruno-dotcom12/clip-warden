@@ -1827,7 +1827,15 @@ def legenda_do_acervo(frames, recorte=None, min_ratio=2.2, min_largura=0.12,
     return [f for f in faixas if (f["y1"] - f["y0"]) <= max_altura]
 
 
-def burned_text_bands(frames, band=0.16):
+# A faixa da borda em que se procura texto queimado da fonte, como fração da
+# altura. Era só o padrão de `burned_text_bands`; virou constante em 18/09/2026
+# porque o enquadramento dividido precisa da MESMA fração para saber até onde o
+# texto da fonte pode chegar dentro da faixa da tela, e dois 0,16 soltos em
+# arquivos diferentes é o tipo de coisa que sai de sincronia sem ninguém ver.
+BANDA_TEXTO_FONTE = 0.16
+
+
+def burned_text_bands(frames, band=BANDA_TEXTO_FONTE):
     """Onde o material já carrega texto queimado, e até onde essa faixa sobe.
 
     Correção do defeito 2.6. O `cut()` já sabia que não enxerga texto queimado no

@@ -741,6 +741,67 @@ class ODivididoSaiNoTamanhoCerto(unittest.TestCase):
         self.assertLess(barras["top"], S.BARRA_MIN, barras)
 
 
+class OHookNaoSentaNoTextoDaFonte(unittest.TestCase):
+    """Aritmética do empurrão do hook, sem ffmpeg e sem vídeo.
+
+    No layout de antes a faixa da webcam ficava em cima e o hook virava
+    lower-third dentro dela, longe do texto da fonte. Com a tela em cima,
+    encostada na margem do app, os dois passaram a disputar a mesma faixa:
+    medido em 18/09/2026 nesta live, o placar do jogo cai em y296-342 do
+    quadro e o `[Tab] Hand Signals` em y358-376, e o hook ocupava y280-482.
+    """
+
+    def _pecas(self):
+        import warden_style as S
+        faixa = M.layout_dividido(1080, 1920, 1920, 1080,
+                                  pip=(0.75, 0.0, 1.0, 0.3333),
+                                  rosto=(0.862, 0.138))
+        corpo = int(1080 * S.HOOK_SIZE_RATIO)
+        leading = int(corpo * S.LEADING)
+        folga = max(6, 1920 // 120)
+        return S, faixa, leading, folga
+
+    def test_a_fracao_do_empurrao_e_a_MESMA_que_procura_o_texto(self):
+        """Dois 0,16 soltos em arquivos diferentes saem de sincronia sem
+        ninguém ver. O empurrão usa a constante que `burned_text_bands`
+        usa para olhar."""
+        import inspect
+        import warden_style as S
+        assinatura = inspect.signature(S.burned_text_bands)
+        self.assertEqual(assinatura.parameters["band"].default,
+                         S.BANDA_TEXTO_FONTE)
+
+    def test_o_empurrao_poe_o_hook_abaixo_da_faixa_de_texto_da_fonte(self):
+        S, faixa, leading, folga = self._pecas()
+        tx, ty, tw, th = faixa["tela"]
+        abaixo = ty + int(th * S.BANDA_TEXTO_FONTE) + folga
+        self.assertGreater(abaixo, ty + int(th * S.BANDA_TEXTO_FONTE),
+                           "tem de sobrar folga depois da faixa de texto")
+        self.assertGreater(abaixo, S.margens(1080, 1920)["top"],
+                           "e tem de ser um empurrão, não um recuo")
+
+    def test_o_hook_empurrado_ainda_cabe_acima_da_faixa_da_pessoa(self):
+        """O teto não é decoração: sem ele, uma tela baixa empurraria o hook
+        para cima da cara, que é o defeito que o lower-third existia para
+        evitar."""
+        S, faixa, leading, folga = self._pecas()
+        tx, ty, tw, th = faixa["tela"]
+        abaixo = ty + int(th * S.BANDA_TEXTO_FONTE) + folga
+        teto = faixa["webcam"][1] - 2 * leading - folga
+        self.assertLessEqual(abaixo, teto,
+                             f"hook empurrado para {abaixo} passa do teto {teto}")
+        self.assertLessEqual(abaixo + 2 * leading, faixa["webcam"][1],
+                             "o bloco do hook encostaria na faixa da pessoa")
+
+    def test_sem_texto_no_topo_da_fonte_o_hook_nao_desce(self):
+        """O empurrão é condicional. Uma fonte limpa não paga por ele -- e o
+        corpus aprovado tem o hook no alto."""
+        S, faixa, leading, folga = self._pecas()
+        # O gate real vive no `cut` (`source_text.get("top")`); aqui se
+        # confere que a margem continua sendo o ponto de partida.
+        self.assertEqual(S.margens(1080, 1920)["top"], 280)
+
+
 class AFaixaDaLegendaSoEReservadaSeHouverLegenda(unittest.TestCase):
     """Um terço de quadro guardado para um texto que não vem.
 

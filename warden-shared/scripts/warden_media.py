@@ -6390,6 +6390,34 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         # normal e o que o corpus aprovado tem. Lá em cima ele cai sobre os
         # primeiros pixels da tela durante 3 segundos, do mesmo jeito que cai
         # sobre a imagem num corte normal.
+        #
+        # E QUANDO A FONTE TEM TEXTO PRÓPRIO NO TOPO, ele desce o suficiente
+        # para não sentar em cima dele. Medido em 18/09/2026 nesta live: o
+        # placar do jogo fica em y 30-120 da fonte e o `[Tab] Hand Signals` em
+        # 150-185; dentro da faixa da tela (996x560 em y280) isso cai em
+        # y 296-376 do quadro, e o hook ocupava 280-482. Cobria os dois.
+        #
+        # O quanto descer não é um número novo: `burned_text_bands` olha os
+        # 16% de cima da fonte, então é essa mesma fração da faixa da tela que
+        # o hook pula. Com 560px de tela dá 90px, e o bloco vai de 386 a 588 --
+        # abaixo do texto do jogo e ainda bem acima da faixa da pessoa.
+        #
+        # O teto existe porque a conta tem de continuar cabendo: se a tela for
+        # baixa o hook não pode ser empurrado para dentro da cara.
+        if dividido and faixas_do_layout and source_text.get("top"):
+            _tx, _ty, _tw, _th = faixas_do_layout["tela"]
+            _folga = max(6, height // 120)
+            _abaixo = _ty + int(_th * S.BANDA_TEXTO_FONTE) + _folga
+            _teto = (faixas_do_layout["webcam"][1] - len(lines) * leading
+                     - _folga)
+            if hook_top < _abaixo <= _teto:
+                hook_top = _abaixo
+                notes.append(
+                    f"the hook was pushed down to y{hook_top}: this source "
+                    f"carries its own burned text in the top "
+                    f"{S.BANDA_TEXTO_FONTE:.0%} of the frame, which lands at "
+                    f"y{_ty}-{_ty + int(_th * S.BANDA_TEXTO_FONTE)} inside the "
+                    f"screen strip, and the hook was sitting on it.")
         hook_y = hook_top + (len(lines) * leading) // 2
         png = os.path.join(art_dir, f"{stem}-hook.png")
         png, oy = S.text_png(lines, png, width, height, hook_y, fitted,
