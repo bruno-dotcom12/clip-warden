@@ -5885,6 +5885,30 @@ class ATarjaPretaReprovaOClipe(unittest.TestCase):
         self.assertGreater(coluna[-1], coluna[h // 2],
                            "o alfa parou de subir antes do pe do quadro")
 
+    def test_o_rodape_acaba_onde_lhe_mandam_e_nao_no_pe_do_quadro(self):
+        """`footer_png` ancorava a faixa no pé do quadro SEMPRE, e quem chamava
+        não tinha como dizer outra coisa. No clipe dividido o pé da imagem da
+        fonte fica 1080px acima do pé do quadro: ancorar lá cobriu a faixa da
+        pessoa inteira no clipe de produção de 18/09/2026."""
+        from PIL import Image
+        alvo = os.path.join(_temp(self, "warden-rodape-"), "r.png")
+        _p, y = self.S.footer_png(alvo, 1080, 1920, band=112, bottom=840)
+        self.assertEqual(y, 840 - 112, "a faixa não acabou no pé da tela")
+        im = Image.open(alvo).convert("RGBA")
+        self.assertEqual(im.size, (1080, 112))
+
+    def test_o_rodape_so_escurece_as_colunas_da_imagem(self):
+        """A tela do dividido tem 996 de 1080: fora dela é fundo borrado, onde
+        não há texto para cobrir e uma aba escura acabaria no nada."""
+        from PIL import Image
+        alvo = os.path.join(_temp(self, "warden-rodape-"), "r.png")
+        self.S.footer_png(alvo, 1080, 1920, band=112, bottom=840,
+                          span=(42, 42 + 996))
+        px = Image.open(alvo).convert("RGBA").load()
+        self.assertEqual(px[10, 100][3], 0, "escureceu fora da imagem")
+        self.assertEqual(px[1070, 100][3], 0, "escureceu fora da imagem")
+        self.assertGreater(px[540, 100][3], 0, "não escureceu a imagem")
+
 
 class UmPortaoQueQuemPassaPorEleContornaNaoEUmPortao(unittest.TestCase):
     """"Vou aprovar assim mesmo" era uma frase válida. Agora não é.
@@ -5958,3 +5982,269 @@ class UmPortaoQueQuemPassaPorEleContornaNaoEUmPortao(unittest.TestCase):
         # "que ... que" numa frase longa é português, não artefato.
         self.assertEqual(self.W.linhas_suspeitas(
             [self._linha("acho que hoje a gente entende que dá certo")]), [])
+
+
+class OPortaoDaLegendaRODADODEVERDADE(unittest.TestCase):
+    """Os sete testes acima são sobre DICIONÁRIOS. Estes rodam a CLI.
+
+    Pedido do dono em 18/09/2026, depois de o agente aprovar uma legenda
+    sozinho em produção: *"escreve um teste que invoque a CLI de verdade. Sete
+    testes sobre dicionários não cobrem o caso que aconteceu."*
+
+    Ele está certo, e a auditoria confirma: nenhum teste em `tests/` invocava
+    `captions review --approve`. O bloco de `warden.py` que o comentário chama
+    de "O PORTÃO QUE FOI CONTORNADO" não tinha cobertura direta -- só o caminho
+    do `lote`, onde a decisão é a OPOSTA (avisa e assina).
+
+    Aqui o comando entra por `warden.main`, com argv de verdade, e o que se
+    afirma é o que sai: o código de saída, o arquivo `.aprovado` no disco, e o
+    que o `cut` passa a aceitar por causa dele.
+    """
+
+    LINHAS = ("1\n00:00:00,000 --> 00:00:02,000\nmatei, matei\n\n"
+              "2\n00:00:02,000 --> 00:00:04,000\nquem que morreu aí\n\n")
+    SUSPEITA = ("1\n00:00:00,000 --> 00:00:02,000\nEm 1826 foi assim\n\n"
+                "2\n00:00:02,000 --> 00:00:04,000\njokovic jokovic venceu\n\n")
+
+    def setUp(self):
+        import warden_style
+        self.dir = _temp(self, "warden-portao-cli-")
+        self.S = warden_style
+
+    def _srt(self, texto, nome="fala.srt"):
+        caminho = os.path.join(self.dir, nome)
+        with open(caminho, "w", encoding="utf-8") as fh:
+            fh.write(texto)
+        return caminho
+
+    def _cli(self, *argv):
+        """Roda `warden <argv>` de verdade e devolve (código, stdout, stderr)."""
+        velho_out, velho_err = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = io.StringIO(), io.StringIO()
+        try:
+            try:
+                codigo = warden.main(list(argv))
+            except SystemExit as saiu:
+                codigo = saiu.code if isinstance(saiu.code, int) else 1
+            return codigo, sys.stdout.getvalue(), sys.stderr.getvalue()
+        finally:
+            sys.stdout, sys.stderr = velho_out, velho_err
+
+    def test_rever_sem_approve_nao_escreve_aprovacao_nenhuma(self):
+        """O caminho que a skill agora manda o agente usar. Ele IMPRIME e não
+        assina: se este teste cair, o agente voltou a assinar por omissão."""
+        srt = self._srt(self.LINHAS)
+        codigo, saiu, _erro = self._cli("captions", "review", srt)
+        # 1 é o contrato de "ainda não aprovado", e é o que faz o comando servir
+        # de portão: imprimir as linhas com código 0 diria ao agente que o
+        # trabalho acabou.
+        self.assertEqual(codigo, 1, saiu)
+        self.assertIn("NOT approved", saiu)
+        self.assertIn("matei, matei", saiu)
+        self.assertFalse(os.path.exists(self.S.approval_path(srt)),
+                         "rever escreveu uma aprovação sem --approve")
+
+    def test_approve_com_linha_suspeita_nao_assinada_SAI_1_E_NAO_ESCREVE(self):
+        """O bloco que `warden.py` chama de "O PORTÃO QUE FOI CONTORNADO", e que
+        até hoje não tinha um teste rodando a CLI."""
+        srt = self._srt(self.SUSPEITA)
+        codigo, saiu, erro = self._cli("captions", "review", srt, "--approve")
+        self.assertEqual(codigo, 1, saiu + erro)
+        self.assertFalse(os.path.exists(self.S.approval_path(srt)),
+                         "assinou um arquivo com linha suspeita pendente")
+
+    def test_approve_grava_QUEM_assinou_e_nao_so_quando(self):
+        """O campo `by`. Ele não impede nada -- impedir seria um segredo, e o
+        dono recusou isso em 18/09 porque clipe mudo por padrão na nuvem é pior.
+        O que ele faz é acabar com a invisibilidade: antes, uma pessoa lendo as
+        linhas e o agente assinando a si mesmo gravavam o MESMO arquivo."""
+        srt = self._srt(self.LINHAS)
+        codigo, saiu, _erro = self._cli("captions", "review", srt, "--approve")
+        self.assertEqual(codigo, 0, saiu)
+        caminho = self.S.approval_path(srt)
+        self.assertTrue(os.path.exists(caminho))
+        with open(caminho, encoding="utf-8") as fh:
+            gravado = json.load(fh)
+        self.assertIn("by", gravado, gravado)
+        self.assertIn("captions review --approve", gravado["by"])
+        self.assertIn("tty=", gravado["by"],
+                      "sem o tty não dá para suspeitar de quem assinou")
+
+    def test_quem_assinou_aparece_na_resposta_do_portao(self):
+        """Gravar e nunca mostrar seria a mesma invisibilidade com mais passos.
+        O `by` do artefato real de 17/09 nunca foi lido por linha nenhuma."""
+        srt = self._srt(self.LINHAS)
+        self._cli("captions", "review", srt, "--approve")
+        ok, porque = self.S.approval_state(srt, None, None)
+        self.assertTrue(ok, porque)
+        self.assertIn("by ", porque)
+        self.assertIn("tty=", porque)
+
+    def test_uma_aprovacao_antiga_sem_by_continua_valendo(self):
+        """Nenhum `.aprovado` de antes de hoje pode virar inválido: isso
+        calaria clipes por causa de um campo novo."""
+        srt = self._srt(self.LINHAS)
+        with open(self.S.approval_path(srt), "w", encoding="utf-8") as fh:
+            json.dump({"sha256": self.S.srt_fingerprint(srt),
+                       "approved_at": "2026-09-17T22:50:25",
+                       "windows": [["all"]]}, fh)
+        ok, porque = self.S.approval_state(srt, None, None)
+        self.assertTrue(ok, porque)
+        self.assertNotIn("by ", porque)
+
+    def test_assinar_uma_janela_nao_assina_o_arquivo_pela_CLI(self):
+        """O caso `aromasas`, agora pelo comando e não pelo dicionário."""
+        srt = self._srt(self.LINHAS)
+        codigo, saiu, _e = self._cli("captions", "review", srt,
+                                     "--start", "0", "--end", "2", "--approve")
+        self.assertEqual(codigo, 0, saiu)
+        ok, _porque = self.S.approval_state(srt, 0.0, 2.0)
+        self.assertTrue(ok)
+        fora, porque = self.S.approval_state(srt, 0.0, 4.0)
+        self.assertFalse(fora, porque)
+        self.assertIn("aromasas", porque)
+
+    def test_a_etiqueta_do_by_diz_o_caminho_CERTO(self):
+        """Um campo que existe para dizer a verdade não pode mentir.
+
+        Na primeira versão deste conserto as duas etiquetas do `lote` saíram
+        TROCADAS: `_legenda_da_janela`, que é a transcrição NOSSA, gravava
+        "published subtitle", e `_aprova_as_janelas`, que é a legenda publicada
+        pelo detentor dos direitos, gravava "own transcript". Nada acusaria --
+        um `by` errado é indistinguível de um `by` certo para quem lê depois, e
+        é exatamente para quem lê depois que o campo existe.
+
+        A diferença importa: legenda publicada assina sozinha POR DECISÃO
+        (o dono dos direitos escreveu as palavras); transcrição do Whisper
+        assina sozinha porque calá-la entregou 2 clipes de 2 sem uma palavra na
+        tela. São razões diferentes, e o registro tem de saber qual foi.
+        """
+        fonte = open(os.path.join(
+            os.path.dirname(HERE), "warden-shared", "scripts", "warden.py"),
+            encoding="utf-8").read()
+        def _dono(rotulo):
+            i = fonte.index(f'quem_assina("warden lote ({rotulo})")')
+            return fonte.rfind("\ndef ", 0, i)
+        self.assertIn("def _legenda_da_janela",
+                      fonte[_dono("own transcript"):][:60],
+                      "a transcrição NOSSA está etiquetada como publicada")
+        self.assertIn("def _aprova_as_janelas",
+                      fonte[_dono("published subtitle"):][:60],
+                      "a legenda PUBLICADA está etiquetada como transcrição")
+
+    def test_o_by_de_UMA_janela_nao_e_sobrescrito_pela_seguinte(self):
+        """Achado por auditoria em 18/09, logo depois de o campo nascer.
+
+        `windows` ACUMULA. Um `by` único no topo era sobrescrito pela última
+        assinatura, então a janela que uma PESSOA leu passava a dizer que quem
+        assinou foi o `lote`, com `tty=no`. Pior que não ter campo: um `by`
+        errado é indistinguível de um certo para quem lê depois, e é para quem
+        lê depois que ele existe.
+        """
+        srt = self._srt(self.LINHAS)
+        self.S.write_approval(srt, start=0, end=2, by="A PESSOA (tty=yes)")
+        self.S.write_approval(srt, start=2, end=4,
+                              by="warden lote (own transcript) (tty=no)")
+        ok, porque = self.S.approval_state(srt, 0.0, 2.0)
+        self.assertTrue(ok, porque)
+        self.assertIn("A PESSOA", porque,
+                      "a assinatura da primeira janela foi sobrescrita")
+        self.assertNotIn("lote", porque)
+        ok2, porque2 = self.S.approval_state(srt, 2.0, 4.0)
+        self.assertTrue(ok2, porque2)
+        self.assertIn("lote", porque2)
+
+    def test_aprovar_o_arquivo_inteiro_apaga_as_assinaturas_de_janela(self):
+        """Assinar tudo é uma afirmação sobre TODAS as linhas; deixar para trás
+        a assinatura de uma janela antiga faria o portão citar quem nunca leu o
+        resto."""
+        srt = self._srt(self.LINHAS)
+        # Nomes sem substring um do outro: "OUTRA PESSOA" CONTÉM "A PESSOA", e
+        # a primeira versão deste teste falhou por isso -- o código estava
+        # certo. Um assert que pode passar por coincidência de substring não
+        # afirma o que a docstring diz.
+        self.S.write_approval(srt, start=0, end=2, by="QUEM-LEU-A-JANELA")
+        self.S.write_approval(srt, by="QUEM-LEU-TUDO")
+        ok, porque = self.S.approval_state(srt, None, None)
+        self.assertTrue(ok, porque)
+        self.assertIn("QUEM-LEU-TUDO", porque)
+        self.assertNotIn("QUEM-LEU-A-JANELA", porque)
+
+    def test_NADA_na_imagem_entrega_o_comando_de_assinar_pronto(self):
+        """A varredura que substitui a caçada, e ela nasce de um erro meu.
+
+        Em 18/09 eu escrevi, no `references`, que "nada manda o agente
+        assinar". Era FALSO: uma auditoria achou QUATRO lugares, todos
+        aparecendo no momento em que o agente está bloqueado -- que é quando
+        ele obedece. Consertar os quatro e escrever a frase de novo repetiria o
+        mesmo erro, porque o quinto entra amanhã.
+
+        A regra que este teste guarda: nenhum texto que o agente lê pode
+        entregar `--approve` colado num comando pronto. Falar SOBRE a flag é
+        permitido -- é assim que se ensina que ela não é dele.
+        """
+        import glob
+        raiz = os.path.dirname(HERE)
+        alvos = [os.path.join(raiz, "runtime", "persona.md")]
+        for pasta in sorted(glob.glob(os.path.join(raiz, "warden-*"))):
+            alvos += sorted(glob.glob(os.path.join(pasta, "SKILL.md")))
+            alvos += sorted(glob.glob(os.path.join(pasta, "references", "*.md")))
+        alvos += sorted(glob.glob(os.path.join(raiz, "warden-shared", "scripts",
+                                               "*.py")))
+        # O padrão proibido é o comando COM ARGUMENTO -- um caminho, uma
+        # variável, um `<srt>` -- e depois `--approve`: é o que se copia e
+        # roda. Falar da flag sem argumento ("o arquivo que `captions review
+        # --approve` escreve") é explicação, e explicação é como se ensina que
+        # ela não é do agente. A primeira versão desta varredura não separava
+        # os dois e acusava quatro comentários de código.
+        pronto = re.compile(
+            r"captions\s+review\s+\S*[<{/]|captions\s+review\s+\S*\.srt")
+        assina = re.compile(r"--approve")
+        achados = []
+        for caminho in alvos:
+            with open(caminho, encoding="utf-8") as fh:
+                texto = fh.read()
+            for n, linha in enumerate(texto.splitlines(), 1):
+                if pronto.search(linha) and assina.search(linha):
+                    achados.append(f"{os.path.relpath(caminho, raiz)}:{n}: "
+                                   f"{linha.strip()[:100]}")
+        self.assertEqual(
+            [], achados,
+            "algum texto da imagem voltou a entregar ao agente o comando de "
+            "assinar pronto. O portão da legenda existe para uma PESSOA ler as "
+            "linhas, e em produção o agente assinou sozinho porque uma frase "
+            "assim apareceu no momento em que ele estava bloqueado:\n  "
+            + "\n  ".join(achados))
+
+
+class OPortaoDoESTILONaoMorreAntesDoVeredito(unittest.TestCase):
+    """`warden style check` morria em `KeyError: 'WARN'`. Medido em 18/09/2026.
+
+    Ele imprimia as métricas e então estourava, porque o mapa de rótulos tinha
+    `REJECT`, `ok` e `note` e **não** tinha `WARN` -- que é o valor de
+    `OBSERVACAO` e o que `check_sidecar`, `cross_check` e `barras_pretas`
+    devolvem. Qualquer clipe com um único achado desses matava o comando.
+
+    O custo: o comando que existe para dizer se o render está dentro do corpus
+    nunca chegava ao veredito, e o `exit 1` de "não poste" nunca saía -- o que
+    saía era um 2 de crash, que lê como erro de uso e não como reprovação.
+    """
+
+    def test_um_achado_WARN_nao_derruba_o_comando(self):
+        import warden_style
+        rotulo = {"REJECT": "REJECT", "WARN": "WARN  ",
+                  "ok": "ok    ", "note": "      "}
+        # os quatro níveis que o projeto produz, lidos das constantes
+        for nivel in (warden_style.OBRIGACAO, warden_style.OBSERVACAO,
+                      "ok", "note"):
+            self.assertIn(nivel, rotulo,
+                          f"o nível {nivel!r} não tem rótulo e derruba "
+                          f"`warden style check`")
+
+    def test_o_codigo_de_cmd_style_usa_get_e_nao_indexacao(self):
+        """Um nível novo tem de VOLTAR na saída, não matar o portão."""
+        fonte = open(os.path.join(os.path.dirname(HERE), "warden-shared",
+                                  "scripts", "warden.py"),
+                     encoding="utf-8").read()
+        self.assertIn("rotulo.get(lv, lv)", fonte)
+        self.assertNotIn("{rotulo[lv]}", fonte)

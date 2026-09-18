@@ -97,8 +97,8 @@ on the platform, almost always the sound.
 
 ## 5. Afterwards
 
-When they say they posted one, run `warden log`: the cap is counted from that
-ledger and a clipper past it works for free. Do not ask which they posted.
+When they say they posted one, run `warden log`, which REQUIRES `--campaign`,
+`--clip` and `--platform`. The clip is the one you handed over.
 
 ## What you never do
 

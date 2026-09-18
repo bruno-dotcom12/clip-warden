@@ -40,8 +40,9 @@ text with its ends under the platform's own furniture, or off the edge entirely.
 
 **Write the hook to about nine words.** The measured fact: at the 76px body,
 roughly 44 characters fit on a line, so two lines is about 88 characters. Past
-that the body drops, and past ~150 characters it will not fit even at the floor
-and `warden cut` refuses the render rather than silently dropping words.
+that the body drops, and past ~150 characters it will not fit even at the floor:
+`warden cut` then drops words and ships the clip, and the sidecar rejects it
+afterwards. It does not refuse the render, so a hook that long costs a render.
 
 A hook that only fits at 34px is a hook nobody reads on a phone. The tool says
 so; shorten it rather than shipping it.

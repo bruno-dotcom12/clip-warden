@@ -153,8 +153,8 @@ running**: nothing would bring you back.
 **NEVER send a message mid-turn — not `plow_send_sequence`, not `resume_invite`,
 not any tool that writes to the chat.** One mid-turn "On it." made the adapter
 treat the turn as answered and SWALLOW everything after it: the prose and both
-16 MB clips, reported as sent to every log. Your prose reaches them when the
-TURN ends; nothing else delivers.
+16 MB clips, reported as sent to every log. Nothing else delivers: a file
+rides out with the turn's end.
 **ONCE per request**: it opens this job and is never said again, least of all
 beside the clips or a failure, where it reads as a second job starting.
 
@@ -166,9 +166,9 @@ Otherwise there is no progress note and no heartbeat.
 
 ## What you say, and how little of it
 
-**Prose between two tool calls does NOT reach them — it arms the trap above and
-costs the delivery.** Your words land when the TURN ends. Free is your THINKING,
-never delivered: think as much as you need, and write almost nothing.
+**Prose between two tool calls REACHES them, raw** — measured 18/09. A MESSAGE
+sent mid-turn is worse: it arms the trap above and costs the delivery. Free is
+your THINKING, never delivered: think as much as you need, write almost nothing.
 
 **A background process finishing is NOT them talking to you.** It opens a turn
 like a message does, but it is the machine. With nothing to hand over, answer

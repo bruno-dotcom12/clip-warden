@@ -52,6 +52,83 @@ TIMEOUT_RENDER = 900
 TIMEOUT_FETCH = 60
 MAX_DIRECT_BYTES = 4 * 1024 * 1024 * 1024      # a source file nobody asked for
 
+# O formato do download INTEIRO, num lugar só -- a consulta que PESA a fonte e o
+# download que a baixa têm de falar do mesmo arquivo. Dois lugares decidindo o
+# formato é o mesmo defeito que `_playlist_args` já consertou uma vez.
+FORMATO_INTEIRO = "bv*[height<=1080]+ba/b[height<=1080]/b"
+
+# Taxa do remux final (`FixupM3u8`), medida em 18/09/2026 neste Mac: 786 MiB em
+# ~12s, arm64 nativo com NVMe. Ela conta DENTRO do `TIMEOUT_DOWNLOAD`, então
+# encurta o orçamento do download antes de ele começar. No container amd64
+# emulado é mais lenta, o que só torna a conta abaixo otimista.
+REMUX_MIB_S = 65.0
+
+
+def cabe_no_download(bytes_aprox, duracao_s=None, protocolo=None,
+                     timeout=None, teto=None):
+    """(cabe, porque) -- a fonte inteira termina dentro do orçamento?
+
+    OFERECER UMA SAÍDA QUE NÃO CHEGA É PIOR QUE RECUSAR. Caso real: uma live de
+    4h do Twitch. O Twitch só entrega HLS, `janela_de_video` e `archive_windows`
+    exigem `[protocol^=http]`, nenhum formato casa, e a única porta que sobra é
+    baixar os ~10 GB inteiros -- que não terminam.
+
+    O que está medido, em 18/09/2026, e o que cada número faz aqui:
+
+    - **`--max-filesize` NÃO protege em HLS.** Rodado o comando literal do
+      `_download_one` contra um VOD HLS de 4h (848 MiB) com `--max-filesize 4M`
+      -- 212x menor que o arquivo: `rc=0`, baixou tudo. O yt-dlp só verifica
+      `max_filesize` em `downloader/http.py`; não há verificação em
+      `fragment.py` nem em `hls.py`. Por isso o teto tem de ser conferido AQUI.
+    - **Quem bate primeiro é o timeout**, depois de 15 minutos de silêncio --
+      `run()` usa `capture_output=True` e não há uma linha de progresso. O que
+      o dono recebe é `yt-dlp gave up after 900s`, que não diz nada sobre o
+      tamanho.
+    - **O remux come o orçamento**, a `REMUX_MIB_S`.
+
+    NÃO RECUSA SEM MEDIDA. Uma consulta que falhou é estado da rede, não fato
+    sobre o arquivo, e recusar por falta de número seria inventar a causa.
+    """
+    timeout = TIMEOUT_DOWNLOAD if timeout is None else timeout
+    teto = MAX_DIRECT_BYTES if teto is None else teto
+    try:
+        peso = int(bytes_aprox or 0)
+    except (TypeError, ValueError):
+        peso = 0
+    if peso <= 0 or peso <= teto:
+        return True, None
+    gb = peso / float(1024 ** 3)
+    remux_s = (peso / float(1024 ** 2)) / REMUX_MIB_S
+    sobra = max(1.0, timeout - remux_s)
+    mbit = (peso * 8.0 / 1e6) / sobra
+    quanto = ""
+    if duracao_s:
+        horas, resto = divmod(int(duracao_s), 3600)
+        quanto = f" ({horas}h{resto // 60:02d} of source)"
+    hls = ""
+    if protocolo and "m3u8" in str(protocolo).lower():
+        hls = (" And --max-filesize would NOT stop it: yt-dlp does not check "
+               "that limit on HLS, only on plain HTTP downloads -- measured, "
+               "a 848 MiB HLS VOD came down whole under a 4 MB cap.")
+    # A FRASE NÃO AFIRMA MAIS QUE O ORÇAMENTO NÃO FECHA. Achado por auditoria
+    # em 18/09: o único critério de recusa é o TETO, e a aritmética de remux
+    # era impressa como se fosse a razão. Medido: a 4,1 GB a própria frase diz
+    # "42 Mbit/s", que fecha em qualquer link decente, e dizia "the budget does
+    # not close" logo acima. A frase e o número se contradiziam no mesmo
+    # parágrafo, e o dono lê isso como medida. Agora a razão é o teto, e a
+    # aritmética entra como o que é: o que o download exigiria.
+    return False, (
+        f"this source is about {gb:.1f} GB{quanto}, over the {teto // (1024 ** 3)} "
+        f"GB ceiling, so pulling it whole is refused BEFORE it starts rather "
+        f"than after {timeout}s of silence. What it would take: the final "
+        f"remux alone costs about {remux_s:.0f}s of the {timeout}s budget, "
+        f"leaving {sobra:.0f}s for the bytes -- {mbit:.0f} Mbit/s sustained "
+        f"with no stall."
+        + hls +
+        " Pull the words instead (`--text-first` fetches the published subtitle "
+        "or audio-only) and cut windows out of it, or ask for a shorter piece "
+        "of the source.")
+
 # The only two schemes an archive link may use.
 #
 # Every url here was typed by a stranger into a campaign brief and read out of a
@@ -1821,6 +1898,66 @@ def _conta_a_legenda(achadas, lingua_video=None):
           file=sys.stderr)
 
 
+def _peso_da_fonte(url, playlist_args):
+    """(bytes, duração, protocolo) do formato que o download inteiro escolheria.
+
+    Devolve `(None, None, None)` quando não deu para medir -- e quem chama NÃO
+    recusa nesse caso: uma consulta que falhou é estado da rede, não fato sobre
+    o arquivo.
+
+    `--print` implica `--simulate`, então isto não baixa mídia. `paced=False`
+    pelo mesmo motivo de `_facts`: o sono de download seria espera pura.
+    """
+    # `playlist_args` VERBATIM, sem acrescentar nada. Pesar um item e baixar
+    # outro é o mesmo defeito que `_playlist_args` existe para não ter, e
+    # `OPREPEORENDERESCOLHEMOMESMOVIDEO` o pegou: acrescentar
+    # `--playlist-items 1` aqui fazia a sonda resolver o link de um jeito e o
+    # download de outro.
+    try:
+        out = run(_ytdlp(paced=False) + ["--no-warnings", *playlist_args,
+                   "-f", FORMATO_INTEIRO,
+                   "--print", "%(filesize_approx)s\t%(duration)s\t%(protocol)s",
+                   "--", url],
+                  TIMEOUT_FETCH, "yt-dlp weight lookup")
+    except FonteBloqueada as exc:
+        # UM 429 NÃO PODE DERRUBAR O DOWNLOAD, e esta sonda é a primeira
+        # chamada yt-dlp do `_download_one` -- se ela subir por qualquer
+        # bloqueio, o `archive` morre antes de tentar legenda ou vídeo.
+        #
+        # É o defeito de 15/09/2026 voltando por uma porta nova: `_pull_subs`
+        # existe exatamente para isso e distingue os dois casos pelo
+        # `apenas_429`. 429 é o endereço dizendo "devagar", não "não";
+        # "not a bot" é recusa de verdade. Achado por auditoria em 18/09, não
+        # por render -- o caso é raro e sai como o parágrafo errado, não como
+        # clipe feio.
+        if getattr(exc, "apenas_429", False):
+            # Não medi, então não recuso: o download tenta e diz o que der.
+            return None, None, None
+        # Recusa de verdade propaga: o download levaria o mesmo parágrafo, e
+        # levá-lo agora poupa a espera.
+        raise
+    except Exception:
+        return None, None, None
+    partes = ((out or "").strip().splitlines() or [""])[0].split("\t")
+
+    def _num(i):
+        try:
+            return float(partes[i])
+        except (IndexError, ValueError):
+            return None
+
+    return _num(0), _num(1), (partes[2].strip() if len(partes) > 2 else None)
+
+
+def _recusa_se_nao_cabe(url, playlist_args):
+    """Levanta com os números quando a fonte inteira não termina. Ver
+    `cabe_no_download`, que é a decisão, e `_peso_da_fonte`, que é a medida."""
+    peso, duracao, protocolo = _peso_da_fonte(url, playlist_args)
+    cabe, porque = cabe_no_download(peso, duracao_s=duracao, protocolo=protocolo)
+    if not cabe:
+        raise RuntimeError(porque)
+
+
 def _pull_text_first(url, out_dir, stem, template, playlist_args):
     """O caminho barato: legenda publicada, ou o áudio -- nunca o vídeo.
 
@@ -2264,10 +2401,14 @@ def _download_one(url, out_dir, mode="video"):
     #
     # Agora são duas corridas: a legenda tem a sua, pode falhar, e a falha vira
     # aviso. O vídeo tem a sua e não depende de legenda nenhuma.
+    # PESAR ANTES DE PUXAR. Uma consulta simulada (`--print` implica
+    # `--simulate`, zero byte de mídia) contra o MESMO seletor que o download
+    # vai usar, e a recusa sai daqui -- não depois de 15 minutos de silêncio.
+    _recusa_se_nao_cabe(url, playlist_args)
     legenda, porque = _pull_subs(url, out_dir, stem, template, playlist_args)
-    run(_ytdlp() + [*playlist_args, "--restrict-filenames",
+    disse = run(_ytdlp() + [*playlist_args, "--restrict-filenames",
          "--max-filesize", str(MAX_DIRECT_BYTES),
-         "-f", "bv*[height<=1080]+ba/b[height<=1080]/b",
+         "-f", FORMATO_INTEIRO,
          "--merge-output-format", "mp4", "-o", template, "--", url],
         TIMEOUT_DOWNLOAD, "yt-dlp")
     if not legenda and porque:
@@ -2278,7 +2419,17 @@ def _download_one(url, out_dir, mode="video"):
                     if f.startswith(stem)
                     and os.path.splitext(f)[1].lower() in (".mp4", ".mkv", ".webm"))
     if not videos:
-        raise RuntimeError("yt-dlp returned no video file for that link")
+        # O QUE O yt-dlp DISSE, e não só o que nós vimos. Medido em 18/09/2026:
+        # quando o `--max-filesize` de fato dispara (fonte progressiva), o
+        # yt-dlp sai com returncode ZERO e escreve `File is larger than
+        # max-filesize (... bytes > ... bytes). Aborting.` no STDOUT -- então
+        # `run()` devolve normal, o retorno era descartado, e a causa real
+        # virava "returned no video file for that link". A frase que explicava
+        # tudo era impressa pelo yt-dlp e jogada fora por nós.
+        dito = [l.strip() for l in (disse or "").splitlines() if l.strip()]
+        porque_ele = ("\n  " + "\n  ".join(dito[-4:])) if dito else ""
+        raise RuntimeError(
+            "yt-dlp returned no video file for that link." + porque_ele)
     # The merged output is stem.mp4; prefer it over any intermediate a partial
     # merge left with the same prefix, and fall back to a stable sorted choice
     # rather than to whatever os.listdir happened to return first.
@@ -2500,7 +2651,8 @@ def model_wait_note(size):
         return (f"the {size} model failed to download at boot. This request "
                 f"would fetch {info['want_mb']} MB now, which is a long silence "
                 f"in a chat -- END A TURN saying so, and wait on the next: "
-                f"prose between two tool calls does not reach them.")
+                f"a MESSAGE sent mid-turn arms the adapter's gate and costs "
+                f"the delivery, and loose prose reaches them raw.")
     return (f"the {size} transcription model is not on this machine yet "
             f"({info.get('want_mb', 0)} MB). It downloads in the background "
             f"after install; this request would fetch it now.")
@@ -3364,7 +3516,16 @@ def text_signals(text):
     return sorted(tags)
 
 
-def _loudness_envelope(source):
+# A ÚLTIMA envoltória lida, chaveada por (caminho real, mtime, tamanho).
+#
+# UMA entrada, e isso é escolha: a envoltória de uma fonte de 4h são 144.000
+# tuplas, 15,5 MiB medidos. Guardar várias trocaria 32s de ffmpeg por memória
+# durante a transcrição, que é a fase de pico -- e é a memória que fez
+# `VARREDURA_LIMIAR_S` existir.
+_ENV_MEMO = {}
+
+
+def _loudness_envelope(source, memo=True):
     """(second, momentary loudness) across the source, in one ffmpeg pass.
 
     ebur128 prints a momentary reading every tenth of a second; a spike in it is
@@ -3376,6 +3537,30 @@ def _loudness_envelope(source):
     os sinais precisa saber qual dos dois aconteceu antes de escolher a janela
     achando que o som não tinha nada a dizer.
     """
+    # A MESMA MEDIDA, DUAS VEZES, sobre 100% do áudio. Medido em 18/09/2026:
+    # numa fonte acima de `VARREDURA_LIMIAR_S` esta função é chamada por
+    # `transcreve_por_picos` e depois por `loud_segment_indexes`, com o mesmo
+    # arquivo e -- já que ela só recebe `source` -- sem um parâmetro sequer que
+    # possa fazê-las diferir. Custo da segunda passada numa fonte de 4h: 19,5s
+    # no piso, 53,8s sob carga, mediana 31,6s, mais 19,2 MB de stderr montados
+    # de novo. Desperdício puro.
+    #
+    # Memo em vez de parâmetro `env=` porque a alternativa explícita mudaria
+    # três assinaturas e faria `transcreve_por_picos` devolver uma tupla de 4,
+    # cuja forma de 3 está afirmada em `tests/test_varredura.py`.
+    #
+    # A chave leva mtime e tamanho, e não só o caminho: um `prep` que rebaixa o
+    # mesmo nome de arquivo entregaria a envoltória do vídeo velho, e a janela
+    # sairia do lugar errado, calada -- que é o pior defeito deste projeto.
+    chave = None
+    if memo:
+        try:
+            st = os.stat(source)
+            chave = (os.path.realpath(source), st.st_mtime_ns, st.st_size)
+        except OSError:
+            chave = None
+        if chave is not None and chave in _ENV_MEMO:
+            return _ENV_MEMO[chave]
     if not have("ffmpeg"):
         return [], "ffmpeg is not on PATH, so no loudness was read"
     try:
@@ -3401,6 +3586,20 @@ def _loudness_envelope(source):
     if not env:
         return [], ("no audio track to read a reaction from, so the loud "
                     "signal is missing and the words carry alone")
+    # SÓ O SUCESSO FICA GUARDADO. Guardar o fracasso transformaria um ffmpeg que
+    # sumiu por um segundo em "esta fonte é muda" pelo resto do processo, e o
+    # segundo consumidor escolheria a janela achando que o som não tinha nada a
+    # dizer -- que é exatamente o que o `motivo` desta função existe para
+    # impedir.
+    #
+    # E a lista sai COMPARTILHADA entre as duas chamadas: nenhum dos dois
+    # consumidores a muta (`picos_para_janelas` e `loud_segment_indexes` só
+    # leem e fatiam), e o teste
+    # `test_os_dois_consumidores_nao_mudam_a_lista_que_recebem` prende isso,
+    # porque virou invariante e não mais coincidência.
+    if chave is not None:
+        _ENV_MEMO.clear()
+        _ENV_MEMO[chave] = (env, None)
     return env, None
 
 
@@ -3683,27 +3882,43 @@ FACE_MODEL = os.environ.get("WARDEN_FACE_MODEL", "/opt/plow/yunet.onnx")
 # Medido em 15/09/2026 no container, cortando 20s de
 # `janela-7893834d2c-82-106.mp4` (1920x1080, 30fps) para 1080x1920. A imagem é
 # amd64 EMULADA sobre Apple Silicon e não tem codificador de hardware, então o
-# preset do x264 é o botão inteiro:
+# preset do x264 é o botão inteiro, e em 18/09/2026 a medida VIROU.
 #
-#   veryfast  crf 20                      16,8s   6,5 MB   <- o de antes
-#   ultrafast crf 20                       6,8s  16,8 MB
-#   ultrafast crf 26 maxrate 6M           7,1s   9,2 MB   <- este
-#   superfast crf 23 maxrate 6M          12,1s   7,3 MB
+# Medido na fonte real (kZAAnNJHaUc, janela 481-502) com o LAYOUT DIVIDIDO, que
+# é o que este renderizador produz hoje -- corte inteiro pelo `cut`, dentro da
+# imagem, três quadros por linha, blocagem = energia de degrau nas bordas de
+# macrobloco de 16px contra as outras:
 #
-# Os quadros de `veryfast crf20` e `ultrafast crf20` foram comparados COM OS
-# OLHOS a 540px de largura, e são indistinguíveis neste material. Num vertical
-# de 20s visto no telefone o preset rápido não custa qualidade que se veja.
+#   preset      crf  maxrate   render    arquivo   blocagem
+#   ultrafast    26      6M     57,1s     8,27 MB    1,642   <- era este
+#   superfast    23      6M     59,8s     9,83 MB    1,376
+#   veryfast     20      6M     44,9s     7,10 MB    1,443   <- este
+#   veryfast     23      6M     44,9s     4,88 MB    1,529
+#
+# `veryfast crf20` é 21% MAIS RÁPIDO, 14% MENOR e menos blocado que o
+# `ultrafast crf26` que estava aqui. Ganha nos três eixos ao mesmo tempo, o que
+# não costuma acontecer -- e é por isso que a medida anterior tem de ficar
+# escrita: ela dizia `veryfast 16,8s` contra `ultrafast 7,1s`, o oposto. Ela
+# NÃO estava errada; foi medida em OUTRO material, sem as três camadas do
+# dividido (fundo borrado + duas faixas + ASS). Com elas o filtergraph domina o
+# relógio e o `ultrafast`, que escreve mais bits, paga mais no I/O do que
+# economiza no encode. Preset medido fora do material que se renderiza não
+# transfere.
+#
+# Uma ressalva de honestidade: a variância do laplaciano da faixa da pessoa sai
+# MAIOR no ultrafast (270 contra 249). Isso não é mais detalhe -- é energia de
+# alta frequência de artefato, que é o que a coluna de blocagem mede do outro
+# lado. Nitidez medida assim não separa detalhe de bloco.
 #
 # O `maxrate` NÃO é enfeite e não sai daqui: sem ele o ultrafast sozinho escreve
-# 16,8 MB para 20 segundos, 2,6x o arquivo de antes. Esses arquivos vão como
-# anexo pelo telefone do dono, e a faixa que nunca falhou é de 7 a 14 MB.
-# Velocidade que estoura o anexo não é velocidade -- é um clipe que não chega.
+# 16,8 MB para 20 segundos. Esses arquivos vão como anexo pelo telefone do dono,
+# e a faixa que nunca falhou é de 7 a 14 MB -- o 7,10 MB de hoje fica dentro
+# dela, e o `crf 23`, que daria 4,88 MB, ficaria abaixo do piso.
 #
 # As variáveis de ambiente existem para o caso de uma máquina com codificador
-# de verdade, ou de uma campanha que peça outro arquivo. O PADRÃO é o rápido,
-# porque a máquina onde isto roda é a emulada.
-X264_PRESET = os.environ.get("WARDEN_X264_PRESET", "ultrafast")
-X264_CRF = os.environ.get("WARDEN_X264_CRF", "26")
+# de verdade, ou de uma campanha que peça outro arquivo.
+X264_PRESET = os.environ.get("WARDEN_X264_PRESET", "veryfast")
+X264_CRF = os.environ.get("WARDEN_X264_CRF", "20")
 X264_MAXRATE = os.environ.get("WARDEN_X264_MAXRATE", "6M")
 X264_BUFSIZE = os.environ.get("WARDEN_X264_BUFSIZE", "12M")
 
@@ -4014,6 +4229,24 @@ ZOOM_ROSTO_MAX = 4.0
 # passar e não deixa passar muito mais. Com ele, um rosto de 0,05 do quadro, que
 # pediria 8x, para em 2,6x e sai pequeno e nítido em vez de grande e borrado.
 ESCALA_FONTE_MAX = 1.8
+# Quanto a faixa da PESSOA estica o pixel da webcam. Escolha do dono em
+# 18/09/2026, olhando os recortes 1:1 de três larguras renderizadas na fonte
+# real -- não a miniatura do contact sheet, onde a diferença não aparece:
+#
+#   largura   estica   nitidez da faixa (variância do laplaciano, mediana de 4)
+#     512      1,07x     249    <- o de antes; metade da faixa era fundo borrado
+#     768      1,60x      34    <- este
+#    1080      2,25x      17    <- visivelmente mole no 1:1, "grande e borrado"
+#
+# O dono tinha escolhido 1080 vendo a miniatura e trocou para 768 vendo o 1:1.
+# O 249 de antes é inflado: metade daquela faixa era fundo liso, que não tem
+# alta frequência nenhuma. No 1:1 a de 1,60x mantém óculos, fone e textura da
+# parede; a de 2,25x perde os três.
+#
+# 1,60 fica ABAIXO de `ESCALA_FONTE_MAX` de propósito: aquele teto existe desde
+# 15/09, quando o dono disse "saiu tudo com zoom", e um número novo que o
+# ultrapassasse o revogaria em silêncio.
+ESCALA_PESSOA = 1.60
 # Quanto do quadro a faixa da pessoa tem, no mínimo -- e é a partir dela que a
 # TELA encolhe, não o contrário.
 #
@@ -4874,26 +5107,32 @@ def layout_dividido(width, height, sw, sh, pip=None, rosto=None, legenda=True):
     px0, py0, px1, py1 = [min(1.0, max(0.0, float(v))) for v in pip]
     pw = max(2.0, (px1 - px0) * sw)
     ph = max(2.0, (py1 - py0) * sh)
-    # A CAIXA DO ROSTO TEM A PROPORÇÃO DO PiP, e isto foi decidido renderizando
-    # as duas alternativas e olhando, em 17/09/2026.
+    # A CAIXA DO ROSTO É `ESCALA_PESSOA` VEZES A WEBCAM, e não mais a proporção
+    # do PiP. Trocado em 18/09/2026, a pedido do dono: *"tá vendo que tem muito
+    # blur ali embaixo"*.
     #
-    # A tentação é alargá-la até o teto de `ESCALA_FONTE_MAX` (864px nesta
-    # fonte), porque isso encurtaria o recorte na vertical e deixaria de fora a
-    # barra de "Último sub" que mora logo abaixo da câmera. Renderizado: sai
-    # MUITO pior. Quem recorta de fato é `zoompan_do_rosto`, que pré-recorta do
-    # quadro INTEIRO na proporção da faixa -- e com uma faixa de 2,25:1 e o
-    # rosto em x 86%, o recorte se estende para a esquerda e traz meia tela de
-    # jogo junto, com a pessoa encostada na borda direita.
+    # Medido no clipe que ele olhou: com a caixa na proporção do PiP ela saía
+    # 512 de 1080 de largura, e sobravam **568px de fundo borrado** nas
+    # laterais dela -- 63,6% do quadro inteiro era borrão. Com 768 a faixa
+    # ocupa 71% da largura e o blur do quadro cai para 59%.
     #
-    # Na proporção do PiP (1,33:1 aqui) o recorte tem a forma da própria
-    # webcam, a pessoa fica centrada, e o que entra a mais é a barra de sub do
-    # streamer -- que é a marca dele, não um defeito nosso.
+    # O RECORTE CONTINUA DENTRO DA WEBCAM, e é isto que separa esta mudança da
+    # alternativa medida e REPROVADA em 17/09. Lá quem recortava era
+    # `zoompan_do_rosto`, que pré-recorta do quadro INTEIRO na proporção da
+    # faixa: com 2,25:1 e o rosto em x 86%, o recorte se estendia para a
+    # esquerda e trazia meia tela de jogo junto. Aqui o recorte é o ramo de
+    # baixo de `corte_webcam`: `cw = pw` -- a largura INTEIRA da webcam -- e a
+    # altura é que encolhe, centrada no rosto. Não entra jogo nenhum; sai o
+    # teto, a mesa e a barra de "Último sub".
+    #
+    # O preço está medido e é a textura: 1,60x contra 1,07x leva a variância do
+    # laplaciano da faixa de 249 para 34. O dono olhou o 1:1 e aceitou; vendo o
+    # mesmo 1:1 ele RECUSOU a largura cheia (2,25x, nitidez 17).
     caixa_h = banda_h
-    caixa_w = int(round(caixa_h * pw / ph))
+    caixa_w = int(round(pw * ESCALA_PESSOA))
     teto_w = max(2, min(width - 2 * folga, int(pw * ESCALA_FONTE_MAX)))
     if caixa_w > teto_w:
         caixa_w = teto_w
-        caixa_h = max(2, int(round(caixa_w * ph / pw)))
     # `max(2, ...)` nos DOIS, e não só na altura: com um PiP altíssimo e
     # estreito -- o que sobra quando a moldura come a coluna onde a webcam mora
     # -- `caixa_w` saía 1, a paridade zerava, e a cadeia pedia `scale=0:384`,
@@ -4933,6 +5172,67 @@ def layout_dividido(width, height, sw, sh, pip=None, rosto=None, legenda=True):
                              max(0, min(int(round(cy)), int(sh) - _ch)),
                              _cw, _ch)
     return faixa
+
+
+# O degradê do rodapé fica preso ao PÉ DA IMAGEM DA FONTE. O TETO vale nos dois
+# layouts -- além dele se apaga imagem para resolver um problema de texto. O
+# PISO vale só no caminho normal, e o porquê está em `faixa_do_rodape`.
+RODAPE_PISO = 0.20
+RODAPE_TETO = 0.24
+
+
+def faixa_do_rodape(width, height, reach, faixas=None):
+    """Onde o degradê que cobre o texto queimado da FONTE entra, em pixels.
+
+    Devolve `(band, pe, span)`: a ALTURA da faixa, o y em que ela ACABA, e as
+    colunas que ela ocupa (`None` = o quadro inteiro).
+
+    ISTO EXISTE PORQUE A CONTA ESTAVA ENTERRADA DENTRO DO `cut`, onde teste
+    nenhum a alcança sem ffmpeg -- e foi lá que ela sobreviveu à inversão do
+    layout de 17/09/2026 e chegou ao clipe de produção. Duas metades:
+
+    **1. A faixa acabava no pé do QUADRO.** A conta era
+    `band = height - (ty + (1-reach)*th)` e `footer_png` ancorava a faixa no pé
+    do quadro, o que dava no mesmo enquanto a TELA era a faixa de baixo. Depois
+    da inversão a tela acaba em 840 e quem mora abaixo é a PESSOA: medido no
+    clipe entregue, 1113px de degradê colados de y=807 a 1920, cobrindo a faixa
+    do rosto (856-1240) com alfa até 206/255. 34x o necessário. O degradê acaba
+    onde a IMAGEM DA FONTE acaba, que no dividido é `ty + th`.
+
+    **2. O PISO DE 20% NÃO ATRAVESSA, e a decisão é do dono.** O caminho normal
+    prende a medida entre 20% e 24% porque a varredura para na primeira queda de
+    densidade e subestima -- ali isso é certo, porque a fonte ocupa o quadro
+    inteiro e a legenda do acervo disputa a MESMA faixa que a nossa.
+
+    No dividido não é o mesmo problema. Medido nas duas janelas reais em
+    18/09/2026: `bottom_reach` voltou **0,0** e o que vive no pé daquela tela
+    sobe **16,3%** -- mas o que vive lá é `YOU ARE DEAD - Press Space to
+    spectate`, a barra de Health/Energy/Balance e a caixa de munição `27/60`.
+    **É HUD de jogo, não legenda de acervo**, e `burned_text_bands` não sabe
+    distinguir os dois: ela mede densidade de borda. Aplicar o piso de 20% aqui
+    esmaeceu o `YOU ARE DEAD` de luma 43,5 para 25,8 e desbotou a caixa de
+    munição -- que é justamente a imagem que o dono escolheu preservar em
+    17/09, ao recusar o `_corte_sem_webcam`. Ele decidiu em 18/09: no dividido a
+    faixa é a MEDIDA, sem piso, porque a nossa legenda mora 400px abaixo numa
+    faixa própria e não disputa quadro com o HUD. Não se apaga imagem por um
+    palpite.
+
+    **A consequência, declarada e não escondida:** uma fonte com legenda de
+    acervo DE VERDADE queimada no pé, cuja varredura subestime do mesmo jeito,
+    sai subcoberta no dividido -- e o `footer_covered: true` do sidecar não vai
+    saber. O teto de 24% continua, porque além dele se apaga imagem em qualquer
+    layout. Ver a pendência no spec do enquadramento.
+
+    `span` sai porque a tela tem 996 de 1080 nesta fonte: um degradê de largura
+    inteira deixaria duas abas escuras de 42px sobre o fundo borrado, acabando
+    no nada 1080px acima do pé do quadro.
+    """
+    tela = (faixas or {}).get("tela")
+    if not tela:
+        return int(height * min(RODAPE_TETO, max(RODAPE_PISO, float(reach)))), height, None
+    tx, ty, tw, th = tela
+    fracao = min(RODAPE_TETO, float(reach))
+    return max(1, min(th, int(th * fracao))), ty + th, (tx, tx + tw)
 
 
 def _janela_de_tempo(trechos):
@@ -6324,45 +6624,67 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
             # é o que SAIU do render, não o que se pretendia queimar.
             cover = queimamos
         if cover:
-            # A medida entra com folga, mas presa entre 18% e 24% da altura.
+            # A medida entra com folga, mas presa entre `RODAPE_PISO` (20%) e
+            # `RODAPE_TETO` (24%) da altura DA IMAGEM DA FONTE -- que no caminho
+            # normal é o quadro e no dividido é a faixa da tela.
             #
-            # A medida sozinha não serve para desenhar: material com duas faixas
-            # de texto -- um disclaimer colado no rodapé e a legenda do acervo
-            # acima dele -- tem um vão limpo entre as duas, e qualquer varredura
-            # que pare na primeira queda cobre só a de baixo. Foi o que aconteceu
-            # aqui: a varredura disse 8%, o texto ia até 14%, e a legenda do
-            # acervo ficou legível embaixo da nossa.
+            # A medida sozinha não serve para desenhar, e isso já custou dois
+            # clipes. Material com duas faixas de texto -- um disclaimer colado
+            # no rodapé e a legenda do acervo acima dele -- tem um vão limpo
+            # entre as duas, e qualquer varredura que pare na primeira queda
+            # cobre só a de baixo: a varredura disse 8%, o texto ia até 14%, e a
+            # legenda do acervo ficou legível embaixo da nossa. Na live de
+            # gameplay de 18/09 o mesmo mecanismo deu PIOR -- o HUD flutua acima
+            # da borda, o vão é o primeiro que a varredura vê, e `bottom_reach`
+            # voltou 0,0 com o texto subindo 16,3%.
             #
             # 20% cobre as duas faixas com folga e ainda deixa a nossa legenda,
-            # que mora por volta de 25%, fora do degradê; 24% é o teto, porque
-            # além disso se apaga imagem para resolver um problema de texto. A
-            # medida continua na nota, como evidência de até onde o texto ia.
+            # que no caminho normal mora por volta de 25%, fora do degradê; 24%
+            # é o teto, porque além disso se apaga imagem para resolver um
+            # problema de texto. A medida continua na nota, como evidência de
+            # até onde o texto ia -- e a nota é a única coisa que diz que ela
+            # foi 0,0.
             reach = float(source_text.get("bottom_reach") or 0.0) + 0.06
-            band = int(height * min(0.24, max(0.20, reach)))
-            if dividido:
-                # No dividido o pé da FONTE não é o pé do QUADRO: ele está no pé
-                # da faixa da tela, e um degradê de 20% da altura do quadro
-                # cobriria fundo borrado e deixaria a legenda do acervo
-                # intacta, em cima. O degradê sobe até onde o texto da fonte
-                # começa -- e o que ele pega abaixo disso é fundo, que não custa
-                # nada. A nossa legenda é desenhada DEPOIS dele (ver a ordem das
-                # camadas), então ela continua legível por cima.
-                _tx, _ty, _tw, _th = faixas_do_layout["tela"]
-                band = int(height - (_ty + (1.0 - min(0.9, reach)) * _th))
-                band = max(1, min(height - 1, band))
+            # ONDE A FAIXA ENTRA É `faixa_do_rodape`, e não esta função.
+            #
+            # A conta morava aqui, e aqui teste nenhum a alcança sem ffmpeg:
+            # foi assim que ela sobreviveu à inversão do layout de 17/09/2026 e
+            # chegou ao clipe de produção, com 1113px de degradê sobre a faixa
+            # da pessoa. Ela tem números medidos atrás e agora mora numa função
+            # pura, exercitada por `AJanelaRealDe1709VirouNUMEROS`, que roda em
+            # toda máquina. A nossa legenda é desenhada DEPOIS dele (ver a ordem
+            # das camadas), então ela continua legível por cima.
+            band, rodape_pe, rodape_span = faixa_do_rodape(
+                width, height, reach, faixas_do_layout if dividido else None)
             footer, fy = S.footer_png(os.path.join(art_dir, f"{stem}-rodape.png"),
-                                      width, height, band=band)
+                                      width, height, band=band,
+                                      bottom=rodape_pe, span=rodape_span)
             overlays.append((footer, fy, 0.0, float(length), 0.0))
             style_facts["footer_covered"] = True
+            # A faixa em NÚMEROS no sidecar. O defeito só foi visível porque
+            # alguém olhou o clipe: o estilo dizia `footer_covered: true` e mais
+            # nada, e "cobri" não diz o que foi coberto nem o que foi apagado.
+            style_facts["footer_band"] = [int(rodape_span[0]) if rodape_span else 0,
+                                          int(fy),
+                                          int(rodape_span[1] - rodape_span[0])
+                                          if rodape_span else int(width),
+                                          int(band)]
             aviso_marca_dagua = (
                 " If that bottom text is another clipper's watermark rather "
                 "than the archive's own captions, covering it breaks the rules "
                 "-- re-cut with cover_footer=False and drop --subtitles.")
+            # O TAMANHO DA FAIXA VAI NA NOTA, e não só no sidecar. "Cobri" não
+            # diz o que foi coberto: em 18/09 o sidecar disse `footer_covered:
+            # true` sobre um degradê de 1113px que cobriu a pessoa, e disse a
+            # mesma coisa sobre um de 33px que quase não toca a imagem. São
+            # fatos muito diferentes e tinham a mesma frase.
+            quanto = (f" The gradient is {band}px tall, sitting at y {int(fy)}"
+                      f"-{int(fy) + band} -- the foot of the source picture.")
             if queimamos:
                 notes.append(
                     f"{como} ({source_text['evidence']}). Covered it with the "
                     "gradient footer so there is one caption in frame and not "
-                    "two." + aviso_marca_dagua)
+                    "two." + quanto + aviso_marca_dagua)
             else:
                 # A nota afirmava a disputa "uma legenda em quadro e não duas"
                 # mesmo quando legenda nenhuma nossa foi queimada. Chegar aqui

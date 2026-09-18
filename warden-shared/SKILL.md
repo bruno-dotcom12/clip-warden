@@ -45,7 +45,7 @@ Every one takes `--help`, so a row says what a command is FOR, not its flags.
 | `warden check <clip> --campaign <id> --caption -` | the gate; exit 1 means do not post |
 | `warden package --campaign <id> --hook "..."` | the caption the campaign requires |
 | `warden log --campaign <id> ...` | this install's own count, read by the cap |
-| `warden captions review <srt> --start --end` | the lines that would burn; `--approve` signs that window |
+| `warden captions review <srt> --start --end` | the lines that would burn. You print them; the PERSON approves |
 | `warden tracks add <file\|url>` / `list` | the owner's own audio, kept by name. A link goes in like a file |
 | `warden beat <track>` | tempo, grid and drop — the numbers `--shots` snaps to |
 | `warden style extract <clip>` / `check <render>` | the approved look; whether a new clip fits |

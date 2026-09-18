@@ -157,12 +157,13 @@ Unsigned, `cut` renders **no caption** rather than burn words nobody read.
 | road | who signs |
 |---|---|
 | `warden lote render` | the tool signs the clean lines per window; nobody is asked |
-| `warden cut` alone | YOU: `warden captions review <srt> --start <s> --end <s> --approve` |
+| `warden cut` alone | **THE PERSON.** Print the lines and END the turn. |
+
+**`--approve` is never yours to type**; the lines go in your final message.
 
 **A suspect line is a warning, not a refusal**: the tool names it and burns the
 caption anyway. If it is wrong, say so in ONE clause beside the clip, and do not
-re-render unless they ask. `--keep "<line>"` means only "I read this one, stop
-warning me". Why: `warden-clip/references/legenda-suspeita.md`.
+re-render unless they ask. Why: `warden-clip/references/legenda-suspeita.md`.
 
 ### The two lines `cut` prints
 

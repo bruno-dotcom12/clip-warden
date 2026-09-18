@@ -31,12 +31,49 @@ Quadro 1080x1920, de cima para baixo:
     0     interface do app (280px) -- só fundo borrado, nada nosso
     280   TELA: a fonte INTEIRA, encaixada por largura, NADA cortado
     +16   folga
-          ROSTO: a webcam recortada, na proporção dela, centrada
+          ROSTO: a webcam recortada, 1,60x a largura dela, centrada
     1240  legenda queimada (2 linhas, 320px)
     1560  folga da legenda (90px) + interface do app (270px)
 
 Números para esta fonte (1920x1080, webcam em x 1470-1910, y 10-265):
-tela **996x560** (escala 0,52 da fonte), rosto **663x384** (escala 1,51 do PiP).
+tela **996x560** (escala 0,52 da fonte), rosto **768x384**.
+
+### A faixa do rosto alargou em 18/09, e o motivo é blur
+
+O dono olhou o primeiro clipe com o degradê consertado: *"tá vendo que tem
+muito blur ali embaixo"*. Medido no quadro entregue: com a caixa na proporção
+do PiP ela saía **512 de 1080** de largura, sobravam **568px de fundo borrado**
+nas laterais dela, e **63,6% do quadro inteiro** era borrão -- só 36,4%
+carregava imagem.
+
+Renderizadas três larguras na fonte real e comparados os recortes **1:1**, não
+as miniaturas do contact sheet, onde a diferença de textura não aparece:
+
+| largura | estica | nitidez da faixa | blur no quadro |
+|---|---|---|---|
+| 512 (proporção do PiP) | 1,07x | 249 | 63,6% |
+| **768 (1,60x)** | **1,60x** | **34** | **58,9%** |
+| 1080 (largura cheia) | 2,25x | 17 | 53,1% |
+
+O dono escolheu 1080 vendo a miniatura e **trocou para 768 vendo o 1:1**: a de
+2,25x fica visivelmente mole -- perde óculos, fone e textura de parede -- que é
+o "grande e borrado" que `ESCALA_FONTE_MAX = 1.8` existe para impedir desde
+15/09. 1,60x fica abaixo daquele teto de propósito: um número novo que o
+ultrapassasse o revogaria em silêncio. O 249 da coluna de nitidez é inflado,
+porque metade daquela faixa era fundo liso.
+
+**O recorte continua DENTRO da webcam**, e é isso que separa esta mudança da
+alternativa medida e reprovada em 17/09. Aqui ele é o ramo de baixo de
+`corte_webcam`: a LARGURA inteira da webcam (480px) e a altura encolhendo para
+240px, centrada no rosto. Não entra pixel de jogo; sai teto, mesa e a barra de
+"Último sub". Em 17/09 a alternativa era `zoompan_do_rosto` pré-recortando do
+quadro INTEIRO na proporção da faixa, que trazia meia tela de jogo junto.
+
+**A consequência, declarada:** a fatia tem 240px dos 360 da webcam (67%) e o
+rosto percorre 263px (73%). Medido: faltam **13px em cima e 10px embaixo** nos
+quadros extremos -- 5% do percurso. Antes o recorte era a webcam inteira e isso
+não podia acontecer. Numa fonte onde a pessoa se mexa mais na câmera, a fatia
+corta. Preso em `test_a_FATIA_vertical_e_declarada_e_nao_cobre_todo_o_percurso`.
 
 ### Por que o rosto fica EMBAIXO, e não em cima
 
@@ -69,6 +106,66 @@ o único número oficial em texto é do lado de anúncios do Google ("evite os
 piso da legenda de 360 para 570 em TODOS os clipes, inclusive os que já saem
 bem. **Pendência declarada:** o rodapé do Shorts nunca foi medido num print do
 app, do jeito que os 280 do topo foram medidos num clipe real do TikTok.
+
+### O degradê do rodapé, e o consumidor que ninguém conferiu
+
+Escrito em 18/09/2026, depois de o dono ver o primeiro clipe real: *"50% da
+tela é blur"*. A inversão das faixas quebrou um consumidor que ninguém abriu, e
+o comentário dele continuou afirmando o contrário.
+
+O degradê cobre o texto QUEIMADO DA FONTE, para não sair a legenda do acervo e
+a nossa no mesmo quadro. Ele era dimensionado até o pé do QUADRO e `footer_png`
+o ancorava lá -- o que dava no mesmo enquanto a tela era a faixa de baixo.
+Medido no clipe entregue:
+
+| | valor |
+|---|---|
+| faixa da tela | y 280-840 |
+| degradê gerado | **1113px**, de y=807 a 1920 |
+| faixa da pessoa | y 856-1240, **coberta inteira**, alfa até 206/255 |
+| luma média da faixa da pessoa | 27,7 (contra 39,1 depois) |
+| luma média do pé do quadro | **5,4** -- a tarja preta de volta, por outra porta |
+
+**E ele cobria a coisa errada.** `burned_text_bands` devolveu
+`bottom_reach = 0,0` nas duas janelas: a varredura para na primeira queda de
+densidade, e o HUD daquele jogo flutua acima da borda com um vão escuro
+embaixo. Medido nos dois quadros reais, as linhas com 2x a densidade de borda
+do miolo vão de y=904 a y=1079 de 1080 -- **o texto sobe 16,3%**, não 6%. O
+ramo dividido usava a medida crua, então o degradê começava ABAIXO do
+`YOU ARE DEAD - Press Space to spectate`, que saiu legível no clipe entregue
+com `footer_covered: true` ao lado.
+
+O conserto é `faixa_do_rodape`, uma função pura: a faixa acaba no pé da IMAGEM
+DA FONTE (`ty + th`) e ocupa só as colunas dela (996 de 1080).
+
+**O piso de 20% do caminho normal NÃO atravessa, e isso é decisão do dono.**
+A primeira versão do conserto o aplicou sobre a altura da faixa da tela, por
+simetria: 112px, cobrindo os 16,3% medidos. Renderizado e medido, ele esmaeceu
+o `YOU ARE DEAD` de luma 43,5 para 25,8 e desbotou a caixa de munição. O dono
+recusou, com a régua certa: **o que vive no pé daquela tela é HUD de jogo, não
+legenda de acervo**, e `burned_text_bands` não sabe distinguir os dois porque
+mede densidade de borda. No dividido a nossa legenda mora 400px abaixo, em
+faixa própria, e não disputa quadro com o HUD -- então não se apaga imagem por
+um palpite. A faixa é a MEDIDA. O teto de 24% fica, porque além dele se apaga
+imagem em qualquer layout.
+
+Medido no quadro dos 4s, e conferido em mais três (1,3s / 9,2s / 17,1s):
+
+| | pessoa | legenda | pé | `YOU ARE DEAD` | munição |
+|---|---|---|---|---|---|
+| produção (no ar) | 27,7 | 17,3 | 5,4 | 43,5 | 31,3 |
+| **entregue, 33px** | **39,1** | **37,5** | **33,8** | **43,6** | **30,9** |
+| recusada, 112px | 39,1 | 37,5 | 33,8 | 25,8 | -- |
+
+A faixa entregue mede `[42, 807, 996, 33]` e vai no sidecar em `footer_band` e
+na nota, com o número: `footer_covered: true` dizia a mesma coisa sobre um
+degradê de 1113px que comeu a pessoa e sobre um de 33px que quase não toca a
+imagem.
+
+A conta saiu de dentro do `cut` para uma função própria de propósito: enterrada
+lá, teste nenhum a alcançava sem ffmpeg, e foi assim que ela sobreviveu à
+inversão. Agora `AJanelaRealDe1709VirouNUMEROS` a exercita, sem vídeo, em toda
+máquina.
 
 ## O gatilho
 
@@ -176,7 +273,34 @@ container não os cobre.
 Os 25% do Google são spec de ANÚNCIO. As margens de hoje (280/270+90) são do
 TikTok e foram medidas num clipe real. Para o Shorts, ninguém mediu.
 
-### 5. O cache não distingue enquadramento
+### 5. `barras_pretas` não pega uma tarja que não encosta na borda
+
+Achado em 18/09/2026 medindo o clipe de produção. O pé dele tem luma média
+**5,4** -- abaixo de `BARRA_LUZ = 8`, ou seja, é tarja pela definição do
+próprio projeto -- e `barras_pretas` devolveu `bottom: 0.0`. A causa é a
+varredura: ela conta linhas pretas a partir da borda e PARA na primeira que não
+é. A última linha do quadro dá 33,1 (o degradê satura em 206, não em 255),
+então ela para em n=0 e não olha os ~300px pretos logo acima.
+
+O portão existe exatamente para dizer "o degradê voltou a ser tarja", e não
+disse. **Não foi mexido**: mudar a varredura muda quem é reprovado, e isso é
+decisão do dono.
+
+### 6. No dividido, uma legenda de acervo real pode sair subcoberta
+
+Consequência declarada da decisão acima, e não um conserto pela metade. O piso
+de 20% existe no caminho normal porque a varredura para na primeira queda de
+densidade e **subestima**. Tirá-lo do dividido significa que uma fonte com
+legenda do acervo DE VERDADE queimada no pé, cuja varredura subestime do mesmo
+jeito, sai com um degradê pequeno demais -- e o `footer_covered: true` não vai
+saber. O que existe hoje contra isso é `footer_band` no sidecar e o número na
+nota: dá para ver que a faixa saiu com 33px e julgar.
+
+**Como fechar:** separar "legenda de acervo" de "HUD de jogo" na detecção. O
+sinal provável é a mesma pergunta do gatilho -- se a fonte é uma tela
+compartilhada de jogo, o que está no pé dela é do jogo. Não foi medido.
+
+### 7. O cache não distingue enquadramento
 
 O `fingerprint` não inclui o modo, então um corte já entregue destas janelas
 reentrega o arquivo antigo até alguém limpar o `renders.json`. Decisão do dono,

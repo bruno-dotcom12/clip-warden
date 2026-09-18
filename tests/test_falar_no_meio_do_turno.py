@@ -402,7 +402,22 @@ ANCORAS = {
         "Your FIRST message is the LAST message of a short first turn",
         "NEVER send a message mid-turn",
         "plow_send_sequence",
-        "Prose between two tool calls does NOT reach them",
+        # REESCRITA EM 18/09/2026, e a âncora muda aqui porque a frase antiga
+        # era FALSA. Ela dizia "Prose between two tool calls does NOT reach
+        # them", e o clipe de produção provou o contrário: as notas internas do
+        # agente chegaram ao chat do dono, em inglês, no meio do turno
+        # ("Now approve on the source clock (481-502s) and re-cut.").
+        #
+        # Medido antes de mexer, porque a primeira hipótese era truncamento: o
+        # SOUL.md montado DENTRO da imagem publicada tem 18.991 chars contra o
+        # limite de 20.000, e a frase cai no char 12.351. Ela chegou ao modelo
+        # inteira. O defeito era o que ela dizia, não o que faltou dizer.
+        #
+        # O que NÃO mudou, porque continua medido: mandar uma MENSAGEM no meio
+        # do turno arma o portão anti-duplicata do adaptador e custa a entrega
+        # -- é o caso de 16/09 que deu origem a este arquivo. As duas coisas
+        # estavam na mesma frase e só uma era verdade.
+        "Prose between two tool calls REACHES them, raw",
     ),
     "warden-run/SKILL.md": (
         "END that turn with ONE",
