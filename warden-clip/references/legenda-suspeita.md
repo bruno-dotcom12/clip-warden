@@ -61,3 +61,38 @@ looked" were the same empty output. Read that line. When it says it found or
 suspected text, that is a warning you repass in ONE clause beside the clip and
 they decide; you do not open a frame to settle it. Only if IT says the source's
 text should stay do you re-cut without `--subtitles`.
+
+
+## Who signs, and why it is never you
+
+Written 18/09/2026, after a production clip. The agent typed
+*"These match the vtt transcript content (matei, matei... quem morreu).
+Approving."* and signed the window itself. `warden-clip/SKILL.md` told it to:
+the table row for the standalone `warden cut` road said **YOU**, with the
+`--approve` command spelled out. So it was obeying, not cheating, and the fix
+is the instruction — that row now says THE PERSON.
+
+**What the gate actually guarantees, and what it does not.** `approval_state`
+is cryptographic about CONTENT: sha256 of the srt plus the approved windows, so
+the words that burn are the words that were signed, and editing the file voids
+the approval. It guarantees nothing about AUTHORSHIP. There is no tty check, no
+token, no secret anywhere on that path, and the agent has a shell. The only
+thing that keeps a person in the loop is that nothing tells the agent to sign.
+
+**That last sentence was FALSE when it was written**, and an audit on the same
+day found four places that did tell it to sign, every one of them appearing at
+the moment the agent is blocked — which is when it obeys: the `captions review`
+stderr said *"Re-run with --approve when the lines are right"*; the suspect-line
+block said *"it is RIGHT -> repeat it back, exactly"*; `approval_state` handed
+back a ready-made `--approve` command in all three of its refusals; and
+`warden-shared/SKILL.md` re-introduced the flag in the command table. All four
+were changed. Anything added here later that hands the agent that flag puts the
+defect back, and nothing else stops it.
+
+**`--keep "<line>"` belongs to whoever signs.** It means "I read this one, stop
+warning me", and if you are not signing you never type it either. Repeating a
+line back is what confirming reading LOOKS like, and the agent can repeat any
+line.
+
+**The cost of getting this wrong**, twice, on screen: `jokovic jokovic`, and
+`aromasas`. Neither is a suspect line by the heuristic above.

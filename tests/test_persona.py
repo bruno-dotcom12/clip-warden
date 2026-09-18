@@ -132,6 +132,38 @@ SEED_SHA256 = "038c798df463d5e5b684cfb06238556bf1a128cb530098da748913b1fb36cdab"
 # (nunca repetir a chave; a bifurcação com/sem chave; só YouTube foi medido).
 # Isso devolve ~2.400 de uma vez. O custo é que uma skill pode ser podada e a
 # persona não -- por isso as regras ficam e só o procedimento sai.
+# ---------------------------------------------------------------------------
+# PENDÊNCIA DECLARADA, 18/09/2026: A FOLGA ACABOU. UM CARACTERE.
+#
+#   limite REAL do Hermes            20.000   (não é nosso, não se levanta)
+#   meta deste teste                 19.000
+#   montado hoje                     18.999
+#   folga                                 1
+#
+# A sexta mudança NÃO PODE ser uma subida, e desta vez não é conselho: não há
+# espaço para subir sem encostar nos 20.000, que é onde o arquivo volta a ser
+# truncado EM SILÊNCIO. O que consumiu os últimos chars foi o conserto de uma
+# frase FALSA em `## What you say`: ela dizia que prosa de meio de turno não
+# chega ao dono, e o clipe de produção provou que chega. Medido antes de mexer:
+# o SOUL.md montado DENTRO da imagem publicada tem 18.991 chars e a frase cai
+# no char 12.351 -- ela chegou ao modelo inteira, então o defeito era o que ela
+# dizia. Corrigi-la custou 8 chars líquidos, e eram os últimos que havia.
+#
+# O QUE FAZER, e é a mesma instrução de três subidas atrás, agora obrigatória:
+# tirar a seção `## Publishing` (~2.900 chars) da persona e pô-la em
+# `warden-shared/references/postagem.md`, que já existe e já entra na imagem,
+# deixando NA PERSONA só as três REGRAS dela:
+#     1. nunca repetir a chave;
+#     2. a bifurcação com chave / sem chave;
+#     3. só o YouTube foi medido.
+# Isso devolve ~2.400 de uma vez. O custo, e ele é real: uma skill pode ser
+# podada da memória e a persona não -- por isso as REGRAS ficam e só o
+# PROCEDIMENTO sai. É o mesmo desenho da consequência 3 do teste 7a: nada
+# crítico pode depender só de um texto que a poda alcança.
+#
+# Enquanto isso não for feito, qualquer regra nova na persona tem de pagar o
+# próprio espaço tirando prosa -- não subindo este número.
+# ---------------------------------------------------------------------------
 META_CHARS = 19_000
 
 # O limite real observado no teste 7a, só para a mensagem de erro ter contexto.

@@ -713,7 +713,7 @@ def text_png(lines, path, width, height, y_center, size, scrim=True, acento=None
     return path, top
 
 
-def footer_png(path, width, height, band=None):
+def footer_png(path, width, height, band=None, bottom=None, span=None):
     """O degradê que cobre a legenda queimada do próprio acervo.
 
     Porte do `rodape.png` do PRIME, gerado em vez de copiado para servir a um
@@ -727,10 +727,19 @@ def footer_png(path, width, height, band=None):
     quadro e o terço de baixo pode escurecer inteiro; aqui a nossa própria
     legenda fica por volta de 25% de baixo, então a faixa tem de parar antes
     dela -- quem chama passa `band` e essa é a conta que ele faz.
+
+    `bottom` é o y em que a faixa ACABA, e existe porque ela nem sempre acaba no
+    pé do quadro. No clipe dividido a imagem da fonte é a faixa de cima e o pé
+    dela fica 1080px acima do pé do quadro; ancorar aqui, calado, foi como o
+    degradê de 18/09/2026 cobriu a faixa da pessoa inteira. `span` são as
+    colunas que a faixa ocupa, pelo mesmo motivo: a tela tem 996 de 1080.
+    O padrão dos dois é o quadro inteiro, que é o caminho normal.
     """
     Image, _D, _F, _Ft = _pil()
+    bottom = height if bottom is None else int(bottom)
+    bottom = max(1, min(bottom, height))
     band = int(band or height * 0.20)
-    band = max(1, min(band, height))
+    band = max(1, min(band, bottom))
     # Sobe até `FOOTER_ALPHA` ao longo de `FOOTER_FADE` da faixa e depois
     # continua subindo devagar até o pé, em vez de travar num platô. Nenhuma
     # linha chega a opaca: a menor luminância que sobra é o que separa "cobri o
@@ -746,8 +755,18 @@ def footer_png(path, width, height, band=None):
             a = FOOTER_ALPHA + (255 - FOOTER_ALPHA) * 0.12 * resto
         column.append(int(min(228, a)))
     # Só a faixa, e o y em que ela entra -- pelo mesmo motivo do `text_png`.
-    _gradient(width, column).save(path)
-    return path, height - band
+    faixa = _gradient(width, column)
+    if span:
+        # Fora das colunas da imagem da fonte não há texto para cobrir, e o que
+        # há é fundo borrado: escurecê-lo desenharia duas abas que acabam no
+        # nada. A faixa continua do tamanho do quadro para que quem desenha
+        # continue a pôr em x=0 -- o que muda é o alfa.
+        x0, x1 = (max(0, int(span[0])), min(width, int(span[1])))
+        vazio = Image.new("L", (width, len(column)), 0)
+        vazio.paste(faixa.split()[3].crop((x0, 0, x1, len(column))), (x0, 0))
+        faixa.putalpha(vazio)
+    faixa.save(path)
+    return path, bottom - band
 
 
 # ------------------------------------------------------------------ legendas
@@ -1509,6 +1528,18 @@ def srt_fingerprint(srt_path):
         return hashlib.sha256(fh.read()).hexdigest()
 
 
+def _chave_da_janela(start, end):
+    """A chave de `by_window` para uma janela, ou "all" para o arquivo inteiro.
+
+    Formatada com 3 casas e num lugar só: quem grava e quem lê têm de produzir
+    a MESMA string, e `0.0` contra `0` contra `0.000` são três chaves
+    diferentes para a mesma janela.
+    """
+    if start is None or end is None:
+        return "all"
+    return f"{float(start):.3f}-{float(end):.3f}"
+
+
 def _janelas_salvas(saved):
     """As janelas aprovadas, como lista de (de, ate). `None` é o arquivo inteiro."""
     cruas = saved.get("windows")
@@ -1558,10 +1589,16 @@ def approval_state(srt_path, start=None, end=None):
     # ferramenta mandava rodar um comando que ela própria não aceitava, e a
     # saída dizia "the approved windows are 461-481s" logo abaixo de "not
     # approved". Medido no corte do vlog, 14/09.
+    # SEM `--approve`, e isto é o conserto de 18/09/2026. Esta string é a única
+    # coisa que o `cut` devolve ao agente quando a janela não está assinada --
+    # ou seja, aparece no momento em que ele está bloqueado, que é quando ele
+    # obedece. Entregar o comando de assinar pronto, ali, foi o que fez um
+    # agente assinar sozinho em produção. Ele revê e imprime; quem assina é a
+    # pessoa, e o `--approve` não é dele para digitar.
     comando = (f"`warden captions review {srt_path} --start {math.floor(start)} "
-               f"--end {math.ceil(end)} --approve`"
+               f"--end {math.ceil(end)}`"
                if start is not None and end is not None
-               else f"`warden captions review {srt_path} --approve`")
+               else f"`warden captions review {srt_path}`")
     if not os.path.isfile(path):
         return False, (
             f"{os.path.basename(srt_path)} has not been approved. Whisper "
@@ -1578,7 +1615,22 @@ def approval_state(srt_path, start=None, end=None):
             f"{os.path.basename(srt_path)} changed after it was approved, so the "
             "approval is for words that are no longer in the file. Review and "
             "approve it again.")
-    quando = saved.get("approved_at", "at an unknown time")
+    quando_bruto = saved.get("approved_at", "at an unknown time")
+    # QUEM, junto do quando, e QUEM DAQUELA JANELA. Sem isto a saída do `cut`
+    # dizia que a janela estava aprovada e não dizia por quem -- e "aprovada"
+    # era a mesma frase para uma pessoa que leu as linhas e para o agente que
+    # assinou a si mesmo. O `by` do topo é o ÚLTIMO a assinar e mentiria sobre
+    # qualquer janela anterior; `by_window` é a resposta certa.
+    por_janela = saved.get("by_window")
+    por_janela = por_janela if isinstance(por_janela, dict) else {}
+
+    def _quando(chave):
+        assinou = str(por_janela.get(chave)
+                      or (saved.get("by") if not por_janela else "")
+                      or "").strip()
+        return f"{quando_bruto} by {assinou}" if assinou else quando_bruto
+
+    quando = _quando("all")
     janelas = _janelas_salvas(saved)
     if janelas is None:
         # Aprovação do formato antigo: ela não sabe o que foi lido. Tratá-la
@@ -1598,7 +1650,8 @@ def approval_state(srt_path, start=None, end=None):
     for a, b in janelas:
         if a - 0.05 <= float(start) and float(end) <= b + 0.05:
             return True, (f"the {float(start):.0f}-{float(end):.0f}s window is "
-                          f"inside the {a:.0f}-{b:.0f}s approved {quando}")
+                          f"inside the {a:.0f}-{b:.0f}s approved "
+                          f"{_quando(_chave_da_janela(a, b))}")
     lista = "; ".join(f"{a:.0f}-{b:.0f}s" for a, b in janelas) or "none"
     return False, (
         f"this cut burns {float(start):.0f}-{float(end):.0f}s and the approved "
@@ -1607,17 +1660,49 @@ def approval_state(srt_path, start=None, end=None):
         f"approve it with {comando}.")
 
 
-def write_approval(srt_path, start=None, end=None):
+def quem_assina(origem):
+    """A assinatura em texto: de onde ela veio, e se havia terminal.
+
+    NÃO IMPEDE NADA, e é de propósito. O portão é criptográfico quanto ao
+    CONTEÚDO -- sha256 do srt mais as janelas, então as palavras que queimam são
+    as que foram assinadas -- e ZERO quanto à AUTORIA: não há tty, token, uid
+    nem segredo em lugar nenhum desse caminho, e o agente tem um shell. Em
+    18/09/2026 ele assinou uma janela sozinho e nada registrou que tinha sido
+    ele.
+
+    `tty=no` é o sinal honesto de que provavelmente ninguém estava digitando.
+    Ele não decide nada; ele aparece na saída do `cut` para que a pergunta
+    "quem leu estas linhas?" tenha resposta DEPOIS, que é o que não existia.
+    """
+    import getpass
+    try:
+        usuario = getpass.getuser()
+    except Exception:
+        usuario = "?"
+    try:
+        terminal = "yes" if _sys.stdin.isatty() else "no"
+    except Exception:
+        terminal = "?"
+    return f"{origem} (user={usuario}, tty={terminal})"
+
+
+def write_approval(srt_path, start=None, end=None, by=None):
     """Assina o SRT para UMA janela, ou para o arquivo inteiro quando não vem uma.
 
     Aprovações acumulam: aprovar a segunda janela não apaga a primeira, desde
     que o arquivo não tenha mudado. Se mudou, a lista recomeça, porque as
     janelas antigas apontam para palavras que já não estão ali.
+
+    `by` é QUEM assinou, e ele existe porque o campo já existia num artefato
+    real (`legenda-01.srt.aprovado`, com `"by": "teste de enquadramento 17/09"`)
+    e nenhuma linha do código o escrevia nem o lia. Ver `quem_assina`: não
+    impede nada, só para de ser invisível.
     """
     from datetime import datetime, timezone
     path = approval_path(srt_path)
     impressao = srt_fingerprint(srt_path)
     janelas = []
+    anteriores_by = {}
     if os.path.isfile(path):
         try:
             with open(path, encoding="utf-8") as fh:
@@ -1628,18 +1713,44 @@ def write_approval(srt_path, start=None, end=None):
                     janelas = ["all"]
                 elif anteriores:
                     janelas = [[a, b] for a, b in anteriores]
+                # As assinaturas acompanham as janelas: se a lista recomeça
+                # porque o arquivo mudou, elas recomeçam junto -- assinatura de
+                # palavras que já não estão ali não vale nada.
+                guardadas = antigo.get("by_window")
+                if isinstance(guardadas, dict):
+                    anteriores_by = {str(k): str(v) for k, v in guardadas.items()}
         except Exception:
             janelas = []
+            anteriores_by = {}
     if start is None or end is None:
         janelas = ["all"]
     elif "all" not in janelas:
         nova = [float(start), float(end)]
         if nova not in janelas:
             janelas.append(nova)
+    # O `by` É POR JANELA, e não por arquivo. Achado por auditoria em
+    # 18/09/2026, logo depois de o campo nascer: `windows` ACUMULA -- aprovar a
+    # segunda janela não apaga a primeira -- mas um `by` único no topo era
+    # sobrescrito pela última assinatura. Medido: uma pessoa assinava 0-2s no
+    # terminal, o `lote` assinava 2-4s em seguida, e o portão passava a dizer
+    # que a janela que a PESSOA leu tinha sido assinada pelo `lote`, com
+    # `tty=no`. Um `by` errado é indistinguível de um `by` certo para quem lê
+    # depois, e é exatamente para quem lê depois que o campo existe -- então
+    # isso era pior que não ter campo nenhum.
+    #
+    # `by` no topo continua, como o ÚLTIMO a assinar, porque os `.aprovado`
+    # gravados entre o nascimento do campo e este conserto só têm ele.
+    assinaturas = dict(anteriores_by)
+    if janelas == ["all"]:
+        assinaturas = {"all": by or "unknown"}
+    else:
+        assinaturas[_chave_da_janela(start, end)] = by or "unknown"
     with open(path, "w", encoding="utf-8") as fh:
         json.dump({"sha256": impressao,
                    "approved_at": datetime.now(timezone.utc).isoformat(
                        timespec="seconds"),
+                   "by": by or "unknown",
+                   "by_window": assinaturas,
                    "file": os.path.basename(srt_path),
                    "windows": janelas}, fh, indent=1)
     return path
@@ -2647,8 +2758,9 @@ def check_sidecar(side):
                     f"the hook is {hook.get('chars')} characters and does not fit "
                     f"in {MAX_LINES} lines even at the {hook.get('size_px')}px "
                     "floor, so words were dropped from it. A hook missing words "
-                    "is worse than one cropped at the edge: cropped shows on the "
-                    "contact sheet, missing does not. Write a shorter hook."))
+                    "is worse than one cropped at the edge: a cropped hook still "
+                    "says what it says, one missing its last words says something "
+                    "else. Write a shorter hook."))
     if hook.get("lines") and hook["lines"] > MAX_LINES:
         out.append((OBSERVACAO, f"the hook is on {hook['lines']} lines; at most "
                               f"{MAX_LINES} fit above the picture"))

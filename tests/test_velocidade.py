@@ -1635,14 +1635,30 @@ class OPREPEORENDERESCOLHEMOMESMOVIDEO(unittest.TestCase):
         vistos = {}
 
         def falso_run(args, timeout, label):
+            # A sonda de PESO (`_peso_da_fonte`) passa por aqui ANTES do
+            # download e não escreve arquivo nenhum. As duas são guardadas
+            # SEPARADAS, e isto é o conserto de um defeito que a auditoria de
+            # 18/09 achou: com um `setdefault` só, a sonda virou a primeira
+            # chamada e este teste passou a comparar a resolução dela em vez da
+            # do download -- ou seja, deixou de medir exatamente o que a classe
+            # existe para pegar. Agora ele exige que as DUAS resolvam igual.
+            alvos = [a for a in args if "source-" in a]
+            if not alvos:
+                vistos.setdefault("sonda", args)
+                return "\t\t"
             vistos.setdefault("args", args)
-            stem = next(a.split(os.sep)[-1].split(".")[0]
-                        for a in args if "source-" in a)
+            stem = alvos[0].split(os.sep)[-1].split(".")[0]
             with open(os.path.join(self.dir, stem + ".mp4"), "wb") as fh:
                 fh.write(b"x")
             return ""
         _troca(self, "run", falso_run)
         M._download_one(url, self.dir)
+        if "sonda" in vistos:
+            # Pesar um item e baixar outro é o mesmo defeito por outra porta.
+            self.assertEqual(self._flags(vistos["sonda"]),
+                             self._flags(vistos["args"]),
+                             "a sonda de peso resolveu o link de um jeito e o "
+                             "download de outro")
         return self._flags(vistos["args"])
 
     def _do_render(self, url):
@@ -1909,3 +1925,327 @@ class OENDERECODOINTERMEDIARIOEconferido(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AENVOLTORIANaoSeMedeDuasVezes(unittest.TestCase):
+    """A quinta conta paga à toa, medida em 18/09/2026.
+
+    `_loudness_envelope` roda `ebur128` sobre 100% do áudio, e numa fonte longa
+    ela roda DUAS VEZES sobre o mesmo arquivo, com os mesmos argumentos:
+    `transcreve_por_picos` (:3536) e `loud_segment_indexes` (:3599, via
+    `analyze_signals`). A função recebe UM argumento -- `source` -- então não há
+    parâmetro que possa fazer as duas medidas diferirem. Conferido: 144.000
+    leituras idênticas em 8 execuções.
+
+    Custo medido numa fonte sintética de 4h (M2, arm64 nativo): 19,5s no piso e
+    53,8s sob carga, mediana 31,6s, mais 19,2 MB de stderr montados de novo. E
+    ele só existe acima de `VARREDURA_LIMIAR_S` (1200s), porque abaixo disso a
+    primeira chamada nem acontece -- ou seja, existe EXATAMENTE na fonte longa,
+    que é o caso que demora.
+
+    NADA AQUI TOCA ffmpeg: o `subprocess.run` é um dublê que conta chamadas.
+    """
+
+    LEITURAS = ("frame:0    pts:0       pts_time:0.1\n"
+                "lavfi.r128.M=-23.5\n"
+                "frame:1    pts:1000    pts_time:0.2\n"
+                "lavfi.r128.M=-18.2\n")
+
+    def setUp(self):
+        self.dir = _temp(self, "warden-env-")
+        self.fonte = os.path.join(self.dir, "fonte.m4a")
+        with open(self.fonte, "wb") as fh:
+            fh.write(b"nao e audio de verdade, o ffmpeg aqui e um duble")
+        self.chamadas = []
+
+        class _Saiu:
+            returncode = 0
+            stdout = ""
+            stderr = AENVOLTORIANaoSeMedeDuasVezes.LEITURAS
+
+        def _run(args, **kw):
+            self.chamadas.append(list(args))
+            return _Saiu()
+
+        self.real_run = M.subprocess.run
+        M.subprocess.run = _run
+        self.addCleanup(setattr, M.subprocess, "run", self.real_run)
+        self.real_have = M.have
+        M.have = lambda _nome: True
+        self.addCleanup(setattr, M, "have", self.real_have)
+        M._ENV_MEMO.clear()
+        self.addCleanup(M._ENV_MEMO.clear)
+
+    def test_a_segunda_leitura_do_mesmo_arquivo_nao_chama_o_ffmpeg(self):
+        um, porque_um = M._loudness_envelope(self.fonte)
+        dois, porque_dois = M._loudness_envelope(self.fonte)
+        self.assertEqual(len(self.chamadas), 1,
+                         "o ebur128 rodou duas vezes sobre o mesmo arquivo")
+        self.assertEqual(um, dois)
+        self.assertIsNone(porque_um)
+        self.assertIsNone(porque_dois)
+
+    def test_o_arquivo_mudou_e_a_medida_e_refeita(self):
+        """A chave é `(caminho, mtime, tamanho)`. Um memo por caminho só
+        entregaria a envoltória do arquivo velho depois de um novo download com
+        o mesmo nome -- e a janela sairia do lugar errado, calada."""
+        M._loudness_envelope(self.fonte)
+        with open(self.fonte, "ab") as fh:
+            fh.write(b" e agora mudou")
+        os.utime(self.fonte, (0, 0))
+        M._loudness_envelope(self.fonte)
+        self.assertEqual(len(self.chamadas), 2,
+                         "o memo entregou a envoltória de um arquivo que mudou")
+
+    def test_outro_arquivo_nao_herda_a_envoltoria_do_primeiro(self):
+        outro = os.path.join(self.dir, "outra.m4a")
+        with open(outro, "wb") as fh:
+            fh.write(b"outra fonte inteiramente")
+        M._loudness_envelope(self.fonte)
+        M._loudness_envelope(outro)
+        self.assertEqual(len(self.chamadas), 2)
+        self.assertEqual(len(M._ENV_MEMO), 1,
+                         "o memo guarda UMA entrada: 15,5 MiB por fonte de 4h")
+
+    def test_uma_medida_que_falhou_nao_fica_guardada(self):
+        """Guardar o fracasso transformaria um ffmpeg que sumiu por um segundo
+        em 'esta fonte é muda' pelo resto do processo."""
+        M.have = lambda _nome: False
+        env, porque = M._loudness_envelope(self.fonte)
+        self.assertEqual(env, [])
+        self.assertTrue(porque)
+        self.assertEqual(M._ENV_MEMO, {})
+
+    def test_os_dois_consumidores_nao_mudam_a_lista_que_recebem(self):
+        """O memo compartilha o MESMO objeto entre as duas chamadas. Se algum
+        consumidor mutasse a lista, o segundo leria a sobra do primeiro."""
+        env, _ = M._loudness_envelope(self.fonte)
+        antes = list(env)
+        M.picos_para_janelas(env, quantos=1, janela_s=1.0, duracao=10.0)
+        M.loud_segment_indexes([{"start": 0.0, "end": 1.0}], source=self.fonte)
+        self.assertEqual(list(M._loudness_envelope(self.fonte)[0]), antes)
+
+
+class ASAIDAQueNaoChegaERecusadaANTES(unittest.TestCase):
+    """Oferecer um download que não termina é pior que recusar.
+
+    Caso real: "corta 5 clipes desta live de 4h do Twitch". O Twitch só entrega
+    HLS, o seletor da janela exige `[protocol^=http]`, nenhum formato casa, e a
+    única porta que sobra é baixar a fonte inteira -- ~10 GB.
+
+    Três fatos medidos em 18/09/2026, e nenhum deles é opinião:
+
+    1. **`--max-filesize` é letra morta em HLS.** Rodado o comando literal do
+       `_download_one` contra um VOD HLS de 4h (848 MiB) com `--max-filesize
+       4M` -- 212 vezes menor que o arquivo: `rc=0`, baixou os 848 MiB
+       inteiros. O yt-dlp só verifica `max_filesize` em `downloader/http.py`;
+       não há verificação nenhuma em `fragment.py` nem em `hls.py`.
+    2. **Quem bate primeiro é o timeout**, e depois de 15 minutos de silêncio
+       absoluto -- `run()` usa `capture_output=True`, então não há uma linha de
+       progresso. A mensagem que sobra é `yt-dlp gave up after 900s`.
+    3. **O remux come o orçamento.** `FixupM3u8` levou ~12s para 786 MiB neste
+       Mac, ~65 MiB/s. Para 10 GB são ~157s dos 900, sobrando ~743s para o
+       download: 10 GB / 743s = 116 Mbit/s sustentados por 12 minutos.
+
+    NADA AQUI TOCA A REDE: a decisão é aritmética pura sobre números que a
+    consulta de metadados já traz.
+    """
+
+    GB = 1024 ** 3
+
+    def setUp(self):
+        self.dir = _temp(self, "warden-recusa-")
+
+    def test_uma_fonte_de_dez_gigas_e_recusada_com_os_numeros(self):
+        cabe, porque = M.cabe_no_download(10 * self.GB, duracao_s=14400,
+                                          protocolo="m3u8_native")
+        self.assertFalse(cabe)
+        for pedaco in ("10.0 GB", "900s", "Mbit/s", "--text-first"):
+            self.assertIn(pedaco, porque, porque)
+        # E NÃO afirma que o orçamento não fecha: o critério é o teto. A 4,1 GB
+        # a própria frase diz 42 Mbit/s, que fecha -- afirmar o contrário no
+        # mesmo parágrafo é a ferramenta se contradizendo para o dono.
+        self.assertNotIn("budget does not close", porque)
+
+    def test_a_recusa_nao_afirma_o_que_nao_mediu(self):
+        """O critério é o TETO. A aritmética de remux entra como o que o
+        download EXIGIRIA, nunca como a razão da recusa."""
+        _c, porque = M.cabe_no_download(int(4.1 * self.GB), duracao_s=7200,
+                                        protocolo="https")
+        self.assertIn("over the 4 GB ceiling", porque)
+        self.assertIn("What it would take", porque)
+        self.assertNotIn("does not close", porque)
+
+    def test_a_recusa_diz_que_o_teto_de_bytes_nao_protege_em_hls(self):
+        """Sem essa frase, quem lê conclui que o `--max-filesize` de 4 GB teria
+        parado o download -- e ele não teria."""
+        _cabe, porque = M.cabe_no_download(10 * self.GB, duracao_s=14400,
+                                           protocolo="m3u8_native")
+        self.assertIn("--max-filesize", porque)
+        self.assertIn("HLS", porque)
+
+    def test_uma_fonte_progressiva_grande_tambem_e_recusada(self):
+        """O teto é sobre o tamanho, não sobre o protocolo. Num download
+        progressivo o yt-dlp até para -- mas com `rc=0` e a frase no stdout,
+        que o nosso código descartava."""
+        cabe, porque = M.cabe_no_download(9 * self.GB, duracao_s=9000,
+                                          protocolo="https")
+        self.assertFalse(cabe)
+        self.assertNotIn("HLS", porque)
+
+    def test_sem_numero_nao_ha_recusa(self):
+        """Uma consulta que falhou é estado da rede, não fato sobre o arquivo.
+        Recusar por falta de medida seria inventar a causa -- o defeito que
+        este arquivo inteiro existe para não cometer."""
+        for peso in (None, 0):
+            cabe, porque = M.cabe_no_download(peso, duracao_s=14400,
+                                              protocolo="m3u8_native")
+            self.assertTrue(cabe, f"recusou sem medir ({peso!r})")
+            self.assertIsNone(porque)
+
+    def test_uma_fonte_normal_passa(self):
+        cabe, porque = M.cabe_no_download(380 * 1024 * 1024, duracao_s=1080,
+                                          protocolo="https")
+        self.assertTrue(cabe)
+        self.assertIsNone(porque)
+
+    def test_o_seletor_do_inteiro_e_UM_e_a_consulta_usa_o_MESMO(self):
+        """A consulta e o download têm de pesar o MESMO formato. Dois lugares
+        decidindo o formato é o defeito que custou este ramo: `janela_de_video`
+        e `archive_windows` já tinham decidido a playlist de jeitos diferentes,
+        e as duas podiam cair em vídeos diferentes do mesmo link."""
+        self.assertIn("height<=1080", M.FORMATO_INTEIRO)
+        fonte = open(os.path.join(
+            os.path.dirname(HERE), "warden-shared", "scripts",
+            "warden_media.py"), encoding="utf-8").read()
+        # o literal não pode estar solto em lugar nenhum além da constante
+        self.assertEqual(fonte.count('"' + M.FORMATO_INTEIRO + '"'), 1,
+                         "o seletor do download inteiro foi escrito duas vezes")
+
+    def test_a_recusa_esta_LIGADA_no_caminho_do_download_inteiro(self):
+        """Uma decisão certa numa função que ninguém chama não recusa nada.
+
+        A PRIMEIRA versão deste teste chamava `_recusa_se_nao_cabe` direto --
+        a própria função de uma linha -- e nunca tocava `_download_one`.
+        PROVADO decorativo por auditoria em 18/09/2026: removendo a linha da
+        fiação em `_download_one`, a recusa ficava completamente desligada e
+        os 119 testes deste arquivo continuavam verdes. Agora ele entra pelo
+        `_download_one` de verdade, com yt-dlp dublado, e o que se afirma é que
+        a fonte NÃO desce.
+        """
+        chamou = []
+        real_peso, real_run = M._peso_da_fonte, M.run
+        M._peso_da_fonte = lambda u, p: chamou.append((u, p)) or (
+            10 * self.GB, 14400.0, "m3u8_native")
+        baixou = []
+
+        def _run(args, timeout, label):
+            baixou.append(label)
+            return ""
+        M.run = _run
+        self.addCleanup(setattr, M, "_peso_da_fonte", real_peso)
+        self.addCleanup(setattr, M, "run", real_run)
+        M._troca_have = None
+        real_have, real_subs = M.have, M._pull_subs
+        M.have = lambda _b: True
+        M._pull_subs = lambda *a, **k: (None, "dublê")
+        self.addCleanup(setattr, M, "have", real_have)
+        self.addCleanup(setattr, M, "_pull_subs", real_subs)
+        with self.assertRaises(RuntimeError) as erro:
+            M._download_one("https://exemplo/live", self.dir)
+        self.assertIn("10.0 GB", str(erro.exception))
+        self.assertEqual(len(chamou), 1, "a sonda não foi consultada")
+        self.assertEqual(baixou, [],
+                         "recusou DEPOIS de baixar: nenhuma chamada de yt-dlp "
+                         "pode acontecer antes da recusa")
+
+    def test_uma_consulta_que_falhou_nao_recusa_o_download(self):
+        real = M._peso_da_fonte
+        M._peso_da_fonte = lambda u, p: (None, None, None)
+        self.addCleanup(setattr, M, "_peso_da_fonte", real)
+        M._recusa_se_nao_cabe("https://exemplo/live", [])   # não levanta
+
+    def test_o_bloqueio_de_endereco_nao_vira_fonte_grande_demais(self):
+        """`FonteBloqueada` tem conserto próprio -- cookies, outra rede -- e
+        achatá-la aqui mandaria o dono cortar a fonte em pedaços por causa de
+        um 403. Recusa de VERDADE ("not a bot") propaga, e propagar agora poupa
+        a espera: o download levaria o mesmo parágrafo."""
+        real = M.run
+        def _run(*a, **kw):
+            erro = M.FonteBloqueada("o endereço recusou")
+            erro.apenas_429 = False
+            raise erro
+        M.run = _run
+        self.addCleanup(setattr, M, "run", real)
+        with self.assertRaises(M.FonteBloqueada):
+            M._peso_da_fonte("https://exemplo/live", [])
+
+    def test_um_429_na_SONDA_nao_derruba_o_download(self):
+        """A regressão que a auditoria de 18/09 achou, e ela é o defeito de
+        15/09/2026 voltando por uma porta nova.
+
+        A sonda é a PRIMEIRA chamada yt-dlp do `_download_one`. Um 429 --
+        "devagar", não "não" -- subindo daqui mata o `archive` antes de ele
+        tentar legenda ou vídeo, e entrega ao dono o parágrafo de bot check
+        dizendo que a máquina dele está bloqueada, o que seria falso.
+        `_pull_subs` já distingue os dois casos desde 15/09; a sonda não
+        distinguia."""
+        real = M.run
+        def _run(*a, **kw):
+            erro = M.FonteBloqueada("YouTube answered 429")
+            erro.apenas_429 = True
+            raise erro
+        M.run = _run
+        self.addCleanup(setattr, M, "run", real)
+        peso, dur, proto = M._peso_da_fonte("https://exemplo/live", [])
+        self.assertEqual((peso, dur, proto), (None, None, None),
+                         "um 429 virou uma medida, e medida vira recusa")
+        # e, sem medida, NÃO se recusa nada
+        M._recusa_se_nao_cabe("https://exemplo/live", [])
+
+
+class OPRESETFoiMedidoNOMATERIALQueSeRenderiza(unittest.TestCase):
+    """A quinta conta, e ela inverteu em 18/09/2026.
+
+    O preset do x264 é 76,5% do relógio de um clipe -- medido por dentro, num
+    corte real de 20,9s dentro da imagem: 56,4s de ffmpeg num total de 73,7s.
+    Não é o download, não é a transcrição, não é o Python.
+
+    E a escolha que estava no código vinha de uma medição feita em OUTRO
+    material, sem as três camadas do dividido (fundo borrado + duas faixas +
+    ASS). Remedido na fonte real com o layout que hoje se renderiza:
+
+        preset      crf  maxrate   render    arquivo   blocagem
+        ultrafast    26      6M     57,1s     8,27 MB    1,642
+        superfast    23      6M     59,8s     9,83 MB    1,376
+        veryfast     20      6M     44,9s     7,10 MB    1,443
+        veryfast     23      6M     44,9s     4,88 MB    1,529
+
+    `veryfast crf20` ganha nos TRÊS eixos: 21% mais rápido, 14% menor, menos
+    blocado. O `crf 23` seria menor ainda e cairia abaixo do piso de 7 MB que a
+    faixa de anexo do dono nunca viu falhar.
+
+    Este caso não remede nada -- ele prende a ESCOLHA e a razão dela, para que
+    voltar ao anterior exija medir de novo neste material.
+    """
+
+    def test_o_padrao_e_o_que_foi_medido(self):
+        self.assertEqual(M.X264_PRESET, "veryfast")
+        self.assertEqual(M.X264_CRF, "20")
+
+    def test_o_maxrate_continua_e_nao_e_enfeite(self):
+        """Sem ele o encode escreve 16,8 MB para 20s, e um anexo que estoura
+        não é velocidade -- é um clipe que não chega."""
+        self.assertTrue(M.X264_MAXRATE)
+        self.assertNotEqual(M.X264_MAXRATE, "0")
+
+    def test_a_medicao_ANTIGA_continua_escrita(self):
+        """Ela não estava errada: estava certa em outro material. Apagá-la faria
+        a próxima pessoa concluir que alguém mediu errado, em vez de concluir
+        que preset não transfere entre materiais."""
+        fonte = open(os.path.join(
+            os.path.dirname(HERE), "warden-shared", "scripts",
+            "warden_media.py"), encoding="utf-8").read()
+        self.assertIn("foi medida em OUTRO material", fonte)
+        self.assertIn("44,9s", fonte)
+        self.assertIn("57,1s", fonte)

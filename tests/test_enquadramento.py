@@ -1096,12 +1096,32 @@ class ALinhaDoModoSaiSempre(unittest.TestCase):
 class OEncodeCarregaOPresetEOTeto(unittest.TestCase):
     """Velocidade que estoura o anexo não é velocidade.
 
-    Medido em 15/09/2026 no container (amd64 emulado, sem codificador de
-    hardware), cortando 20s de 1920x1080 para 1080x1920: `veryfast crf 20`
-    custava 16,8s e 6,5 MB; `ultrafast crf 20` custa 6,8s e 16,8 MB, que é 2,6x
-    o arquivo; `ultrafast crf 26` com teto de 6M custa 7,1s e 9,2 MB. Os
-    arquivos vão como anexo pelo telefone do dono e a faixa que nunca falhou é
-    de 7 a 14 MB -- então o teto anda junto com o preset, sempre.
+    **A MEDIDA VIROU EM 18/09/2026, e a âncora muda aqui, no mesmo commit.**
+
+    O que estava congelado, medido em 15/09 no container cortando 20s de
+    1920x1080 para 1080x1920, SEM o layout dividido: `veryfast crf20` custava
+    16,8s e 6,5 MB; `ultrafast crf26` com teto de 6M custava 7,1s e 9,2 MB. Por
+    isso o padrão era o `ultrafast`.
+
+    Remedido em 18/09 na fonte REAL (kZAAnNJHaUc, 481-502) com o layout
+    dividido, que é o que este renderizador produz hoje -- corte inteiro pelo
+    `cut`, dentro da imagem:
+
+        preset      crf  maxrate   render    arquivo   blocagem
+        ultrafast    26      6M     57,1s     8,27 MB    1,642
+        superfast    23      6M     59,8s     9,83 MB    1,376
+        veryfast     20      6M     44,9s     7,10 MB    1,443
+        veryfast     23      6M     44,9s     4,88 MB    1,529
+
+    `veryfast crf20` ganha nos TRÊS eixos: 21% mais rápido, 14% menor, menos
+    blocado. A medida de 15/09 não estava errada -- estava certa em outro
+    material. Com as três camadas do dividido (fundo borrado + duas faixas +
+    ASS) o filtergraph domina o relógio, e o `ultrafast`, que escreve mais bits,
+    paga mais no I/O do que economiza no encode.
+
+    O TETO não muda e continua andando junto: os arquivos vão como anexo pelo
+    telefone do dono, a faixa que nunca falhou é de 7 a 14 MB, e o `crf 23` --
+    que sairia em 4,88 MB -- ficaria abaixo do piso.
     """
 
     def setUp(self):
@@ -1130,8 +1150,8 @@ class OEncodeCarregaOPresetEOTeto(unittest.TestCase):
 
     def test_o_preset_rapido_e_o_padrao(self):
         args = self._args_do_encode()
-        self.assertEqual(args[args.index("-preset") + 1], "ultrafast")
-        self.assertEqual(args[args.index("-crf") + 1], "26")
+        self.assertEqual(args[args.index("-preset") + 1], "veryfast")
+        self.assertEqual(args[args.index("-crf") + 1], "20")
 
     def test_o_teto_de_taxa_anda_junto_com_o_preset(self):
         args = self._args_do_encode()
@@ -1140,7 +1160,7 @@ class OEncodeCarregaOPresetEOTeto(unittest.TestCase):
 
     def test_os_quatro_saem_de_variavel_de_ambiente_e_o_padrao_e_o_rapido(self):
         self.assertEqual(M.X264_PRESET, os.environ.get("WARDEN_X264_PRESET",
-                                                       "ultrafast"))
+                                                       "veryfast"))
         self.assertEqual(M.X264_MAXRATE, os.environ.get("WARDEN_X264_MAXRATE",
                                                         "6M"))
 
@@ -1231,32 +1251,296 @@ class AJanelaRealDe1709VirouNUMEROS(unittest.TestCase):
             self.assertEqual(trechos, [], f"janela {nome}: {trechos}")
 
     def test_a_geometria_das_duas_e_a_que_o_dono_aprovou(self):
-        """996x560 de tela e 512x384 de rosto -- os números do clipe que ele
-        olhou e aprovou em 17/09/2026."""
+        """996x560 de tela e 768x384 de rosto.
+
+        A TELA é a de 17/09. O ROSTO mudou em 18/09/2026, a pedido do dono
+        olhando o clipe: *"tá vendo que tem muito blur ali embaixo"*. Com a
+        caixa de 512 sobravam 568px de fundo borrado nas laterais dela, e
+        63,6% do quadro inteiro era borrão. Com 768 o blur cai para 58,9%.
+
+        768 é `ESCALA_PESSOA` (1,60x) vezes a webcam de 480px. Ele escolheu
+        esse número entre três renderizadas, olhando os recortes 1:1 -- e
+        recusou a largura cheia (1080, 2,25x) vendo que a textura sumia.
+        """
         for nome, j in (("01", self.JANELA_01), ("02", self.JANELA_02)):
             faixa = M.layout_dividido(1080, 1920, 1920, 1080,
                                       pip=j["pip"], rosto=j["rosto"],
                                       legenda=True)
             self.assertEqual(faixa["tela"], (42, 280, 996, 560), f"janela {nome}")
-            self.assertEqual(faixa["webcam"], (284, 856, 512, 384), f"janela {nome}")
+            self.assertEqual(faixa["webcam"], (156, 856, 768, 384), f"janela {nome}")
+            # e o esticão fica ABAIXO do teto de 15/09, que não foi revogado
+            pw = (j["pip"][2] - j["pip"][0]) * 1920
+            self.assertLessEqual(faixa["webcam"][2] / pw, M.ESCALA_FONTE_MAX,
+                                 f"janela {nome}: passou o teto de escala")
+            self.assertAlmostEqual(faixa["webcam"][2] / pw, M.ESCALA_PESSOA,
+                                   places=2)
             # e a tela na proporção da fonte: é o que garante o "nada cortado"
             self.assertAlmostEqual(996 / 560, 1920 / 1080, places=2)
 
-    def test_o_recorte_do_rosto_e_a_caixa_INTEIRA_da_webcam(self):
-        """É por isso que o rosto nunca sai da faixa: medido, ele anda 238px na
-        horizontal e 118px na vertical DENTRO da webcam, e o recorte é a webcam
-        toda. O rastreio recortava uma sub-região, e por isso perdia o cara."""
+    # Os extremos MEDIDOS do rosto dentro da webcam, em pixels da fonte, nas
+    # duas janelas reais. O rosto percorre 382px na horizontal e 263px na
+    # vertical -- 73% da altura da webcam.
+    ROSTO_EXTREMOS = (1485, 28, 1867, 291)
+
+    def test_o_recorte_pega_a_LARGURA_INTEIRA_da_webcam(self):
+        """O que separa esta mudança da alternativa reprovada em 17/09.
+
+        Com a caixa de 768x384 o recorte é o ramo de baixo de `corte_webcam`:
+        a LARGURA da webcam inteira, e a altura é que encolhe, centrada no
+        rosto. Não entra pixel de jogo nenhum -- o que sai é teto, mesa e a
+        barra de "Último sub".
+
+        Em 17/09 a alternativa medida e reprovada era outra: `zoompan_do_rosto`
+        pré-recortando do quadro INTEIRO na proporção da faixa, que com 2,25:1 e
+        o rosto em x 86% trazia meia tela de jogo junto. Este teste prende a
+        diferença.
+        """
         j = self.JANELA_01
         faixa = M.layout_dividido(1080, 1920, 1920, 1080,
                                   pip=j["pip"], rosto=j["rosto"], legenda=True)
         cx, cy, cw, ch = faixa["corte_webcam"]
-        px0, py0, px1, py1 = j["pip"]
-        self.assertLessEqual(cx, int(px0 * 1920) + 1)
-        self.assertLessEqual(cy, int(py0 * 1080) + 1)
-        self.assertGreaterEqual(cx + cw, int(px1 * 1920) - 2)
-        self.assertGreaterEqual(cy + ch, int(py1 * 1080) - 2)
-        # os extremos MEDIDOS do rosto, em pixels da fonte
-        for x0, y0, x1, y1 in ((1485, 28, 1867, 291),):
-            self.assertLessEqual(cx, x0); self.assertLessEqual(cy, y0)
-            self.assertGreaterEqual(cx + cw, x1)
-            self.assertGreaterEqual(cy + ch, y1)
+        px0, _py0, px1, _py1 = j["pip"]
+        self.assertLessEqual(cx, int(px0 * 1920) + 1,
+                             "o recorte começou depois da borda esquerda da webcam")
+        self.assertGreaterEqual(cx + cw, int(px1 * 1920) - 2,
+                                "o recorte não chega na borda direita da webcam")
+        x0, _y0, x1, _y1 = self.ROSTO_EXTREMOS
+        self.assertLessEqual(cx, x0)
+        self.assertGreaterEqual(cx + cw, x1)
+
+    def test_a_FATIA_vertical_e_declarada_e_nao_cobre_todo_o_percurso(self):
+        """A CONSEQUÊNCIA DA ESCOLHA DO DONO, escrita e não escondida.
+
+        Antes de 18/09 o recorte era a webcam inteira e o rosto NUNCA saía da
+        faixa. Com a caixa de 2:1 a fatia tem 240px dos 360 da webcam -- 67% --
+        e o rosto percorre 263px, 73%. Medido: **faltam 13px em cima e 10px
+        embaixo** nos quadros extremos.
+
+        São 5% do percurso e o dono aceitou olhando o 1:1, mas é uma
+        possibilidade que antes não existia: numa fonte onde a pessoa se mexa
+        mais na câmera, a fatia corta. Se este teste começar a falhar com uma
+        folga MAIOR, é sinal de que a fatia apertou.
+        """
+        j = self.JANELA_01
+        faixa = M.layout_dividido(1080, 1920, 1920, 1080,
+                                  pip=j["pip"], rosto=j["rosto"], legenda=True)
+        _cx, cy, _cw, ch = faixa["corte_webcam"]
+        _x0, y0, _x1, y1 = self.ROSTO_EXTREMOS
+        falta_cima = max(0, cy - y0)
+        falta_baixo = max(0, y1 - (cy + ch))
+        self.assertLessEqual(falta_cima, 20, "a fatia subiu demais")
+        self.assertLessEqual(falta_baixo, 20, "a fatia desceu demais")
+        # e ela continua CENTRADA no rosto, não no meio da webcam
+        centro_rosto = j["rosto"][1] * 1080
+        self.assertLess(abs((cy + ch / 2) - centro_rosto), ch / 2,
+                        "a fatia deixou de seguir o rosto")
+
+    # O texto queimado da PRÓPRIA FONTE, medido nos dois quadros reais
+    # (`src01-4s.png` e `src02-6s.png`) em 18/09/2026: as linhas com 2x ou mais
+    # a densidade de borda do miolo vão de y=904 a y=1079 num quadro de 1080.
+    # Ou seja, o HUD e o `YOU ARE DEAD - Press Space to spectate` sobem
+    # **16,3%** da altura da fonte, e não os 6% que `bottom_reach` devolveu.
+    TEXTO_DA_FONTE_SOBE = 0.163
+
+    def test_o_degrade_do_rodape_nao_entra_na_faixa_da_pessoa(self):
+        """O defeito de produção de 18/09: "50% da tela é blur".
+
+        O degradê saiu com 1113px, colado de y=807 até o pé do QUADRO, e cobriu
+        a faixa da pessoa inteira (y 856-1240) com alfa até 206/255 -- 34x maior
+        do que a faixa da tela pedia. A causa: ele era dimensionado até o pé do
+        quadro e `footer_png` o ancorava lá, o que era verdade enquanto a tela
+        era a faixa de BAIXO. Depois da inversão de 17/09 a tela acaba em 840 e
+        quem mora abaixo disso é a pessoa.
+        """
+        for nome, j in (("01", self.JANELA_01), ("02", self.JANELA_02)):
+            faixa = M.layout_dividido(1080, 1920, 1920, 1080,
+                                      pip=j["pip"], rosto=j["rosto"],
+                                      legenda=True)
+            tx, ty, tw, th = faixa["tela"]
+            band, pe, span = M.faixa_do_rodape(1080, 1920, 0.06, faixa)
+            self.assertEqual(pe, ty + th,
+                             f"janela {nome}: o degradê tem de acabar no pé da "
+                             f"TELA ({ty + th}), não em outro lugar")
+            self.assertLessEqual(pe, faixa["webcam"][1],
+                                 f"janela {nome}: encostou na faixa da pessoa")
+            self.assertLessEqual(band, th,
+                                 f"janela {nome}: a faixa não cabe na tela")
+            # o número do clipe reprovado, para ele não voltar por outro caminho
+            self.assertLess(band, 1113,
+                            f"janela {nome}: voltou o degradê de produção")
+
+    def test_no_dividido_a_faixa_e_a_MEDIDA_e_nao_o_piso_de_20(self):
+        """Decisão do dono, 18/09/2026, e o motivo é o que vive lá embaixo.
+
+        `bottom_reach` devolveu **0,0** nas duas janelas: a varredura para na
+        primeira queda de densidade e o HUD daquele jogo flutua acima da borda.
+        O que sobe 16,3% no pé da tela é `YOU ARE DEAD - Press Space to
+        spectate`, a barra de Health/Energy/Balance e a caixa de munição
+        `27/60` -- **HUD de jogo, não legenda de acervo**. Aplicar aqui o piso
+        de 20% do caminho normal esmaeceu o `YOU ARE DEAD` de luma 43,5 para
+        25,8 e desbotou a munição, que é a imagem que o dono escolheu preservar
+        em 17/09 ao recusar o `_corte_sem_webcam`.
+
+        No dividido a nossa legenda mora 400px abaixo, em faixa própria, e não
+        disputa quadro com o HUD. Então a faixa é a MEDIDA, sem piso.
+        """
+        for nome, j in (("01", self.JANELA_01), ("02", self.JANELA_02)):
+            faixa = M.layout_dividido(1080, 1920, 1920, 1080,
+                                      pip=j["pip"], rosto=j["rosto"],
+                                      legenda=True)
+            _tx, ty, _tw, th = faixa["tela"]
+            band, pe, _span = M.faixa_do_rodape(1080, 1920, 0.06, faixa)
+            self.assertEqual(band, int(th * 0.06),
+                             f"janela {nome}: voltou o piso de 20% no dividido")
+            # e ela NÃO alcança o HUD: começa abaixo dos 16,3% medidos
+            topo_do_hud = ty + int(th * (1.0 - self.TEXTO_DA_FONTE_SOBE))
+            self.assertGreater(pe - band, topo_do_hud,
+                               f"janela {nome}: o degradê subiu até o HUD do jogo")
+
+    def test_o_teto_de_24_atravessa_para_o_dividido(self):
+        """O piso não atravessa; o teto sim, e por motivo diferente: além dele
+        se apaga imagem para resolver um problema de texto, em qualquer
+        layout."""
+        j = self.JANELA_01
+        faixa = M.layout_dividido(1080, 1920, 1920, 1080,
+                                  pip=j["pip"], rosto=j["rosto"], legenda=True)
+        _tx, _ty, _tw, th = faixa["tela"]
+        band, _pe, _span = M.faixa_do_rodape(1080, 1920, 0.90, faixa)
+        self.assertEqual(band, int(th * M.RODAPE_TETO))
+
+    def test_o_degrade_nao_passa_da_largura_da_tela(self):
+        """A tela tem 996 de 1080: um degradê de largura inteira deixaria duas
+        abas escuras de 42px sobre o fundo borrado, acabando no nada."""
+        j = self.JANELA_01
+        faixa = M.layout_dividido(1080, 1920, 1920, 1080,
+                                  pip=j["pip"], rosto=j["rosto"], legenda=True)
+        tx, _ty, tw, _th = faixa["tela"]
+        _band, _pe, span = M.faixa_do_rodape(1080, 1920, 0.06, faixa)
+        self.assertEqual(span, (tx, tx + tw))
+
+    def test_sem_layout_dividido_o_rodape_e_o_de_sempre(self):
+        """O caminho normal NÃO muda, e o piso de 20% continua lá: ali a fonte
+        ocupa o quadro inteiro e a legenda do acervo disputa a mesma faixa que a
+        nossa, que é o problema que o piso existe para resolver."""
+        band, pe, span = M.faixa_do_rodape(1080, 1920, 0.06, None)
+        self.assertEqual(pe, 1920)
+        self.assertIsNone(span)
+        self.assertEqual(band, int(1920 * M.RODAPE_PISO))
+
+
+class OCUTLIGAORODAPENAFAIXADATELA(unittest.TestCase):
+    """A FIAÇÃO, e não só a conta. Achado por auditoria em 18/09/2026.
+
+    Os testes de `faixa_do_rodape` exercitam a função pura; os de `footer_png`
+    exercitam o desenho. NADA exercitava a linha do `cut` que decide
+    `faixas_do_layout if dividido else None` e passa `bottom=`/`span=` --
+    e é **exatamente o buraco que deixou o defeito de 17/09 passar**: a conta
+    estava certa em algum lugar e o consumidor não foi conferido.
+
+    Medido pela auditoria: trocando aquele argumento por `None`, o degradê de
+    1113px volta e a suíte fica verde. Este caso fecha isso sem ffmpeg, sem
+    OpenCV e sem vídeo -- ele chama `cut` com dublês e lê o que foi decidido.
+    """
+
+    JANELA = {"pip": (0.75, 0.0, 1.0, 0.3333), "rosto": (0.8622, 0.1378)}
+
+    def _cut_dividido(self):
+        """Roda `M.cut` no modo dividido, sem tocar ffmpeg, e devolve o estilo."""
+        import warden_rules as R
+        dir_ = _temp(self, "warden-fiacao-")
+        src = os.path.join(dir_, "fonte.mp4")
+        with open(src, "wb") as fh:
+            fh.write(b"duble: nada aqui e decodificado")
+        srt = os.path.join(dir_, "fala.srt")
+        with open(srt, "w", encoding="utf-8") as fh:
+            fh.write("1\n00:00:00,000 --> 00:00:02,000\nmatei, matei\n\n")
+        import warden_style as S
+        S.write_approval(srt, by="teste da fiação")
+
+        capturado = {}
+        reais = {n: getattr(M, n) for n in
+                 ("tela_compartilhada", "duration_of", "_dimensions", "run",
+                  "have", "ffmpeg_tem_filtro")}
+        real_S = {n: getattr(S, n) for n in
+                  ("burned_text_bands", "footer_png", "measure", "sample_shots",
+                   "contact_sheet", "sample_frames")}
+        self.addCleanup(lambda: [setattr(M, n, f) for n, f in reais.items()])
+        self.addCleanup(lambda: [setattr(S, n, f) for n, f in real_S.items()])
+
+        M.tela_compartilhada = lambda *a, **k: {
+            "modo": "dividido", "porque": "dublê", "pip": self.JANELA["pip"],
+            "rosto": self.JANELA["rosto"], "camera": [], "trilha": None,
+            "planuras": [0.5] * 8, "quadros": 8, "de_tela": 8}
+        M.duration_of = lambda _p: 20.9
+        M._dimensions = lambda _p: (1920, 1080)
+        M.have = lambda _b: True
+        M.run = lambda *a, **k: ""
+        # O portão do libass fica ANTES da decisão do degradê, e o ffmpeg do
+        # Mac não tem libass. Sem este dublê o caso pularia justamente nas
+        # máquinas onde a suíte roda todo dia -- que é o defeito dos quatro
+        # testes de detecção que não rodam em lugar nenhum.
+        M.ffmpeg_tem_filtro = lambda _n: True
+        S.measure = lambda *a, **k: {"width": 1080, "height": 1920, "fps": 30.0,
+                                     "duration_s": 20.9, "black_bars": None}
+        S.sample_shots = lambda *a, **k: []
+        # Oito quadros de mentira: sem eles o `cut` recusa ANTES de decidir o
+        # degradê, dizendo que não conseguiu olhar a fonte -- que é o silêncio
+        # caro que ele existe para não cometer.
+        # Ruído, e não cor chapada: `frame_border` mede a DISPERSÃO de cada
+        # coluna, e uma imagem uniforme faz cada coluna virar borda -- o `cut`
+        # morre antes do degradê dizendo que a fonte tem moldura.
+        from PIL import Image
+        import random as _r
+        _r.seed(17)
+        _base = Image.new("L", (1920, 1080))
+        _base.putdata([_r.randrange(30, 220) for _ in range(1920 * 1080)])
+        # Em "L", que é o que `frame_border` espera: com RGB ele faz
+        # `max(col) - min(col)` sobre tuplas e estoura.
+        S.sample_frames = lambda *a, **k: [_base.copy() for _ in range(8)]
+        S.contact_sheet = lambda *a, **k: None
+        # A fonte "tem" texto queimado embaixo, que é o que liga o degradê.
+        S.burned_text_bands = lambda *a, **k: {
+            "top": False, "bottom": True, "top_suspect": False,
+            "bottom_suspect": False, "bottom_reach": 0.0, "looked": True,
+            "evidence": "dublê: 8/8 frames"}
+
+        def _footer(path, w, h, band=None, bottom=None, span=None):
+            capturado.update({"band": band, "bottom": bottom, "span": span,
+                              "width": w, "height": h})
+            with open(path, "wb") as fh:
+                fh.write(b"png de mentira")
+            return path, (h if bottom is None else bottom) - (band or 1)
+        S.footer_png = _footer
+
+        regras = R.blank()
+        regras.update({"id": "t", "name": "t", "schema": 1})
+        regras["video"].update({"duration_min_s": 1, "duration_max_s": 30,
+                                "width": 1080, "height": 1920, "aspect": "9:16",
+                                "audio": "optional"})
+        try:
+            M.cut(src, os.path.join(dir_, "saiu.mp4"), regras, 0, 20.9,
+                  caption_srt=srt, motion=True)
+        except Exception as exc:
+            # O render é dublê e pode morrer depois do ponto que interessa; o
+            # que este caso afirma é o que foi DECIDIDO antes disso. Mas a
+            # causa fica guardada: um caso que morre ANTES do degradê passaria
+            # como "não chegou lá" sem dizer por quê.
+            capturado.setdefault("_morreu", f"{type(exc).__name__}: {exc}")
+        return capturado
+
+    def test_o_degrade_recebe_a_faixa_da_TELA_e_nao_o_quadro(self):
+        got = self._cut_dividido()
+        self.assertTrue(got, "o `cut` nem chegou a pedir o degradê")
+        self.assertEqual(got["bottom"], 840,
+                         "o degradê voltou a ser ancorado no pé do QUADRO: é o "
+                         "defeito de produção de 18/09, 1113px sobre a pessoa")
+        self.assertEqual(got["span"], (42, 1038),
+                         "o degradê voltou a ocupar a largura inteira")
+        self.assertEqual(got["band"], 33)
+
+    def test_a_faixa_decidida_vai_para_o_sidecar_em_numeros(self):
+        """`footer_covered: true` dizia a mesma coisa sobre 33px e sobre
+        1113px. O número é a única coisa que separa os dois."""
+        got = self._cut_dividido()
+        self.assertLess(got["bottom"], 856,
+                        "encostou na faixa da pessoa, que começa em 856")

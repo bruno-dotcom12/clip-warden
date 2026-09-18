@@ -254,7 +254,7 @@ def cmd_tracks(args):
             try:
                 destino = _media().baixa_trilha(pedido, alvo)
             except Exception as exc:
-                die(f"{type(exc).__name__}: {exc}", code=1)
+                die(porque(exc), code=1)
             origem = pedido
         else:
             origem_arquivo = os.path.expanduser(pedido)
@@ -374,6 +374,26 @@ def list_campaigns():
 def die(message, code=2):
     print(f"warden: {message}", file=sys.stderr)
     raise SystemExit(code)
+
+
+def porque(exc):
+    """A causa, do jeito que ela deve chegar a quem lê -- sem nome de classe.
+
+    Os vinte e um `die` que reportam exceção faziam
+    `f"{type(exc).__name__}: {exc}"`, e o que saía era
+    `warden: RuntimeError: ffmpeg is not on PATH` ou, pior,
+    `warden: FonteBloqueada: ...` -- um nome de classe em PORTUGUÊS dentro do
+    único texto que este projeto mantém em inglês de propósito, porque é o
+    texto que o agente lê e cuja língua arrasta a resposta dele.
+
+    `RuntimeError` é o tipo que este código levanta quando TEM uma frase para
+    dizer: a frase já é a mensagem inteira, e o prefixo só empurra o assunto
+    para a segunda linha. Qualquer outro tipo é defeito nosso, não recado ao
+    dono, e aí o nome da classe é a informação que importa e fica.
+    """
+    if isinstance(exc, RuntimeError):
+        return str(exc)
+    return f"{type(exc).__name__}: {exc}"
 
 
 def read_text(spec):
@@ -1261,7 +1281,7 @@ def cmd_tiktok(args):
     except T.TikTokIndisponivel as exc:
         die(str(exc), code=2)
     except Exception as exc:
-        die(f"{type(exc).__name__}: {exc}", code=1)
+        die(porque(exc), code=1)
     estado = saida.get("status")
     if estado == "SEND_TO_USER_INBOX":
         print("the clip is in the TikTok INBOX -- the notification, NOT the "
@@ -1358,7 +1378,7 @@ def cmd_youtube(args):
     except Y.YouTubeIndisponivel as exc:
         die(str(exc), code=2)
     except Exception as exc:
-        die(f"{type(exc).__name__}: {exc}", code=1)
+        die(porque(exc), code=1)
     url = saida.get("url") or saida.get("video_id")
     print(f"uploaded: {url}")
     for aviso in saida.get("avisos") or []:
@@ -1414,7 +1434,7 @@ def cmd_post(args):
         except P.PostIndisponivel as exc:
             die(str(exc), code=2)
         except Exception as exc:
-            die(f"{type(exc).__name__}: {exc}", code=1)
+            die(porque(exc), code=1)
         # O caminho e a permissão. NUNCA a chave, nem um prefixo dela, nem o
         # tamanho: um prefixo é o que se usa para procurar a chave inteira num
         # log, e o tamanho diz qual provedor é.
@@ -1463,7 +1483,7 @@ def cmd_post(args):
         except P.PostIndisponivel as exc:
             die(str(exc), code=2)
         except Exception as exc:
-            die(f"{type(exc).__name__}: {exc}", code=1)
+            die(porque(exc), code=1)
         for aviso in saida.get("avisos") or []:
             print(f"  note: {aviso}", file=sys.stderr)
         if saida["ja_conectado"]:
@@ -1523,7 +1543,7 @@ def cmd_post(args):
         except P.PostIndisponivel as exc:
             die(str(exc), code=2)
         except Exception as exc:
-            die(f"{type(exc).__name__}: {exc}", code=1)
+            die(porque(exc), code=1)
         print(f"provider: {saida['provedor']} ({saida['base']})")
         print(f"account:  {saida['email']} -- plan {saida['plano']}")
         # DE ONDE veio a chave e DE ONDE veio o nome do perfil. Nunca o valor
@@ -1596,7 +1616,7 @@ def cmd_post(args):
         except P.PostIndisponivel as exc:
             die(str(exc), code=2)
         except Exception as exc:
-            die(f"{type(exc).__name__}: {exc}", code=1)
+            die(porque(exc), code=1)
         for aviso in saida["avisos"]:
             print(f"  note: {aviso}", file=sys.stderr)
         if not saida["concluido"]:
@@ -1637,7 +1657,7 @@ def cmd_post(args):
     except P.PostIndisponivel as exc:
         die(str(exc), code=2)
     except Exception as exc:
-        die(f"{type(exc).__name__}: {exc}", code=1)
+        die(porque(exc), code=1)
 
     print(f"accepted for processing: request_id={envio['request_id']} "
           f"({', '.join(envio['plataformas'])}, profile {envio['perfil']})",
@@ -1650,7 +1670,7 @@ def cmd_post(args):
     except P.PostIndisponivel as exc:
         die(str(exc), code=2)
     except Exception as exc:
-        die(f"{type(exc).__name__}: {exc}", code=1)
+        die(porque(exc), code=1)
 
     # Os avisos primeiro, e em stderr: é ali que mora "a API não confirmou a
     # privacidade" e "pedi público e voltou privado". Enterrá-los depois do
@@ -1673,8 +1693,9 @@ def cmd_post(args):
               f"this machine: the file left here already.")
         print(f"  ask again with:  warden post status {saida['request_id']}")
         print(f"  END THIS TURN telling the person, in one line, that it is "
-              f"uploading and you will come back with the address -- prose "
-              f"between two tool calls does not reach them. Ask again on the "
+              f"uploading and you will come back with the address -- a MESSAGE "
+              f"sent mid-turn arms the adapter's gate and costs the whole "
+              f"delivery, and loose prose reaches them raw. Ask again on the "
               f"NEXT turn. Do not go looking for another way: this is the way.",
               file=sys.stderr)
         return 0
@@ -2358,7 +2379,7 @@ def cmd_trusted(args):
             # e ofereceria `warden trusted add` para um canal que já está lá.
             die(str(exc), code=2)
         except Exception as exc:
-            die(f"{type(exc).__name__}: {exc}", code=1)
+            die(porque(exc), code=1)
         if ok:
             print(f"trusted: {reason}")
             return 0
@@ -2470,7 +2491,7 @@ def cmd_authorize(args):
     try:
         ok, reason, title = _media().authorize(rules, args.url)
     except Exception as exc:
-        die(f"{type(exc).__name__}: {exc}", code=1)
+        die(porque(exc), code=1)
     named = f'"{title}"' if title else "this link"
     if ok:
         print(f"authorised: {named} is {reason}")
@@ -2554,7 +2575,7 @@ def _archive_trusted(args, url):
             resultados = _media().archive_windows(
                 None, out, url, janelas, trusted=entries)
         except Exception as exc:
-            die(f"{type(exc).__name__}: {exc}", code=1)
+            die(porque(exc), code=1)
         _diz_as_janelas(resultados, janelas)
         return 0
     janela = getattr(args, "window", None)
@@ -2564,14 +2585,14 @@ def _archive_trusted(args, url):
             caminho, dentro = _media().archive_window(
                 None, out, url, de, ate, trusted=entries)
         except Exception as exc:
-            die(f"{type(exc).__name__}: {exc}", code=1)
+            die(porque(exc), code=1)
         _diz_o_in_point(caminho, dentro, de, ate)
         return 0
     modo = "text" if getattr(args, "text_first", False) else "video"
     try:
         caminho = _media().archive_trusted(url, out, entries, mode=modo)
     except Exception as exc:
-        die(f"{type(exc).__name__}: {exc}", code=1)
+        die(porque(exc), code=1)
     print(caminho)
     if modo == "text":
         _o_que_fazer_com_o_texto()
@@ -2615,7 +2636,7 @@ def cmd_archive(args):
             resultados = _media().archive_windows(
                 rules, out, args.url or urls[0], janelas)
         except Exception as exc:
-            die(f"{type(exc).__name__}: {exc}", code=1)
+            die(porque(exc), code=1)
         _diz_as_janelas(resultados, janelas)
         return 0
     janela = getattr(args, "window", None)
@@ -2632,14 +2653,14 @@ def cmd_archive(args):
         try:
             caminho, dentro = _media().archive_window(rules, out, alvo, de, ate)
         except Exception as exc:
-            die(f"{type(exc).__name__}: {exc}", code=1)
+            die(porque(exc), code=1)
         _diz_o_in_point(caminho, dentro, de, ate)
         return 0
     modo = "text" if getattr(args, "text_first", False) else "video"
     try:
         got, failed = _media().archive(rules, out, limit=args.limit, mode=modo)
     except Exception as exc:
-        die(f"{type(exc).__name__}: {exc}", code=1)
+        die(porque(exc), code=1)
     for path in got:
         print(path)
     for url, why in failed:
@@ -2672,7 +2693,7 @@ def cmd_transcribe(args):
             model_size="tiny" if args.scan else args.model,
             window=window, prefer_lang=[args.lang] if args.lang else None)
     except Exception as exc:
-        die(f"{type(exc).__name__}: {exc}", code=1)
+        die(porque(exc), code=1)
     with open(target, "w", encoding="utf-8") as fh:
         json.dump(result, fh, ensure_ascii=False, indent=1)
     print(f"{target}  ({result['source']}, {len(result['segments'])} segments)")
@@ -2738,7 +2759,7 @@ def cmd_signals(args):
     try:
         rows, quiet = _media().analyze_signals(data["segments"], source=args.source)
     except Exception as exc:
-        die(f"{type(exc).__name__}: {exc}", code=1)
+        die(porque(exc), code=1)
     if quiet:
         # Sem esta linha, "nenhum pico de som" e "não consegui ler o som" eram a
         # mesma saída, e quem escolhe a janela não sabia em qual dos dois estava.
@@ -3658,7 +3679,7 @@ def cmd_cut(args):
                               motion=args.motion, cover_footer=args.cover_footer,
                               asked_s=args.seconds, shots=planos_pedidos)
     except Exception as exc:
-        die(f"{type(exc).__name__}: {exc}", code=1)
+        die(porque(exc), code=1)
     # Sem campanha não há livro de posts a consultar: o teto por clipador é uma
     # regra de campanha, e uma lista vazia diz exatamente isso.
     code = deliver(result, rules, args.campaign,
@@ -3796,9 +3817,23 @@ def cmd_style(args):
                   file=sys.stderr)
         print(json.dumps(medida, ensure_ascii=False, indent=1))
         piores = [m for lv, m in achados if lv == "REJECT"]
-        rotulo = {"REJECT": "REJECT", "ok": "ok    ", "note": "      "}
+        # `WARN` FALTAVA AQUI, e a falta derrubava o comando inteiro.
+        #
+        # `check_sidecar`, `cross_check` e `barras_pretas` classificam com
+        # `OBSERVACAO`, que vale a string "WARN" (warden_style.py:172) -- e
+        # qualquer clipe com um único achado desses morria em
+        # `KeyError: 'WARN'` DEPOIS de imprimir as métricas. Reproduzido em
+        # 18/09/2026 num render real: o comando que existe para dar o veredito
+        # contra o corpus nunca chegava a dá-lo, e o `1` de "não poste" nunca
+        # saía -- a saída era um 2 de crash, que quem lê confunde com erro de
+        # uso.
+        #
+        # `.get(lv, lv)` e não mais um literal a mais: um nível novo volta a
+        # aparecer na saída em vez de matar o portão.
+        rotulo = {"REJECT": "REJECT", "WARN": "WARN  ",
+                  "ok": "ok    ", "note": "      "}
         for lv, m in achados:
-            print(f"  {rotulo[lv]} {m}", file=sys.stderr)
+            print(f"  {rotulo.get(lv, lv)} {m}", file=sys.stderr)
         if piores:
             print(f"\nthis render is outside the approved range on "
                   f"{len(piores)} count(s). The contact sheet shows it, if you "
@@ -3947,8 +3982,11 @@ def cmd_captions(args):
                 print("  * it is WRONG -> fix it in the srt and review again "
                       "(editing voids any signature, which is the point)",
                       file=sys.stderr)
-                print("  * it is RIGHT -> repeat it back, exactly: "
-                      "`--keep \"<the line>\"`, once per line",
+                print("  * it is RIGHT -> the PERSON says so, and only then "
+                      "does it get repeated back with "
+                      "`--keep \"<the line>\"`, once per line. Repeating a "
+                      "line back is what reading it LOOKS like, and you can "
+                      "repeat any line.",
                       file=sys.stderr)
                 return 1
             print(f"\n# {len(decididas)} suspect line(s) read and kept as they "
@@ -3958,7 +3996,9 @@ def cmd_captions(args):
             # Assina SÓ o que foi impresso. Assinar o arquivo depois de mostrar
             # uma janela é o defeito que queimou `aromasas`: cinco linhas lidas,
             # cento e cinquenta e duas assinadas.
-            path = S.write_approval(args.srt, start=args.start, end=args.end)
+            path = S.write_approval(
+                args.srt, start=args.start, end=args.end,
+                by=S.quem_assina("warden captions review --approve"))
             if args.start is None or args.end is None:
                 print(f"\napproved the WHOLE file: {path}")
                 print("every line above was printed, so every line is signed. "
@@ -3972,10 +4012,17 @@ def cmd_captions(args):
                       f"that is how a misheard word reached the screen.")
             return 0
         if not approved:
+            # NÃO DIZ "re-run with --approve", e isto é o conserto de
+            # 18/09/2026. Esta frase aparece exatamente quando o agente está
+            # bloqueado, que é quando ele obedece: em produção ele leu uma
+            # instrução dessas, assinou sozinho e a legenda foi para a tela sem
+            # ninguém ler. A instrução era a causa, não a disciplina.
             print("\nnothing is approved yet, so `warden cut --subtitles` will "
                   "render this clip WITHOUT captions rather than burn a word "
-                  "nobody checked. Re-run with --approve when the lines are "
-                  "right.", file=sys.stderr)
+                  "nobody checked. The lines are printed above: put them in "
+                  "your final message and let the PERSON say they are right. "
+                  "Signing them yourself is not reading them.",
+                  file=sys.stderr)
             return 1
         print(f"\n{why}")
         return 0
@@ -5108,7 +5155,8 @@ def _legenda_da_janela(out, resultados, janelas, guardadas, lingua=None):
             # transcrição é NOSSA, e se uma linha suspeita calasse o clipe,
             # toda fonte sem legenda publicada entregaria clipe mudo.
             porques[(de, ate)] = _aviso_de_linha_suspeita(pendentes)
-        S.write_approval(alvo, start=de, end=ate + _folga_da_frase())
+        S.write_approval(alvo, start=de, end=ate + _folga_da_frase(),
+                         by=S.quem_assina("warden lote (own transcript)"))
         queimar[(de, ate)] = alvo
     return queimar, porques, ouvida, ouvida_medida
 
@@ -5166,7 +5214,8 @@ def _aprova_as_janelas(srt, janelas, guardadas):
         # clipe reprovado por uma linha que a ferramenta mesma foi buscar.
         # A folga é limitada pelo mesmo teto, então nada fora do alcance do
         # corte entra na assinatura.
-        S.write_approval(srt, start=de, end=ate + _folga_da_frase())
+        S.write_approval(srt, start=de, end=ate + _folga_da_frase(),
+                         by=S.quem_assina("warden lote (published subtitle)"))
         situacao[(de, ate)] = True
     return situacao, avisos
 
@@ -6937,37 +6986,43 @@ def main(argv=None):
                             "does the rest")
     p.add_argument("action", choices=["prep", "render"])
     p.add_argument("url")
-    p.add_argument("--campaign", help="as regras dessa campanha; sem ela o "
-                                      "lote roda igual, com tudo marcado como "
-                                      "não conferido")
-    p.add_argument("--n", type=int, help="quantos clipes. Sem isto, o padrão "
-                                         "do dono, que é 2")
+    # EM INGLÊS, como os outros sessenta. Estes oito eram o único bloco do
+    # parser inteiro em português, e este projeto já mediu o que um banho de
+    # português vindo da ferramenta faz: no teste 7a o agente respondeu
+    # "Em produção." numa conversa em inglês (live.db msg 21). O texto de
+    # ferramenta é escrito PARA o agente, e a língua dele arrasta a resposta.
+    p.add_argument("--campaign", help="that campaign's rules; without it the "
+                                      "batch runs the same, with everything "
+                                      "marked as unchecked")
+    p.add_argument("--n", type=int, help="how many clips. Without it, the "
+                                         "owner's default, which is 2")
     p.add_argument("--seconds", type=float,
-                   help="a duração que a PESSOA pediu. Sem isto, o padrão do "
-                        "dono, que é 20s, dentro dos limites da campanha")
-    p.add_argument("--windows", help="render: as janelas escolhidas na fonte, "
-                                     "como 181-201.6,745.5-765")
-    p.add_argument("--hooks", help="render: os ganchos, um por janela, "
-                                   "separados por |. NA LÍNGUA DA FONTE, que "
-                                   "o `prep` imprime como LANG: -- `cut` "
-                                   "recusa um clipe cujo gancho e legenda "
-                                   "estejam em línguas diferentes")
-    p.add_argument("--subtitles", help="render: um SRT já lido e aprovado, em "
-                                       "vez do que o `prep` escreveu")
+                   help="the length the PERSON asked for. Without it, the "
+                        "owner's default, which is 20s, inside the campaign's "
+                        "limits")
+    p.add_argument("--windows", help="render: the chosen windows in the "
+                                     "source, as 181-201.6,745.5-765")
+    p.add_argument("--hooks", help="render: the hooks, one per window, "
+                                   "separated by |. IN THE SOURCE'S LANGUAGE, "
+                                   "which `prep` prints as LANG: -- `cut` "
+                                   "refuses a clip whose hook and caption are "
+                                   "in different languages")
+    p.add_argument("--subtitles", help="render: an SRT already read and "
+                                       "approved, instead of what `prep` wrote")
     p.add_argument("--keep", action="append", metavar="LINE",
-                   help="render: uma linha suspeita repetida de volta, exata, "
-                        "querendo dizer que você já a leu. Desde 16/09 a "
-                        "legenda queima de qualquer jeito: isto só cala o "
-                        "aviso dela")
-    p.add_argument("--crop", help="render: qual lado de uma fonte mais larga "
-                                  "fica, como em `warden cut --crop`")
+                   help="render: a suspect line repeated back, exactly, "
+                        "meaning the PERSON has read it. Since 16/09 the "
+                        "caption burns either way: this only silences its "
+                        "warning")
+    p.add_argument("--crop", help="render: which side of a wider source "
+                                  "survives, as in `warden cut --crop`")
     p.add_argument("--even-if-owed", action="store_true",
-                   help="render: corta mesmo havendo clipe pronto que ninguém "
-                        "enviou. Sem isto o render PARA e imprime as linhas "
-                        "MEDIA: do que já existe -- em 16/09 um corte pronto "
-                        "às 14:54 nunca saiu porque dois renders novos "
-                        "passaram por cima dele. Use quando a pessoa pediu "
-                        "OUTRO corte de verdade")
+                   help="render: cut even when a finished clip is still owed "
+                        "to somebody. Without it the render STOPS and prints "
+                        "the MEDIA: lines of what already exists -- on 16/09 a "
+                        "clip finished at 14:54 never went out because two new "
+                        "renders wrote over it. Use it when the person asked "
+                        "for ANOTHER cut for real")
     p.set_defaults(func=cmd_lote)
 
     p = sub.add_parser("style")
@@ -7045,7 +7100,7 @@ def main(argv=None):
         # com `json.decoder.JSONDecodeError` e sair 1. E 1 é o código
         # documentado de "este clipe NÃO pode ser postado", então um defeito de
         # arquivo lia como veredito sobre o trabalho. 2 é erro de comando.
-        die(f"{type(exc).__name__}: {exc}", code=2)
+        die(porque(exc), code=2)
 
 
 if __name__ == "__main__":

@@ -28,14 +28,16 @@ before you write a hook. What follows is only what `cut` will REFUSE.
 ### The three numbers the renderer imposes
 
 They are not style advice. `cut` measures the hook with the real font before it
-draws it, and a hook that does not fit is a REJECT rather than a smaller hook.
+draws it. What it does with one that will not fit, in order: shrinks the body to
+the floor, then drops words, then ships the clip -- and the sidecar turns that
+into a REJECT afterwards. It never refuses the render.
 
 **About nine words, at most two lines.** The usable width is 854px of a 1080
 frame -- the platform's right-hand column reserves 140px and the left margin
 eats 86px -- and the hook is broken into at most two lines against it. Past
 that, `cut` shrinks it to a floor and then drops words, and a hook missing words
-is worse than one cropped at the edge: cropped shows on the contact sheet,
-missing does not.
+is worse than one cropped at the edge: a cropped hook still says what it says,
+a hook missing its last three words says something else.
 
 **The accent is `*assim*`**, a pair of marks around the word that takes the
 accent colour. The choice of word is the hook writer's, so make it: a hook with
@@ -78,8 +80,8 @@ paste. Never that it went up with the caption already on it.
 It needs a TikTok token for their account, which the image cannot carry -- it
 belongs to a person, not to the agent. `warden status` has a `tiktok draft
 upload:` line saying whether it is set up. When it is not, say so in the final
-message of a turn and render on the next -- prose between two tool calls does
-not reach them. Never after the promise.
+message of a turn and render on the next -- a MESSAGE sent mid-turn arms the
+adapter's gate and costs the delivery. Never after the promise.
 
 ## After they post
 
