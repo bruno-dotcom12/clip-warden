@@ -20,6 +20,7 @@ faster-whisper é substituído por um dublê, e é isso que torna estes testes
 capazes de rodar na máquina de quem só quer ver a suíte verde.
 """
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -2249,3 +2250,83 @@ class OPRESETFoiMedidoNOMATERIALQueSeRenderiza(unittest.TestCase):
         self.assertIn("foi medida em OUTRO material", fonte)
         self.assertIn("44,9s", fonte)
         self.assertIn("57,1s", fonte)
+
+
+class OTextoDaFERRAMENTAEEmINGLES(unittest.TestCase):
+    """O mecanismo medido no teste 7a, virado varredura.
+
+    Em 7a o agente respondeu **"Em produção."** numa conversa em INGLÊS
+    (live.db msg 21), e a causa escrita em `warden.py` é "um banho de português
+    vindo da ferramenta": o texto que ele lê arrasta a língua da resposta dele.
+    O bloco de entrega foi consertado na época; os oito `--help` do `lote`
+    continuaram em português até 18/09/2026, quando uma auditoria os achou --
+    era o único bloco do parser inteiro fora do inglês.
+
+    E em 18/09, ao vivo, aconteceu de novo: o dono escreveu em inglês
+    ("Give me 1 clip, 20 seconds with captions") e recebeu "Em produção." duas
+    vezes. A regra de idioma existe e é testada; o que faltava era ninguém
+    guardar a LÍNGUA DO TEXTO DE FERRAMENTA.
+
+    A persona é exceção declarada: ela tem amostras em português DE PROPÓSITO,
+    e diz isso na própria seção de idioma ("Every quoted line in this file is a
+    SAMPLE, not a script"). O que esta varredura cobra é o texto que sai de um
+    COMANDO -- `print`, `die` e o `help=` do argparse.
+    """
+
+    PT = re.compile(
+        r"\b(não|você|clipe|legenda|corte|janela|quadro|arquivo|porque|"
+        r"isso|para o|que a|de um|com a|foi |está |são |pela |essa |esse |"
+        r"dono|padrão|sem isto|quantos)\b", re.I)
+
+    def _scripts(self):
+        import glob
+        raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return sorted(glob.glob(os.path.join(raiz, "warden-shared", "scripts",
+                                             "*.py")))
+
+    def _acusa(self, texto):
+        return len(texto) > 25 and len(self.PT.findall(texto)) >= 2
+
+    def test_nenhuma_string_IMPRESSA_esta_em_portugues(self):
+        import ast
+        achados = []
+        for f in self._scripts():
+            arv = ast.parse(open(f, encoding="utf-8").read())
+            for no in ast.walk(arv):
+                if not isinstance(no, ast.Call):
+                    continue
+                nome = getattr(no.func, "id", None) or getattr(no.func, "attr", None)
+                if nome not in ("print", "die"):
+                    continue
+                for a in ast.walk(no):
+                    if isinstance(a, ast.Constant) and isinstance(a.value, str):
+                        if self._acusa(a.value):
+                            achados.append(f"{os.path.basename(f)}:{a.lineno}: "
+                                           f"{a.value[:90]!r}")
+        self.assertEqual([], achados,
+                         "saída de comando em português. O agente lê isto e a "
+                         "língua arrasta a resposta dele -- medido no 7a:\n  "
+                         + "\n  ".join(achados))
+
+    def test_nenhum_help_do_argparse_esta_em_portugues(self):
+        import ast
+        achados = []
+        for f in self._scripts():
+            arv = ast.parse(open(f, encoding="utf-8").read())
+            for no in ast.walk(arv):
+                if not (isinstance(no, ast.Call)
+                        and getattr(no.func, "attr", None) == "add_argument"):
+                    continue
+                for kw in no.keywords:
+                    if kw.arg != "help":
+                        continue
+                    txt = "".join(c.value for c in ast.walk(kw.value)
+                                  if isinstance(c, ast.Constant)
+                                  and isinstance(c.value, str))
+                    if self._acusa(txt):
+                        achados.append(f"{os.path.basename(f)}:{no.lineno}: "
+                                       f"{txt[:90]!r}")
+        self.assertEqual([], achados,
+                         "`--help` em português. Foram oito no `lote` até "
+                         "18/09, e o `--help` é lido inteiro pelo agente:\n  "
+                         + "\n  ".join(achados))

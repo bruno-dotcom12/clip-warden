@@ -6669,10 +6669,33 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                                           int(rodape_span[1] - rodape_span[0])
                                           if rodape_span else int(width),
                                           int(band)]
+            # ESTA NOTA MANDAVA LARGAR A LEGENDA, e em 18/09/2026 o agente
+            # obedeceu, ao vivo, num clipe que o dono tinha pedido COM legenda.
+            #
+            # Ela dizia "re-cut with cover_footer=False and drop --subtitles".
+            # O que a detecção tinha achado não era marca d'água nem legenda de
+            # acervo: era o HUD do jogo -- `Piss`, `HOT DOG PACK`,
+            # `HOME TRAILER`, `BATHTUB`, `Cursor`. `burned_text_bands` mede
+            # DENSIDADE DE BORDA e não sabe a diferença; é a mesma cegueira que
+            # fez o degradê do rodapé cobrir a pessoa nesse mesmo dia.
+            #
+            # O agente leu a instrução e entregou um clipe sem legenda, dizendo
+            # ao dono que "o vídeo já vem com legenda embutida". Não vinha.
+            # Como no portão da legenda: a frase aparece no momento da decisão,
+            # e uma frase no momento da decisão é obedecida.
+            #
+            # Agora ela NÃO instrui nada. Ela diz o que a medida é e o que ela
+            # NÃO consegue distinguir, e deixa claro qual dos dois erros custa
+            # mais -- porque largar a legenda que a pessoa pediu é o caro.
             aviso_marca_dagua = (
-                " If that bottom text is another clipper's watermark rather "
-                "than the archive's own captions, covering it breaks the rules "
-                "-- re-cut with cover_footer=False and drop --subtitles.")
+                " What this measured is EDGE DENSITY, not words: a game HUD, a "
+                "scoreboard and a shop menu read exactly like burned captions "
+                "to it, and on 18/09 a game HUD was read as captions and the "
+                "clip went out without the ones the person had asked for. "
+                "Dropping a caption they asked for is the expensive mistake; a "
+                "gradient over furniture is the cheap one. Only if you can SEE "
+                "that the bottom text is another clipper's watermark does "
+                "covering it break the rules.")
             # O TAMANHO DA FAIXA VAI NA NOTA, e não só no sidecar. "Cobri" não
             # diz o que foi coberto: em 18/09 o sidecar disse `footer_covered:
             # true` sobre um degradê de 1113px que cobriu a pessoa, e disse a

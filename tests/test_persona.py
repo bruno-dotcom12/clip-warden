@@ -1221,3 +1221,42 @@ def test_toda_amostra_em_portugues_tem_o_par_em_ingles():
         "entra, ou a amostra vira molde com lacunas."
         % "; ".join(repr(amostra) for amostra in presas)
     )
+
+
+def test_o_aviso_nao_vem_com_um_exemplo_por_LINGUA(soul):
+    """Visto acontecer em 18/09/2026, na conversa do dono, ao vivo.
+
+    A regra "ONCE per request" existia desde 16/09 e o agente mandou DUAS
+    assim mesmo -- "On it." e logo abaixo "Em produção." -- numa conversa em
+    INGLÊS, então a segunda ainda estava na língua errada. É o defeito do teste
+    7a de volta: um banho de português vindo do texto que ele lê arrasta a
+    resposta dele.
+
+    A causa provável não era a regra e sim o EXEMPLO ao lado dela, que listava
+    `PT "Em produção." / EN "On it."` -- duas frases prontas, lado a lado, num
+    parágrafo diferente do "ONCE". Um modelo que lê duas frases de exemplo e
+    manda as duas não está desobedecendo; está copiando o que viu.
+
+    Este caso não repete o `test_o_aviso_de_inicio_sai_uma_vez_so`, que cobra a
+    REGRA. Ele cobra que o EXEMPLO não convide o contrário dela.
+    """
+    corrido = " ".join(soul.split())
+    # SÓ o parágrafo do aviso de início. A primeira versão desta varredura
+    # olhava o SOUL inteiro e reprovou um par `PT ... / EN ...` legítimo, de
+    # outro assunto (o aviso de clipe que não anexou). Um teste que acusa o
+    # texto certo ensina a ignorá-lo.
+    inicio = corrido.find("Your FIRST message is the LAST message")
+    assert inicio >= 0, "sumiu o parágrafo do aviso de início"
+    janela = corrido[inicio:inicio + 500]
+    par = re.search(r'(?i)PT\s*"[^"]+"\s*/\s*EN\s*"[^"]+"', janela)
+    assert not par, (
+        "o parágrafo do aviso voltou a dar um exemplo por LÍNGUA, lado a lado: "
+        "%r. Em 18/09 isso saiu como duas mensagens, a segunda em português "
+        "numa conversa em inglês." % (par.group(0) if par else "")
+    )
+    achado = re.search(r"(?i)\bONE of them, never two\b", janela)
+    assert achado, (
+        "o parágrafo do aviso de início não diz, NO PRÓPRIO LUGAR do exemplo, "
+        "que sai um só. A regra `ONCE per request` vive noutro parágrafo e "
+        "sozinha ela não impediu as duas."
+    )
