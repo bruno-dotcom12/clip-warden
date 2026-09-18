@@ -116,3 +116,68 @@ recusada.
    não existem no Mac.
 3. Render das duas janelas reais, contact sheet do antes e do depois, e o
    agente olhando as duas imagens. Suíte verde não é clipe visto.
+
+## Pendências declaradas
+
+Escritas em 18/09/2026, no fim do trabalho. Nenhuma é conserto pela metade:
+são coisas que NÃO foram medidas, e o custo de fingir que foram é alto.
+
+### 1. A cobertura de enquadramento é de UMA janela real
+
+Tudo que sustenta o layout novo foi medido em **uma única fonte**: a live
+`kZAAnNJHaUc` (alanzoka jogando Intruder), em duas janelas (481-502 e
+2422-2444) que são o MESMO layout de tela — mesma webcam, no mesmo canto, do
+mesmo tamanho: x 75%-100%, y 0%-33%.
+
+O que isso NÃO prova, e ninguém deve dizer que prova:
+
+- **webcam em OUTRO canto.** Todos os números saíram de uma caixa no canto
+  superior direito. `_corte_sem_webcam` tem os quatro lados e `_cresce_pip`
+  cresce em qualquer direção, mas nenhum deles foi exercitado em material real
+  com a webcam à esquerda, embaixo, ou centralizada numa barra.
+- **webcam de OUTRA proporção.** A caixa detectada aqui é 1,33:1 (480x360,
+  com a barra de sub dentro). A caixa do rosto herda essa proporção, e é ela
+  que dita quanto sobra de fundo borrado nos lados. Uma webcam 16:9 ou
+  quadrada dá outra composição, e ninguém olhou uma.
+- **webcam que se MOVE no meio da janela.** `_agrupa_pips` agrupa caixas a até
+  0,08 de distância e devolve a mediana; uma mudança maior vira outro grupo e
+  o maior vence, então parte da janela sairia com o recorte errado. Não há
+  material medido desse caso.
+- **tela que não é jogo.** Slide, planilha, browser claro: a planura deles é
+  alta e o gatilho novo não olha planura, então devem entrar no dividido. Só
+  que "devem" não é "foram medidos".
+
+`AJanelaRealDe1709VirouNUMEROS` congela os números desta fonte e roda em toda
+máquina, o que impede uma regressão silenciosa. Não substitui uma segunda
+fonte.
+
+**Como fechar:** uma segunda live, de outro streamer, com a webcam em canto
+diferente. Baixar duas janelas, rodar `tela_compartilhada` dentro da imagem,
+renderizar e OLHAR o contact sheet -- o mesmo caminho desta rodada. Se a caixa
+sair errada, o lugar de consertar é `_cresce_pip` e `_agrupa_pips`.
+
+### 2. Os quatro testes da detecção não rodam em lugar nenhum
+
+`ADetecaoAchaAWebcamDeCanto` (3) e `NoMaterialRealAClassificacaoAcerta` (1)
+pulam no Mac por falta de OpenCV e pulam na imagem por falta da filmagem
+`/var/lib/hermes/warden/footage/lote/7893834d2c` -- que não está lá, embora a
+mensagem do skip afirmasse que sim (corrigida neste ramo).
+
+### 3. Setenta e quatro testes são cegos dentro da imagem
+
+`test_persona.py` (32) e `test_ponteiros.py` (42) são pytest puro; o
+`unittest discover` colhe zero. Pôr `pytest` na imagem resolveria e foi
+**recusado pelo dono em 18/09/2026**: a imagem é pública e ferramenta de dev
+pesa em quem instala. Rodar esses 74 no host, e saber que o portão do
+container não os cobre.
+
+### 4. O rodapé do Shorts nunca foi medido num print do app
+
+Os 25% do Google são spec de ANÚNCIO. As margens de hoje (280/270+90) são do
+TikTok e foram medidas num clipe real. Para o Shorts, ninguém mediu.
+
+### 5. O cache não distingue enquadramento
+
+O `fingerprint` não inclui o modo, então um corte já entregue destas janelas
+reentrega o arquivo antigo até alguém limpar o `renders.json`. Decisão do dono,
+para manter o escopo pequeno.

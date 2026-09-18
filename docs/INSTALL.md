@@ -485,21 +485,21 @@ docker run --rm \
   -u 10000:10000 \
   -v "$PWD:/src" -w /src \
   ghcr.io/bruno-dotcom12/clip-warden:latest \
-  -m pytest tests -q
+  -m unittest discover -s tests
 ```
 
-**`pytest`, not `unittest discover`, and that word is the whole point.**
-Measured 18/09/2026: `tests/test_persona.py` (32 cases) and
-`tests/test_ponteiros.py` (42) are plain pytest functions with no `TestCase`,
-so `unittest discover` collects **zero** of them and reports two import errors
-instead. Seventy-four cases — including the ones that catch the SOUL.md
-truncation and pointers that leave the image — were never exercised in there.
-Installing pytest without changing this line would be worse than leaving it:
-the two import errors go quiet and the 74 stay uncollected.
+**That run is incomplete, and it does not say so.** Measured 18/09/2026:
+`tests/test_persona.py` (32 cases) and `tests/test_ponteiros.py` (42) are plain
+pytest functions with no `TestCase`, so `unittest discover` collects **zero** of
+them and reports two import errors instead — `ModuleNotFoundError: pytest`.
+Seventy-four cases, including the ones that catch the SOUL.md truncation and
+pointers that leave the image, are **not exercised in the container at all**.
 
-`pytest` is in the image from the commit that added this paragraph. **On an
-image built before it, `-m pytest` fails with `No module named pytest`** — fall
-back to `-m unittest discover -s tests` and know that those 74 did not run.
+Installing pytest in the image would fix it and was deliberately not done: the
+image is public and dev tooling costs every person who pulls it. **Run those 74
+on the host** (`python3 -m pytest tests -q`) and treat the container run as the
+gate for everything else. The two import errors above are expected; a third
+error, or any `FAIL`, is not.
 
 `--entrypoint` is not optional: the image's own entrypoint starts the s6
 supervision tree and the agent, not a test run. `-u 10000:10000` is the same
