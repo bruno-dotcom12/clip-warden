@@ -488,6 +488,19 @@ docker run --rm \
   -m unittest discover -s tests
 ```
 
+**That run is incomplete, and it does not say so.** Measured 18/09/2026:
+`tests/test_persona.py` (32 cases) and `tests/test_ponteiros.py` (42) are plain
+pytest functions with no `TestCase`, so `unittest discover` collects **zero** of
+them and reports two import errors instead — `ModuleNotFoundError: pytest`.
+Seventy-four cases, including the ones that catch the SOUL.md truncation and
+pointers that leave the image, are **not exercised in the container at all**.
+
+Installing pytest in the image would fix it and was deliberately not done: the
+image is public and dev tooling costs every person who pulls it. **Run those 74
+on the host** (`python3 -m pytest tests -q`) and treat the container run as the
+gate for everything else. The two import errors above are expected; a third
+error, or any `FAIL`, is not.
+
 `--entrypoint` is not optional: the image's own entrypoint starts the s6
 supervision tree and the agent, not a test run. `-u 10000:10000` is the same
 rule as every `docker compose exec` above — root inside a bind mount leaves

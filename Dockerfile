@@ -38,6 +38,24 @@ RUN command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null \
 # side-by-side. cv2's YuNet DNN detector finds those faces (measured: 7 of 7
 # sampled frames on the test footage). headless because the container has no
 # display, which drops the GUI libs and most of the weight.
+# NÃO tem `pytest`, e isso é decisão do dono de 18/09/2026 -- com o custo
+# declarado, que é o que importa aqui.
+#
+# Medido: `tests/test_persona.py` (32 testes) e `tests/test_ponteiros.py` (42)
+# são pytest puro -- funções de módulo, sem `TestCase` --, então o
+# `unittest discover` que é o portão documentado colhe ZERO deles e ainda erra
+# ao importar os dois. Setenta e quatro testes não rodam dentro da imagem, e
+# entre eles estão os que pegam o truncamento do SOUL.md e os ponteiros que
+# apontam para fora da imagem.
+#
+# Eu cheguei a pôr `pytest>=8.0` aqui. Saiu por duas razões, nessa ordem: esta
+# imagem é PÚBLICA e ferramenta de dev pesa em quem instala; e eu nunca
+# construí a imagem com a linha, então ela era uma afirmação não medida num
+# arquivo onde todo número é medido. O venv não tem `pip` nem `ensurepip`,
+# então instalar na hora do teste também não é saída.
+#
+# O buraco fica declarado em vez de tapado: quem quiser rodar aqueles 74 roda
+# no host. Ver `docs/INSTALL.md`, em "Running the tests".
 RUN set -eu; \
     PY=/opt/hermes/.venv/bin/python3; \
     PKGS="yt-dlp>=2026.08.19 gdown>=5.2 faster-whisper>=1.1 opencv-python-headless>=4.9 pillow>=10.0 numpy>=1.24 curl_cffi>=0.7"; \
