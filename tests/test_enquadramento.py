@@ -261,30 +261,46 @@ class ADecisaoEAritmetica(unittest.TestCase):
     regra que ninguém confere.
     """
 
-    def test_video_normal_segue_o_caminho_de_sempre(self):
-        modo, porque = M.decide_enquadramento([0.1, 0.12, 0.09, 0.15], True)
+    def test_video_normal_SEM_webcam_de_canto_segue_o_caminho_de_sempre(self):
+        modo, porque = M.decide_enquadramento([0.1, 0.12, 0.09, 0.15], False)
         self.assertEqual(modo, "normal")
         # A saída do warden é INGLÊS de propósito (quem a lê é o modelo):
         # warden_media.py:4189-4190. A agulha segue o texto, o comportamento
         # é o mesmo.
         self.assertIn("this is ordinary video", porque)
 
+    def test_planura_baixa_COM_webcam_de_canto_divide(self):
+        """Gameplay é escuro e texturizado: mede planura baixa e não é vídeo
+        comum. Foi exatamente assim que os dois clipes de 17/09/2026 saíram
+        pelo caminho normal, com a tela fatiada nas duas bordas -- na fonte
+        lê-se `YOU ARE DEAD` e no clipe entregue lê-se `AD`.
+
+        Desde então quem decide é a webcam de canto, e a planura só é narrada.
+        """
+        modo, porque = M.decide_enquadramento([0.1, 0.12, 0.09, 0.15], True)
+        self.assertEqual(modo, "dividido")
+        self.assertIn("stable corner webcam", porque)
+        self.assertIn("uncropped", porque)
+        self.assertIn("0 of 4 sampled frames read as screen", porque,
+                      "a planura continua sendo dita, só não decide mais")
+
     def test_tela_com_webcam_vira_dividido(self):
         modo, porque = M.decide_enquadramento([0.6, 0.7, 0.55, 0.12], True)
         self.assertEqual(modo, "dividido")
         self.assertIn("75%", porque)
 
-    def test_na_duvida_divide(self):
-        """A troca é assimétrica, e é ordem do dono: um dividido sobre vídeo
-        normal é feio, um corte no meio do navegador é inutilizável."""
-        medidas = [0.6, 0.6, 0.6] + [0.1] * 7          # 30%, faixa de dúvida
-        modo, porque = M.decide_enquadramento(medidas, True)
-        self.assertEqual(modo, "dividido")
-        self.assertIn("DOUBTFUL band", porque)
-
-    def test_abaixo_da_duvida_nao_divide(self):
-        medidas = [0.6] + [0.1] * 9                     # 10%
-        self.assertEqual(M.decide_enquadramento(medidas, True)[0], "normal")
+    def test_a_planura_nao_muda_mais_o_veredito_quando_ha_webcam(self):
+        """Havia uma faixa de dúvida entre 20% e 40% de planura, e ela existia
+        porque a planura decidia. Ela não decide mais: com webcam de canto o
+        modo é o mesmo em 10%, em 30% e em 60%, e o número entra só na
+        justificativa. Um teste que prende as TRÊS de uma vez é o que impede
+        a faixa de voltar sem que ninguém perceba."""
+        for medidas in ([0.6] + [0.1] * 9,                       # 10%
+                        [0.6, 0.6, 0.6] + [0.1] * 7,             # 30%
+                        [0.6] * 6 + [0.1] * 4):                  # 60%
+            modo, porque = M.decide_enquadramento(medidas, True)
+            self.assertEqual(modo, "dividido", medidas)
+            self.assertNotIn("DOUBTFUL", porque, medidas)
 
     def test_area_chapada_sem_webcam_nao_muda_nada(self):
         """Planura alta sozinha NÃO é tela compartilhada, e este caso custou um
@@ -334,25 +350,58 @@ class OLayoutNaoCobreALegenda(unittest.TestCase):
         self.assertEqual(th, 608)               # 1080 * 9/16, par
         self.assertEqual(tx, 0)
 
-    def test_a_webcam_fica_em_cima_e_encosta_na_tela(self):
-        faixa = M.layout_dividido(1080, 1920, 1920, 1080)
-        wx, wy, ww, wh = faixa["webcam"]
-        tx, ty, tw, th = faixa["tela"]
-        self.assertEqual((wx, wy), (0, 0))
-        self.assertEqual(ww, 1080)
-        self.assertEqual(wy + wh, ty, "não pode sobrar vão entre as faixas")
-        self.assertGreater(wh, 1920 * 0.2, "a pessoa tem de caber grande")
+    def test_a_tela_fica_em_cima_e_a_pessoa_embaixo(self):
+        """A ordem foi invertida em 17/09/2026, e por medição.
 
-    def test_uma_fonte_quase_quadrada_nao_come_a_faixa_da_webcam(self):
-        """Uma fonte 1:1 daria 1080px de tela e sobrariam 144px em cima, que
-        não é lugar para uma pessoa. A tela encolhe até a webcam ficar com um
-        quinto do quadro."""
-        faixa = M.layout_dividido(1080, 1920, 1080, 1080)
-        wx, wy, ww, wh = faixa["webcam"]
-        self.assertGreaterEqual(wh, int(1920 * 0.20))
+        Com o rosto em cima, a cara grande e a webcam que aparece DENTRO do
+        jogo ficam a 297px uma da outra num quadro de 1920 -- 15%, e leem como
+        erro de render. Com o rosto embaixo, 753px. E o jogo tem texto próprio
+        no pé (`YOU ARE DEAD`, Health/Energy): com a tela embaixo esse texto
+        encosta na nossa legenda.
+        """
+        pip = (0.75, 0.0, 1.0, 0.3333)
+        faixa = M.layout_dividido(1080, 1920, 1920, 1080, pip=pip,
+                                  rosto=(0.862, 0.138))
         tx, ty, tw, th = faixa["tela"]
-        self.assertLess(tw, 1080, "a tela tinha de encolher")
+        wx, wy, ww, wh = faixa["webcam"]
+        self.assertGreaterEqual(wy, ty + th, "a pessoa fica ABAIXO da tela")
+        fx, fy, fw, fh = faixa["faixa_rosto"]
+        self.assertGreaterEqual(fh, int(1920 * M.ROSTO_FAIXA_MIN),
+                                "a pessoa tem de caber grande")
+        self.assertLessEqual(fy + fh, faixa["legenda_topo"],
+                             "a legenda queimada cobriria a pessoa")
+
+    def test_nada_nosso_entra_na_interface_do_app(self):
+        """Ordem do dono de 17/09/2026, depois de olhar a formatação do
+        Shorts: nem em cima nem embaixo."""
+        import warden_style as S
+        marge = S.margens(1080, 1920)
+        pip = (0.75, 0.0, 1.0, 0.3333)
+        faixa = M.layout_dividido(1080, 1920, 1920, 1080, pip=pip,
+                                  rosto=(0.862, 0.138))
+        tx, ty, tw, th = faixa["tela"]
+        wx, wy, ww, wh = faixa["webcam"]
+        self.assertGreaterEqual(ty, marge["top"], "a tela invade o topo do app")
+        self.assertLessEqual(wy + wh, 1920 - marge["bottom"],
+                             "a pessoa invade a base do app")
+
+    def test_a_tela_encolhe_para_a_pessoa_caber_e_continua_INTEIRA(self):
+        """A conta começa pelo rosto, e é a inversão que o dono escolheu
+        olhando as maquetes: 12% menos de tela por 21% mais de rosto.
+
+        O que NÃO pode acontecer é a tela deixar de caber inteira -- a caixa
+        tem de manter a proporção da fonte, senão o `increase` + `crop` da
+        cadeia come as bordas, que é o defeito 2.
+        """
+        pip = (0.75, 0.0, 1.0, 0.3333)
+        faixa = M.layout_dividido(1080, 1920, 1920, 1080, pip=pip,
+                                  rosto=(0.862, 0.138))
+        tx, ty, tw, th = faixa["tela"]
+        self.assertLess(tw, 1080, "a tela tinha de encolher pela pessoa")
         self.assertEqual(tx, (1080 - tw) // 2, "e ficar centrada")
+        self.assertAlmostEqual(tw / th, 1920 / 1080, places=2,
+                               msg="a caixa saiu fora da proporção da fonte, "
+                                   "e aí o crop come as bordas")
 
     def test_o_recorte_da_webcam_fica_dentro_do_pip(self):
         pip = (0.75, 0.667, 1.0, 1.0)
@@ -408,15 +457,39 @@ class ACadeiaNaoPintaPretoNoPe(unittest.TestCase):
         self.assertIn(f"s={faixa['webcam'][2]}x{faixa['webcam'][3]}", com)
         self.assertNotIn("zoompan", sem)
 
-    def test_com_trilha_a_faixa_de_cima_segue_o_rosto(self):
-        """E aí NÃO há recorte fixo: quem manda é o zoompan por quadro."""
+    def test_com_webcam_de_canto_o_RECORTE_FIXO_ganha_da_trilha(self):
+        """A regra foi invertida em 17/09/2026, e por medição no render.
+
+        Antes, ter trilha bastava para o rastreio mandar. Só que a webcam de
+        canto é uma caixa PARADA na fonte: rastrear uma caixa que não anda só
+        acrescenta tremor, porque o zoompan interpola posição e zoom entre
+        amostras e as amostras em que o YuNet não achou rosto entram como
+        quadro inteiro.
+
+        Comparados quadro a quadro na janela 481-502, em 0,5s / 1,3s / 2,2s /
+        4s / 8s / 12s: com rastreio a cara SOME em 1,3s -- sobra a barra de
+        sub, ampliada -- e sai da borda em 2,2s. Com o recorte fixo os seis
+        saem estáveis e enquadrados.
+        """
         faixa = M.layout_dividido(1080, 1920, 1920, 1080,
                                   pip=(0.75, 0.667, 1.0, 1.0), rosto=(0.87, 0.89))
         trilha = [(0.5, 0.60, 0.61, 0.45), (2.5, 0.86, 0.89, 0.14)]
         cadeia, rastreio = M.cadeia_dividida(1080, 1920, faixa, length=20,
                                              trilha=trilha, sw=1920, sh=1080)
         cx, cy, cw, ch = faixa["corte_webcam"]
-        self.assertNotIn(f"crop={cw}:{ch}:{cx}:{cy}", cadeia)
+        self.assertIn(f"crop={cw}:{ch}:{cx}:{cy}", cadeia)
+        self.assertIsNone(rastreio,
+                          "o sidecar não pode dizer que rastreou se não rastreou")
+
+    def test_SEM_caixa_de_webcam_a_trilha_volta_a_mandar(self):
+        """O rastreio não foi apagado: ele é o caminho quando não há caixa
+        fixa para recortar."""
+        faixa = M.layout_dividido(1080, 1920, 1920, 1080,
+                                  pip=(0.75, 0.667, 1.0, 1.0), rosto=(0.87, 0.89))
+        faixa.pop("corte_webcam")
+        trilha = [(0.5, 0.60, 0.61, 0.45), (2.5, 0.86, 0.89, 0.14)]
+        cadeia, rastreio = M.cadeia_dividida(1080, 1920, faixa, length=20,
+                                             trilha=trilha, sw=1920, sh=1080)
         self.assertIn("zoompan", cadeia)
         self.assertEqual(rastreio["pontos"], 2)
 
@@ -590,39 +663,52 @@ class ODivididoSaiNoTamanhoCerto(unittest.TestCase):
         img, _ = self._render()
         self.assertEqual(img.size, (1080, 1920))
 
-    def test_a_webcam_aparece_na_faixa_de_cima(self):
+    def test_a_webcam_aparece_na_faixa_da_pessoa(self):
+        """A faixa da pessoa mudou de lugar em 17/09/2026 -- foi do topo para
+        o pé da imagem -- e este teste conta o mesmo que sempre contou: se ela
+        sair vermelha, subiu o canto certo; se sair branca, subiu a página."""
         img, faixa = self._render()
-        _wx, _wy, ww, wh = faixa["webcam"]
-        r, g, b = img.convert("RGB").getpixel((ww // 2, wh // 2))[:3]
-        self.assertGreater(r, 150, "a faixa de cima tinha de ser a webcam")
+        wx, wy, ww, wh = faixa["webcam"]
+        r, g, b = img.convert("RGB").getpixel((wx + ww // 2, wy + wh // 2))[:3]
+        self.assertGreater(r, 150, "a faixa da pessoa tinha de ser a webcam")
         self.assertLess(g, 90)
         self.assertLess(b, 90)
 
-    def test_a_webcam_NAO_aparece_de_novo_na_faixa_de_baixo(self):
-        """"Saiu com duas caras" -- e este é o quadro que dizia isso.
+    def test_a_tela_LEVA_a_webcam_junto_porque_nada_dela_e_cortado(self):
+        """Este teste é o INVERSO do que estava aqui, e a inversão é decisão
+        do dono, tomada em 17/09/2026 olhando o material.
 
-        A faixa de cima leva a webcam ampliada; a de baixo levava o quadro
-        INTEIRO, e o quadro inteiro contém a webcam. A pessoa aparecia duas
-        vezes no mesmo quadro, em 6 dos 8 quadros do mosaico do clipe que o
-        dono recebeu em 15/09/2026.
+        Antes ele exigia ZERO pixel vermelho na faixa da tela: a webcam era
+        recortada para fora para não pôr a mesma cara duas vezes. Só que nesta
+        live a webcam é uma caixa POR CIMA do jogo, não um lado a lado, e a
+        lasca que a exclui custa um quarto da cena -- com o HUD de munição
+        dentro. Perguntado, o dono escolheu a cena inteira: a cara repetida já
+        está repetida no layout do próprio streamer.
 
-        Aqui a webcam é um retângulo vermelho sólido no canto da página branca:
-        se sobrar UM pixel vermelho dentro da faixa da tela, a segunda cara
-        voltou. A página continua tendo de estar inteira e branca -- excluir a
-        webcam não pode virar desculpa para perder a página.
+        Então o que se confere agora é o contrário: o retângulo vermelho TEM
+        de estar na faixa da tela, no lugar dele, porque a ausência dele é
+        prova de que a tela foi cortada.
         """
         img, faixa = self._render()
         tx, ty, tw, th = faixa["tela"]
         rgb = img.convert("RGB")
         pagina = rgb.getpixel((tx + tw // 4, ty + th // 4))[:3]
         self.assertGreater(min(pagina), 180, "a página tinha de estar inteira")
+        # O PiP da fonte está em x 75%-100% e y 67%-100%. Dentro da caixa da
+        # tela ele cai no mesmo lugar proporcional, porque a tela entra
+        # encaixada por largura e sem recorte nenhum.
+        dentro = rgb.getpixel((tx + int(tw * 0.87), ty + int(th * 0.83)))[:3]
+        self.assertGreater(dentro[0], 140,
+                           "a webcam sumiu da tela: ela foi cortada")
+        self.assertLess(dentro[1], 100)
         tira = rgb.crop((tx, ty, tx + tw, ty + th))
         vermelhos = sum(1 for r, g, b in tira.getdata()
                         if r > 140 and g < 100 and b < 100)
-        self.assertEqual(
-            vermelhos, 0,
-            f"{vermelhos} pixels da webcam sobraram na faixa de baixo: é a "
-            f"segunda cara no mesmo quadro")
+        esperado = tw * th * 0.25 * 0.3333
+        self.assertGreater(
+            vermelhos, esperado * 0.8,
+            f"só {vermelhos} pixels da webcam na faixa da tela, esperados "
+            f"~{esperado:.0f}: falta pedaço da cena")
 
     def test_o_recorte_da_tela_e_a_menor_lasca_que_exclui_a_webcam(self):
         """Qual das quatro lascas sai é medida, não escolhida.
@@ -673,40 +759,46 @@ class AFaixaDaLegendaSoEReservadaSeHouverLegenda(unittest.TestCase):
         self.assertEqual(faixa["pe_da_imagem"], faixa["legenda_topo"])
         self.assertTrue(faixa["legenda_reservada"])
 
-    def test_sem_legenda_a_imagem_desce_e_a_tela_cresce(self):
+    def test_sem_legenda_a_imagem_desce_ate_a_interface_do_app(self):
+        """A imagem cresce sobre o espaço da legenda que não vem -- mas PARA
+        na interface do app, e não mais no pé do quadro.
+
+        Até 17/09/2026 ela descia até 1920. A ordem nova do dono, depois de
+        olhar a formatação do Shorts, é que nada nosso fique atrás dos botões
+        do aplicativo, tenha ou não legenda. O borrão que ele reprovava não
+        era o rodapé: era o fundo clipando em preto, e isso foi consertado em
+        `cadeia_dividida`, não aqui.
+        """
+        import warden_style as S
+        marge = S.margens(1080, 1920)
         com = M.layout_dividido(1080, 1920, 1920, 1080,
                                 pip=(0.75, 0.6667, 1.0, 1.0), legenda=True)
         sem = M.layout_dividido(1080, 1920, 1920, 1080,
                                 pip=(0.75, 0.6667, 1.0, 1.0), legenda=False)
-        self.assertEqual(sem["pe_da_imagem"], 1920)
+        self.assertEqual(sem["pe_da_imagem"], 1920 - marge["bottom"])
         self.assertGreater(sem["pe_da_imagem"], com["pe_da_imagem"])
-        self.assertGreater(sem["tela"][1] + sem["tela"][3],
-                           com["tela"][1] + com["tela"][3],
-                           "a imagem tinha de ocupar o espaço da legenda")
+        self.assertGreater(sem["tela"][3], com["tela"][3],
+                           "a tela tinha de ocupar o espaço da legenda")
         self.assertGreaterEqual(sem["webcam"][3], com["webcam"][3],
                                 "e a faixa da pessoa não podia encolher")
         self.assertFalse(sem["legenda_reservada"])
 
-    def test_sem_legenda_nao_sobra_faixa_nenhuma_embaixo(self):
-        """Os 360px de piso existem para o TEXTO não cair atrás dos botões do
-        app. Sem texto não há o que proteger, e deixá-los de fundo desfocado é
-        o mesmo borrão pela outra porta -- o dono olhou o mosaico e disse
-        exatamente isso."""
-        sem = M.layout_dividido(1080, 1920, 1920, 1080,
-                                pip=(0.75, 0.6667, 1.0, 1.0), legenda=False)
-        folga = max(6, 1920 // 120)
-        self.assertGreaterEqual(sem["tela"][1] + sem["tela"][3], 1920 - folga)
+    def test_a_pessoa_tem_o_piso_e_a_tela_fica_com_o_resto(self):
+        """A conta começa pelo rosto -- é a inversão de 17/09/2026.
 
-    def test_a_faixa_da_webcam_tem_teto_e_a_tela_fica_com_o_resto(self):
-        """Sem o teto sobravam 1094px em cima -- 57% do quadro para uma webcam
-        de canto -- e a faixa passava a levar meia coluna de comentários por
-        cima do rosto. Renderizado e olhado em 15/09/2026."""
+        O teto de 45% da faixa da webcam sumiu junto com o layout que o pedia:
+        ele existia porque, sem legenda, sobravam 1094px EM CIMA para uma
+        webcam de canto. Agora a faixa da pessoa não recebe a sobra, ela
+        recebe o piso, e a sobra vai toda para a tela -- que é o que cresce
+        quando a legenda não vem.
+        """
         sem = M.layout_dividido(1080, 1920, 1920, 1080,
                                 pip=(0.75, 0.6667, 1.0, 1.0), legenda=False)
-        self.assertLessEqual(sem["webcam"][3], int(1920 * 0.45))
+        self.assertGreaterEqual(sem["faixa_rosto"][3],
+                                int(1920 * M.ROSTO_FAIXA_MIN))
         self.assertEqual(sem["tela"][2], 1080, "a tela fica com a largura toda")
-        self.assertGreater(sem["tela"][3], 1080 * 1080 / 1440,
-                           "e é mais alta do que o encaixe por largura daria")
+        self.assertAlmostEqual(sem["tela"][2] / sem["tela"][3], 1920 / 1080,
+                               places=2, msg="e continua na proporção da fonte")
 
     def test_a_tela_mais_alta_que_o_encaixe_e_RECORTADA_e_nao_esticada(self):
         faixa = M.layout_dividido(1080, 1920, 1920, 1080,
@@ -726,9 +818,15 @@ class OsTrechosDeCameraNaoSaoDivididos(unittest.TestCase):
     de novo embaixo -- a mesma pessoa duas vezes no mesmo quadro.
     """
 
-    def test_planura_baixa_vira_trecho_de_camera(self):
+    def test_rosto_GRANDE_vira_trecho_de_camera(self):
+        """O sinal mudou em 17/09/2026: é o tamanho do rosto, não a planura.
+
+        `rosto_grande` é "há alguém maior que uma caixinha de canto neste
+        quadro" -- a definição direta de "a fonte está mostrando a pessoa".
+        """
         trechos = M.trechos_de_camera([0.5, 1.5, 2.5, 3.5],
-                                      [0.45, 0.05, 0.05, 0.45], 4.0)
+                                      [0.45, 0.05, 0.05, 0.45], 4.0,
+                                      rosto_grande=[False, True, True, False])
         self.assertEqual(len(trechos), 1)
         de, ate = trechos[0]
         # Até a amostra de tela vizinha, não até o meio: na dúvida vale a
@@ -739,27 +837,40 @@ class OsTrechosDeCameraNaoSaoDivididos(unittest.TestCase):
 
     def test_so_de_tela_nao_ha_trecho_nenhum(self):
         self.assertEqual(
-            M.trechos_de_camera([0.5, 1.5, 2.5], [0.45, 0.46, 0.45], 3.0), [])
+            M.trechos_de_camera([0.5, 1.5, 2.5], [0.45, 0.46, 0.45], 3.0,
+                                rosto_grande=[False, False, False]), [])
 
-    def test_planura_de_tela_SEM_a_webcam_no_canto_tambem_e_camera(self):
-        """Medido na janela 323-347: de 7,5 a 10,5s o post do Instagram ocupa
-        uma coluna estreita à esquerda e a webcam vai de x 36% a 100%. A
-        planura dá 0,35 e passa do limiar -- e a pessoa é dois terços do
-        quadro. Tela é o que tem tela E webcam de canto."""
-        trechos = M.trechos_de_camera(
-            [0.5, 1.5, 2.5, 3.5], [0.45, 0.35, 0.35, 0.45], 4.0,
-            com_webcam=[True, False, False, True])
-        self.assertEqual(len(trechos), 1, trechos)
-        self.assertAlmostEqual(trechos[0][0], 0.5, places=2)
-        self.assertAlmostEqual(trechos[0][1], 3.5, places=2)
+    def test_PLANURA_BAIXA_SOZINHA_nao_e_mais_camera(self):
+        """Este é o conserto do defeito 1, e ele é um teste de NÃO acontecer.
+
+        Gameplay escuro mede planura baixa e não é câmera. Medido na janela
+        481-502 da live de 17/09/2026: 21 dos 39 quadros ficam abaixo do
+        limiar e nenhum deles é uma pessoa em close -- o maior rosto de
+        qualquer quadro é 0,0128, quatro vezes abaixo de PIP_ROSTO_AREA_MAX.
+
+        Com a regra antiga isso virava um trecho de câmera de 15,3s em 20,9s,
+        73% do clipe, e nesse trecho a imagem saía recortada nas duas bordas.
+        Foi ele que comeu o `YOU ARE DE` de `YOU ARE DEAD`.
+        """
+        self.assertEqual(
+            M.trechos_de_camera([0.5, 1.5, 2.5, 3.5],
+                                [0.05, 0.05, 0.05, 0.05], 4.0,
+                                rosto_grande=[False, False, False, False]), [])
+
+    def test_sem_medida_de_rosto_nao_se_inventa_trecho(self):
+        """`None` é "ninguém mediu", e aí não se afirma nada. Sem trecho, o
+        dividido vale o clipe inteiro -- que é o que ele faz bem. Com um
+        trecho falso, a imagem é recortada nas bordas."""
+        self.assertEqual(
+            M.trechos_de_camera([0.5, 1.5, 2.5], [0.05, 0.05, 0.05], 3.0), [])
 
     def test_uma_piscada_do_detector_nao_troca_de_layout(self):
-        """Um quadro sozinho sem a webcam é o YuNet perdendo um rosto que está
-        lá. Trocar de layout por meio segundo por causa disso é um piscar de
-        tela no clipe."""
+        """Um quadro sozinho com rosto grande é o YuNet achando uma cara onde
+        ela mal existe. Trocar de layout por meio segundo por causa disso é um
+        piscar de tela no clipe."""
         self.assertEqual(
             M.trechos_de_camera([0.5, 1.5, 2.5], [0.45, 0.45, 0.45], 3.0,
-                                com_webcam=[True, False, True]), [])
+                                rosto_grande=[False, True, False]), [])
 
     def test_a_cadeia_ganha_uma_camada_com_enable_so_quando_ha_trecho(self):
         faixa = M.layout_dividido(1080, 1920, 1920, 1080,
@@ -770,9 +881,13 @@ class OsTrechosDeCameraNaoSaoDivididos(unittest.TestCase):
         com, _ = M.cadeia_dividida(1080, 1920, faixa, motion=False, length=20,
                                    cheios=[(2.0, 4.0)], cheio_x=0.6)
         self.assertIn("enable='between(t,2.000,4.000)'", com)
-        # e ela cobre a imagem inteira, não uma das faixas
-        self.assertIn(f"crop=1080:{faixa['pe_da_imagem']}", com)
-        self.assertIn("overlay=0:0:enable=", com)
+        # e ela cobre a JANELA DA IMAGEM inteira -- do topo da imagem ao pé
+        # dela --, não de y=0 ao pé. A diferença é o defeito 1: desenhar de 0
+        # a `pe_da_imagem` deixava a base do app com fundo e nada dentro, e a
+        # moldura pulava quando a fonte alternava.
+        alto = faixa["pe_da_imagem"] - faixa["topo_da_imagem"]
+        self.assertIn(f"crop=1080:{alto}", com)
+        self.assertIn(f"overlay=0:{faixa['topo_da_imagem']}:enable=", com)
 
 
 class OQuandoDeCadaAmostraEMedidoENaoSuposto(unittest.TestCase):

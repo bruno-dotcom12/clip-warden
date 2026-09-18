@@ -3940,6 +3940,32 @@ TELA_FRACAO_CERTA = 0.40
 # é o certo.
 PIP_AREA_MAX = 0.30
 PIP_ROSTO_AREA_MAX = 0.05
+# Quando a caixa vencedora é uma webcam FIXA e quando é coincidência.
+#
+# Estes dois números substituem `em_quantos * 2 >= max(2, quadros_de_tela)`, e a
+# troca é o conserto medido do clipe 02 entregue em 17/09/2026. O defeito da
+# regra antiga é o denominador: ele conta quadros de TELA, e o numerador conta
+# quadros em que o detector achou rosto DENTRO da webcam. As duas coisas não
+# têm relação nenhuma, e numa live de gameplay elas divergem.
+#
+# Medido nas duas janelas reais desta live:
+#
+#   janela   quadros   rosto em algum lugar   de tela   PiP achado   regra antiga
+#   481-502     39              39              18       15 (38%)    passa 30>=18
+#   2422-2444   40              40              33       11 (28%)    FALHA 22>=33
+#
+# A webcam está nas duas -- ela aparece no clipe entregue, a olho. O que a
+# janela 02 tem de diferente é ser mais chapada (33 quadros de tela contra 18),
+# o que ENDURECE um limite que nada tem a ver com a webcam. Medir contra o total
+# amostrado tira essa perversidade: 38% e 28% passam.
+#
+# 0,20 e não mais: uma foto de rosto numa página aparece em 1 ou 2 quadros de 40
+# (2 a 5%) -- é o defeito do Yuri Gagarin que `_agrupa_pips` documenta -- e
+# continua recusada com folga de quatro vezes. O piso de 3 quadros existe porque
+# numa amostragem curta (o mínimo é 8) 20% seriam 1,6 quadros, e um quadro só
+# nunca é prova de que algo é fixo.
+PIP_FRACAO_MIN = 0.20
+PIP_QUADROS_MIN = 3
 # E um rosto pequeno DEMAIS não é uma pessoa neste quadro.
 #
 # A live carrega um adesivo animado do Mario num canto, e o YuNet acha rosto
@@ -3982,6 +4008,22 @@ ZOOM_ROSTO_MAX = 4.0
 # passar e não deixa passar muito mais. Com ele, um rosto de 0,05 do quadro, que
 # pediria 8x, para em 2,6x e sai pequeno e nítido em vez de grande e borrado.
 ESCALA_FONTE_MAX = 1.8
+# Quanto do quadro a faixa da pessoa tem, no mínimo -- e é a partir dela que a
+# TELA encolhe, não o contrário.
+#
+# O número não é novo: `layout_dividido` já reservava `int(height * 0.20)` para
+# a faixa da pessoa, e `test_a_webcam_fica_em_cima_e_encosta_na_tela` já o
+# prendia com `assertGreater(wh, 1920 * 0.2)`. O que mudou em 17/09/2026 é a
+# ORDEM da conta. Antes a tela entrava por largura e a pessoa ficava com a
+# sobra; agora a pessoa tem o piso e a tela encolhe até caber, porque foi essa
+# a escolha do dono olhando quatro maquetes do quadro real dos 4s:
+#
+#   tela cheia 1080x608 -> rosto 552x320 (1,25x do PiP)
+#   tela  996x560       -> rosto 663x384 (1,51x)        <- escolhida
+#
+# 12% menos de tela por 21% mais de rosto. A tela continua INTEIRA nas duas: o
+# que encolhe é a escala, nunca o enquadramento.
+ROSTO_FAIXA_MIN = 0.20
 
 
 def _mapa_planura(img, cols=PIP_CELULAS[0], rows=PIP_CELULAS[1]):
@@ -4356,14 +4398,30 @@ def decide_enquadramento(medidas, tem_pip):
     `medidas` é a planura de cada quadro lido; `tem_pip` diz se foi encontrada
     uma webcam de canto estável.
 
-    SEM webcam de canto, o modo NÃO muda, e essa decisão custou um teste para
-    existir: planura alta sozinha não quer dizer tela compartilhada. Um
-    `testsrc2` do ffmpeg mede 0,8 de planura, e um desenho animado ou uma
-    captura de jogo também são feitos de áreas chapadas -- este próprio arquivo
-    diz isso, no comentário do `_face_detector`. A webcam de canto é o sinal
-    que separa uma coisa da outra, porque desenho não tem webcam no canto. Sem
-    ela a ferramenta diz o que viu e deixa o enquadramento como está, que é a
-    regra 3 do dono: quando NÃO for tela compartilhada, nada muda.
+    QUEM DECIDE É A WEBCAM DE CANTO, e a planura deixou de ser portão em
+    17/09/2026. A regra antiga exigia as duas coisas -- área chapada E webcam --
+    e ela foi escrita olhando uma live de navegador, onde as duas andam juntas.
+    Numa live de GAMEPLAY elas não andam: o jogo é escuro e texturizado, mede
+    planura abaixo do limiar, e o clipe caía em "normal" com a tela cortada nas
+    duas bordas. Medido nos dois clipes reprovados desta live: na fonte lê-se
+    `YOU ARE DEAD - Press Space to spectate` e no clipe entregue lê-se
+    `AD - Press Space to spectate`.
+
+    SEM webcam de canto o modo NÃO muda, e essa metade da regra fica de pé
+    inteira, com o teste que a sustenta: planura alta sozinha não quer dizer
+    tela compartilhada. Um `testsrc2` do ffmpeg mede 0,8 de planura, e um
+    desenho animado ou uma captura de jogo também são feitos de áreas chapadas.
+    A webcam de canto é o sinal que separa uma coisa da outra, porque desenho
+    não tem webcam no canto.
+
+    E COM webcam de canto a planura não é mais consultada. O que segura a
+    pessoa falando de frente para a câmera -- o caso que o dono mandou não
+    quebrar -- não é a planura e nunca foi: são os dois limites de tamanho de
+    `tela_compartilhada`. Um rosto acima de `PIP_ROSTO_AREA_MAX` (5% do quadro)
+    não vira candidato, e uma caixa que cresceu além de `PIP_AREA_MAX` (30%) é
+    recusada -- numa câmera cheia `_cresce_pip` não encontra interface onde
+    parar e cresce até o quadro todo. Quem fala de frente não tem webcam de
+    canto por construção: ela seria o próprio rosto, grande e no meio.
     """
     if not medidas:
         return "normal", ("no frame was read, so nobody looked at this "
@@ -4372,23 +4430,22 @@ def decide_enquadramento(medidas, tem_pip):
     fracao = len(telas) / len(medidas)
     quantos = f"{len(telas)} of {len(medidas)} sampled frames read as screen " \
               f"({fracao:.0%}, flatness >= {PLANURA_TELA})"
-    if fracao < TELA_FRACAO_DUVIDA:
-        return "normal", (f"{quantos}: this is ordinary video, and the "
-                          f"framing follows the face as always")
     if not tem_pip:
+        if fracao < TELA_FRACAO_DUVIDA:
+            return "normal", (f"{quantos}: this is ordinary video, and the "
+                              f"framing follows the face as always")
         return "normal", (
             f"{quantos}, but there is NO stable corner webcam in any of them. "
             f"A flat area on its own is not a shared screen -- animation and "
             f"game capture are flat too -- so the framing does not change. If "
             f"this material IS a screen and the cut lands in the middle of it, "
             f"pass --crop to pick the band by hand")
-    if fracao >= TELA_FRACAO_CERTA:
-        return "dividido", (f"{quantos}: webcam on top, screen below")
-    return "dividido", (f"{quantos} -- the DOUBTFUL band "
-                        f"({TELA_FRACAO_DUVIDA:.0%} to {TELA_FRACAO_CERTA:.0%}), "
-                        f"and in doubt it splits: a split layout over ordinary "
-                        f"video is ugly, a cut through the middle of a browser "
-                        f"window is unusable")
+    return "dividido", (
+        f"there IS a stable corner webcam, so this is a live with a presenter "
+        f"and a screen: the whole screen goes in uncropped and the person goes "
+        f"below it. {quantos} -- the flatness is reported and no longer "
+        f"decides, because game capture is dark and textured and would read as "
+        f"ordinary video while the screen got sliced on both edges")
 
 
 def tela_compartilhada(source, start, length, samples=None):
@@ -4465,7 +4522,19 @@ def tela_compartilhada(source, start, length, samples=None):
                 if fw / w < ROSTO_MIN_LARGURA:
                     continue               # adesivo, avatar do chat, miniatura
                 neste.append((cx, cy, fw / w, fh / h))
-                if p < PLANURA_TELA or area > PIP_ROSTO_AREA_MAX:
+                # O portão de planura saiu daqui em 17/09/2026, e o motivo é o
+                # mesmo que tirou a planura de `decide_enquadramento`: uma live
+                # de GAMEPLAY não é chapada, e exigir que o quadro já leia como
+                # tela para só então procurar a webcam é procurar a chave
+                # debaixo do poste. Medido nas duas janelas reais: com o portão
+                # a webcam é achada em 13 e 10 quadros, sem ele em 15 e 11 --
+                # mesma caixa, nos dois casos (0,75-1,00 x 0,00-0,33).
+                #
+                # O que continua segurando a pessoa falando de frente são os
+                # dois limites de TAMANHO, que não dependem de planura: um rosto
+                # acima de PIP_ROSTO_AREA_MAX não é webcam de canto, e uma caixa
+                # que cresceu além de PIP_AREA_MAX é câmera cheia.
+                if area > PIP_ROSTO_AREA_MAX:
                     continue
                 caixa = _cresce_pip(mapa, cy * rows, cx * cols)
                 if (caixa[2] - caixa[0]) * (caixa[3] - caixa[1]) > PIP_AREA_MAX:
@@ -4474,11 +4543,14 @@ def tela_compartilhada(source, start, length, samples=None):
             tempos.append(quando); indices.append(i)
             por_quadro.append((quando, p, neste))
         pip, em_quantos, rosto, quadros_com_pip = _agrupa_pips(candidatos)
-        # Uma webcam aparece em quase todo quadro de tela; uma foto na página
-        # aparece em um ou dois. Menos da metade dos quadros de tela não é uma
-        # webcam fixa, é coincidência.
+        # Uma webcam fixa aparece em boa parte dos quadros AMOSTRADOS; uma foto
+        # na página aparece em um ou dois. Ver PIP_FRACAO_MIN, que carrega a
+        # medição das duas janelas e o porquê de o denominador ter deixado de
+        # ser "quadros de tela".
         telas = sum(1 for p in planuras if p >= PLANURA_TELA)
-        if pip is not None and em_quantos * 2 < max(2, telas):
+        lidos = max(1, len(planuras))
+        if pip is not None and (em_quantos < PIP_QUADROS_MIN
+                                or em_quantos < PIP_FRACAO_MIN * lidos):
             pip = None
             rosto = None
         saiu["planuras"] = [round(p, 3) for p in planuras]
@@ -4494,8 +4566,17 @@ def tela_compartilhada(source, start, length, samples=None):
         # entraram no grupo vencedor. Reaproveitá-la evita um segundo critério
         # que discordaria do primeiro.
         com_webcam = [n in (quadros_com_pip if pip else set()) for n in indices]
+        # Há alguém GRANDE neste quadro? É a pergunta que decide se a fonte
+        # saiu da tela e foi para a câmera, e ela é respondida com a mesma
+        # medida que separa uma webcam de canto de uma pessoa em close:
+        # `PIP_ROSTO_AREA_MAX`. `por_quadro` já traz só os rostos acima do piso
+        # de tamanho, então adesivo e avatar de chat ficaram de fora antes.
+        rosto_grande = [any(r[2] * r[3] > PIP_ROSTO_AREA_MAX
+                            for r in (item[2] or []))
+                        for item in por_quadro]
         saiu["camera"] = trechos_de_camera(tempos, planuras, float(length),
-                                           com_webcam=com_webcam)
+                                           com_webcam=com_webcam,
+                                           rosto_grande=rosto_grande)
         saiu["faces"] = faces_todas
         saiu["rosto"] = None if rosto is None else tuple(round(v, 4) for v in rosto)
         saiu["pip"] = None if pip is None else tuple(round(v, 4) for v in pip)
@@ -4511,7 +4592,8 @@ def tela_compartilhada(source, start, length, samples=None):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def trechos_de_camera(tempos, planuras, length, com_webcam=None):
+def trechos_de_camera(tempos, planuras, length, com_webcam=None,
+                      rosto_grande=None):
     """[(de, ate)] -- quando a fonte NÃO é uma tela, no relógio do clipe.
 
     O terceiro caso que o dividido não tinha, e ele saiu do mosaico do clipe
@@ -4529,16 +4611,30 @@ def trechos_de_camera(tempos, planuras, length, com_webcam=None):
     centrada no rosto, ocupando a imagem inteira. A pessoa aparece uma vez, e
     grande. Aqui só se dizem os trechos; quem os desenha é `cadeia_dividida`.
 
-    `com_webcam` diz, quadro a quadro, se um rosto foi achado DENTRO da caixa
-    da webcam daquele clipe, e ele é o segundo teste porque a planura sozinha
-    erra -- errou, e dava para ver. Medido em 15/09/2026 na janela 323-347: nos
-    quadros de 7,5 a 10,5s a fonte mostra o post do Instagram numa coluna
-    estreita à esquerda e a webcam ocupando de x 36% a 100%, com planura 0,35.
-    Isso passa do limiar de 0,32 e é classificado como tela -- e não é: a
-    pessoa é dois terços do quadro. O dividido nesses quadros punha o rosto em
-    cima E de novo embaixo. Quadro de tela é o que tem tela E tem a webcam no
-    canto; sem a webcam no canto, é a pessoa em tela cheia com uma tarja ao
-    lado, e isso se enquadra como sempre.
+    O SINAL MUDOU EM 17/09/2026, e a troca é o conserto do defeito 1 do clipe
+    que o dono reprovou. Antes um quadro era "câmera" quando tinha planura
+    baixa, ou quando o detector não achava a webcam nele duas vezes seguidas.
+    Os dois erram na mesma direção, e erram feio numa live de GAMEPLAY:
+
+      - planura baixa é a assinatura de um jogo escuro e texturizado, não de
+        uma câmera. Medido: 21 dos 39 quadros da janela 481-502 ficam abaixo
+        do limiar, e nenhum deles é câmera;
+      - "não achei a webcam neste quadro" é uma falha do detector, não uma
+        troca de fonte. Medido: a webcam está em todos os quadros das duas
+        janelas e o rosto dentro dela só passa nos filtros em 38% e 28%.
+
+    O resultado somado foi um trecho de câmera cobrindo 15,3s de 20,9s -- 73%
+    do clipe --, e nesse trecho a imagem é recortada nas duas bordas. Foi ele
+    que comeu o `YOU ARE DE` de `YOU ARE DEAD`.
+
+    `rosto_grande` diz, quadro a quadro, se há um rosto MAIOR que
+    `PIP_ROSTO_AREA_MAX` -- ou seja, alguém que é o assunto do quadro e não uma
+    caixinha de canto. É a definição direta de "a fonte está mostrando a
+    pessoa", sem passar por nenhuma medida que o material possa imitar. Medido
+    nas duas janelas: o maior rosto de qualquer quadro é 0,0128, quatro vezes
+    abaixo do limiar, e os dois trechos somam zero -- que é a resposta certa.
+    E ele continua pegando o caso que criou esta função: uma pessoa que ocupa
+    dois terços do quadro tem rosto muito acima de 0,05.
 
     As fronteiras NÃO ficam no meio entre duas amostras que discordam: o trecho
     de câmera se estende até a amostra de tela vizinha, meio passo a mais de
@@ -4558,21 +4654,25 @@ def trechos_de_camera(tempos, planuras, length, com_webcam=None):
     if not tempos or len(tempos) != len(planuras):
         return []
     n = len(tempos)
-    sem = [bool(com_webcam is not None and i < len(com_webcam)
-                and not com_webcam[i]) for i in range(n)]
+    grande = [bool(rosto_grande is not None and i < len(rosto_grande)
+                   and rosto_grande[i]) for i in range(n)]
 
     def camera(i):
-        if float(planuras[i]) < PLANURA_TELA:
-            return True                     # planura não pisca: é medida do quadro
-        if com_webcam is None or not sem[i]:
+        if rosto_grande is None:
+            # Ninguém mediu os rostos: não há como afirmar que a fonte virou
+            # câmera, e inventar o trecho é pior do que não tê-lo. Sem trecho,
+            # o layout dividido vale o clipe inteiro -- que é o que ele já faz
+            # bem. Com um trecho falso, a imagem é recortada nas bordas.
+            return False
+        if not grande[i]:
             return False
         # A DETECÇÃO pisca, e uma piscada sozinha não é a fonte mudando: é o
-        # YuNet perdendo um rosto que está lá, e trocar de layout por meio
-        # segundo por causa disso é um piscar de tela no clipe. Duas amostras
-        # seguidas sem a webcam é a fonte mudando. É a mesma regra que
+        # YuNet achando um rosto grande por um quadro. Trocar de layout por
+        # meio segundo por causa disso é um piscar de tela no clipe. Duas
+        # amostras seguidas é a fonte mudando. É a mesma regra que
         # `trilha_do_rosto` já usa para segurar o enquadramento numa falha
         # isolada, aplicada à outra decisão que depende do mesmo detector.
-        return (i > 0 and sem[i - 1]) or (i + 1 < n and sem[i + 1])
+        return (i > 0 and grande[i - 1]) or (i + 1 < n and grande[i + 1])
 
     marcas = [(float(tempos[i]), camera(i)) for i in range(n)]
     marcas.sort(key=lambda m: m[0])
@@ -4640,121 +4740,141 @@ def _corte_sem_webcam(sw, sh, pip):
 def layout_dividido(width, height, sw, sh, pip=None, rosto=None, legenda=True):
     """A geometria do clipe dividido, em pixels do quadro de saída.
 
-    As proporções não são gosto, são o que sobra depois de descontar o que já
-    está reservado, e a conta é esta:
+    Reescrita em 17/09/2026, depois de dois clipes reprovados. O layout de
+    antes era webcam em cima e tela embaixo, com a tela RECORTADA para não
+    levar a webcam junto. O novo é o contrário nas duas coisas, e as duas
+    inversões são pedido do dono com medição atrás.
 
-      - a legenda queimada mora entre `height - caption_piso - 2 linhas` e
-        `height - caption_piso`. Em 1080x1920 isso é 1240 a 1560, e o piso de
-        360px é a interface do app (270) mais a folga do projeto (90). Esse
-        teto de 1240 é intocável: o dono disse que a legenda tem de caber
-        embaixo SEM COBRIR a tela, então a tela acaba acima dele.
-      - a tela entra encaixada por LARGURA, que é o pedido: 1080 de largura dá
-        608 de altura num 16:9. Ela é encostada no teto da legenda.
-      - o que sobra em cima -- 616px, 32% do quadro -- é a webcam. Sobra por
-        subtração e não por escolha, e é quase a metade do que fica visível
-        acima da legenda, que é o que "a pessoa, grande" pede.
-      - o fundo é o próprio quadro borrado e escurecido, cobrindo os 1080x1920
-        inteiros. NÃO é preto de propósito: `barras_pretas` reprovaria 19% de
-        tarja no pé, e com razão -- foi um defeito real deste projeto.
+    De cima para baixo, num quadro de 1080x1920:
 
-    `rosto` é (cx, cy) em fração do quadro de origem, e serve só para escolher
-    ONDE dentro do PiP a faixa de cima corta quando há folga.
+        0     interface do app (280px) -- só fundo borrado, nada nosso
+        280   TELA: a fonte INTEIRA, encaixada por largura, NADA cortado
+        840   folga
+        856   ROSTO: a webcam na proporção dela, centrada
+        1240  legenda queimada (2 linhas)
+        1560  folga da legenda + interface do app
 
-    `legenda` diz se ESTE corte vai queimar legenda, e ele precisa saber ANTES
-    de fazer a conta. Quando não vai, a faixa de 1240 a 1560 não é reservada: no
-    clipe que o dono recebeu em 15/09/2026 a legenda não queimou -- o SRT não
-    estava aprovado -- e aquele terço do quadro saiu com fundo borrado e NADA
-    dentro. Um terço de quadro reservado para um texto que não existe é um terço
-    de quadro jogado fora, e é feio. Sem legenda a imagem desce até o piso do
-    app (1560) e a tela cresce 320px junto.
+    A TELA NÃO É MAIS RECORTADA. `_corte_sem_webcam` tirava a lasca onde a
+    webcam mora, para não pôr a mesma cara duas vezes no quadro. Nesta live a
+    webcam é uma caixa POR CIMA do jogo, não um lado a lado: a lasca custaria
+    um quarto da cena, com o HUD de munição dentro. O dono escolheu a cara
+    repetida -- ela já está repetida no layout do próprio streamer -- e a cena
+    inteira. Ver a nota `duas caras` em `_corte_sem_webcam`, que continua no
+    arquivo porque continua certa para o caso lado a lado.
 
-    Quando há `pip`, a tela sai RECORTADA para não levar a webcam junto -- ver
-    `corte_tela`, que é o conserto das "duas caras".
+    O ROSTO FICA EMBAIXO, e isto é medido, não gosto. Nas maquetes do quadro
+    real dos 4s, com o rosto em cima a cara grande e a webcam dentro do jogo
+    ficam a 297px uma da outra -- 15% do quadro, e leem como erro de render.
+    Com o rosto embaixo, 753px. E o jogo tem texto próprio no pé do quadro
+    (`YOU ARE DEAD`, Health/Energy): com a tela embaixo esse texto encosta na
+    nossa legenda, com a tela em cima a faixa do rosto separa os dois.
+
+    A CONTA COMEÇA PELO ROSTO. A faixa da pessoa tem o piso de
+    `ROSTO_FAIXA_MIN` e a tela fica com o resto, encolhendo se precisar. Antes
+    era ao contrário -- a tela entrava por largura e a pessoa ficava com a
+    sobra -- e era assim que o rosto saía pequeno.
+
+    NADA NOSSO ENTRA NA INTERFACE DO APP, nem em cima nem embaixo. É ordem do
+    dono de 17/09/2026, depois de olhar a formatação do Shorts. A imagem
+    começa na margem de topo e acaba no teto da legenda; sem legenda acaba na
+    margem de base, e não mais no pé do quadro. O que sobra nessas faixas é o
+    fundo borrado, que desde este mesmo dia não clipa mais em preto.
+
+    `rosto` é (cx, cy) em fração do quadro de origem e serve para escolher onde
+    dentro do PiP a faixa corta, quando há o que cortar.
     """
     piso = S.caption_piso(height)
     linha = int(S.caption_size(height) * S.LEADING)
     teto_legenda = height - piso - 2 * linha
-    # Onde a IMAGEM acaba. Com legenda é o teto dela; SEM legenda é o pé do
-    # quadro, e o pé do quadro mesmo.
+    marge = S.margens(width, height)
+    topo = int(marge["top"])
+    # Onde a IMAGEM acaba. Com legenda é o teto dela; sem legenda é onde a
+    # interface do app começa.
     #
-    # A primeira tentativa parou no piso do app (1560), e o dono olhou o
-    # mosaico e disse que continuava havendo uma faixa borrada embaixo -- tinha
-    # razão: 360px são 19% do quadro, e 19% de fundo desfocado com nada dentro
-    # é um borrão, venha ele da legenda que não queimou ou da interface do app.
-    # Os 360px de piso existem para o TEXTO não cair atrás dos botões do
-    # aplicativo; imagem atrás dos botões é o que o enquadramento normal deste
-    # projeto já faz no quadro inteiro, desde sempre. Sem legenda não há texto
-    # a proteger, então a imagem desce até 1920 e não sobra faixa nenhuma.
-    pe_da_imagem = teto_legenda if legenda else height
+    # Até 17/09/2026 isto era `height` sem legenda: a imagem descia até o pé do
+    # quadro porque, sem texto a proteger, não havia o que proteger. A ordem
+    # nova do dono é outra e é mais simples de conferir: nada nosso atrás dos
+    # botões do aplicativo, tenha ou não legenda.
+    pe_da_imagem = teto_legenda if legenda else height - int(marge["bottom"])
     folga = max(6, height // 120)
-    # A tela sai do quadro da fonte MENOS a lasca onde a webcam mora, e é essa
-    # sobra que dita a proporção da faixa de baixo.
-    corte_tela = _corte_sem_webcam(sw, sh, pip)
-    fonte_w, fonte_h = (corte_tela[2], corte_tela[3]) if corte_tela else (sw, sh)
+    disponivel = pe_da_imagem - topo - folga
+    minimo_rosto = int(height * ROSTO_FAIXA_MIN) if pip else 0
+    # A tela entra por LARGURA: é isso que garante que nada dela é cortado.
     tela_w = width
-    tela_h = int(round(tela_w * float(fonte_h) / float(fonte_w)))
-    # Uma fonte muito alta (4:3, ou um vertical) comeria a faixa da webcam
-    # inteira. A tela encolhe até a webcam ter o seu mínimo.
-    #
-    # E o mínimo é OUTRO quando há webcam para pôr lá em cima, porque tirar a
-    # lasca da webcam da tela deixa a fonte mais alta (1440x1080 no lugar de
-    # 1920x1080) e encaixada por largura ela cresce de 608 para 810px, comendo
-    # a faixa de cima. Medido: com legenda reservada a faixa da webcam caía de
-    # 616 para 414px e o rosto saía PEQUENO no alto de uma tira larga -- o
-    # contrário do que o dono pediu para esta janela. Com 30% a tela sai 864 de
-    # largura em vez de 1080, e a página fica em 0,60 da escala da fonte contra
-    # os 0,5625 do clipe entregue: mais legível do que era, e o rosto continua
-    # grande.
-    minimo = int(height * (0.30 if pip else 0.20))
-    if pe_da_imagem - folga - tela_h < minimo:
-        tela_h = max(1, pe_da_imagem - folga - minimo)
-        tela_w = int(round(tela_h * float(fonte_w) / float(fonte_h)))
-    # E um TETO para a faixa da webcam, que é o outro lado da mesma conta.
-    #
-    # Sem legenda a imagem vai até 1920 e, encaixando a tela por largura, sobram
-    # 1094px em cima -- 57% do quadro para uma webcam de canto. Renderizado e
-    # olhado: a faixa de cima passava a levar meia coluna de comentários por
-    # cima do rosto, e a página aparecia em dois pedaços, um em cada faixa. O
-    # teto de 45% devolve a faixa ao tamanho que já enquadrava bem e a tela
-    # cresce para preencher o resto -- recortada nas laterais, 11% da largura
-    # em cada lado, que é o que custa não deixar buraco.
-    teto_webcam = int(height * 0.45) if pip else height
-    if pe_da_imagem - folga - tela_h > teto_webcam:
-        tela_h = pe_da_imagem - folga - teto_webcam
-        tela_w = width
+    tela_h = int(round(tela_w * float(sh) / float(sw)))
+    if disponivel - tela_h < minimo_rosto:
+        tela_h = max(2, disponivel - minimo_rosto)
+        tela_w = min(width, int(round(tela_h * float(sw) / float(sh))))
+        tela_h = int(round(tela_w * float(sh) / float(sw)))
     tela_w -= tela_w % 2
     tela_h -= tela_h % 2
-    tela_y1 = pe_da_imagem - folga
-    tela_y0 = tela_y1 - tela_h
     tela_x = (width - tela_w) // 2
-    faixa = {"webcam": (0, 0, width, tela_y0),
-             "tela": (tela_x, tela_y0, tela_w, tela_h),
+    # Sem webcam não há faixa de pessoa, e a tela fica centrada no que sobra em
+    # vez de encostada no topo: encostada, ela deixaria todo o vazio de um lado
+    # só, que lê como imagem fora do lugar.
+    tela_y = topo if pip else topo + max(0, (disponivel + folga - tela_h) // 2)
+    faixa = {"tela": (tela_x, tela_y, tela_w, tela_h),
              "legenda_topo": teto_legenda,
              "pe_da_imagem": pe_da_imagem,
+             "topo_da_imagem": topo,
              "legenda_reservada": bool(legenda)}
     if not pip:
+        # A chave continua existindo e continua sendo a faixa que NÃO tem
+        # webcam, porque catorze ramos do `cut` e o sidecar a leem. Ela é a
+        # faixa vazia abaixo da tela.
+        faixa["webcam"] = (0, tela_y + tela_h, width, 0)
         return faixa
-    faixa["corte_tela"] = corte_tela
-    banda_h = tela_y0
-    alvo = width / float(banda_h)
-    px0, py0, px1, py1 = [float(v) for v in pip]
+    banda_y = tela_y + tela_h + folga
+    banda_h = max(2, pe_da_imagem - banda_y)
+    px0, py0, px1, py1 = [min(1.0, max(0.0, float(v))) for v in pip]
+    pw = max(2.0, (px1 - px0) * sw)
+    ph = max(2.0, (py1 - py0) * sh)
+    # A CAIXA DO ROSTO TEM A PROPORÇÃO DO PiP, e isto foi decidido renderizando
+    # as duas alternativas e olhando, em 17/09/2026.
+    #
+    # A tentação é alargá-la até o teto de `ESCALA_FONTE_MAX` (864px nesta
+    # fonte), porque isso encurtaria o recorte na vertical e deixaria de fora a
+    # barra de "Último sub" que mora logo abaixo da câmera. Renderizado: sai
+    # MUITO pior. Quem recorta de fato é `zoompan_do_rosto`, que pré-recorta do
+    # quadro INTEIRO na proporção da faixa -- e com uma faixa de 2,25:1 e o
+    # rosto em x 86%, o recorte se estende para a esquerda e traz meia tela de
+    # jogo junto, com a pessoa encostada na borda direita.
+    #
+    # Na proporção do PiP (1,33:1 aqui) o recorte tem a forma da própria
+    # webcam, a pessoa fica centrada, e o que entra a mais é a barra de sub do
+    # streamer -- que é a marca dele, não um defeito nosso.
+    caixa_h = banda_h
+    caixa_w = int(round(caixa_h * pw / ph))
+    teto_w = max(2, min(width - 2 * folga, int(pw * ESCALA_FONTE_MAX)))
+    if caixa_w > teto_w:
+        caixa_w = teto_w
+        caixa_h = max(2, int(round(caixa_w * ph / pw)))
+    caixa_w -= caixa_w % 2
+    caixa_h -= caixa_h % 2
+    faixa["webcam"] = ((width - caixa_w) // 2,
+                       banda_y + max(0, (banda_h - caixa_h) // 2),
+                       caixa_w, caixa_h)
+    faixa["faixa_rosto"] = (0, banda_y, width, banda_h)
+    # O recorte na fonte. Quando a caixa de saída tem a proporção do PiP -- que
+    # é o caso comum -- este recorte é o PiP inteiro e não tira nada. Ele só
+    # morde quando o teto de escala encolheu a caixa e mudou a proporção.
+    alvo = caixa_w / float(caixa_h)
     x0, y0 = px0 * sw, py0 * sh
-    pw, ph = max(2.0, (px1 - px0) * sw), max(2.0, (py1 - py0) * sh)
-    if pw / ph >= alvo:                       # PiP mais largo que a faixa
+    if pw / ph >= alvo:
         ch = ph
         cw = ph * alvo
-        cy = y0
         alvo_x = (rosto[0] * sw - cw / 2) if rosto else (x0 + (pw - cw) / 2)
         cx = min(max(alvo_x, x0), x0 + pw - cw)
-    else:                                     # PiP mais alto: corta em altura
+        cy = y0
+    else:
         cw = pw
         ch = pw / alvo
         cx = x0
         alvo_y = (rosto[1] * sh - ch * ROSTO_NA_FAIXA) if rosto else (y0 + (ph - ch) / 2)
         cy = min(max(alvo_y, y0), y0 + ph - ch)
     faixa["corte_webcam"] = (int(round(cx)), int(round(cy)),
-                             int(round(cw)) - int(round(cw)) % 2,
-                             int(round(ch)) - int(round(ch)) % 2)
+                             max(2, int(round(cw)) - int(round(cw)) % 2),
+                             max(2, int(round(ch)) - int(round(ch)) % 2))
     return faixa
 
 
@@ -4794,8 +4914,24 @@ def cadeia_dividida(width, height, faixa, motion=True, length=None,
     corte = faixa.get("corte_webcam")
     recorte_tela = faixa.get("corte_tela")
     quando_cheio = _janela_de_tempo(cheios)
+    # O RECORTE FIXO GANHA DO RASTREIO quando há uma webcam de canto, e isto
+    # foi medido renderizando os dois e olhando, em 17/09/2026.
+    #
+    # A webcam de canto é uma caixa PARADA na fonte. O rastreio existe para
+    # seguir um rosto que anda pelo quadro, e aplicá-lo a uma caixa que não
+    # anda só acrescenta tremor: ele interpola posição E zoom entre amostras, e
+    # nas amostras em que o YuNet não acha o rosto `trilha_do_rosto` marca o
+    # quadro inteiro, o que puxa a rampa. Na janela 481-502, comparados quadro
+    # a quadro em 0,5s / 1,3s / 2,2s / 4s / 8s / 12s: com rastreio a cara SOME
+    # em 1,3s (sobra a barra de sub, ampliada) e sai da borda em 2,2s; com o
+    # recorte fixo os seis tempos saem estáveis e enquadrados.
+    #
+    # O rastreio não foi apagado: ele continua sendo o caminho quando não há
+    # caixa de webcam para recortar. E o caso que o fez nascer -- a janela que
+    # ALTERNA entre webcam de canto e câmera cheia -- hoje é coberto pelo
+    # `cheios`, que desenha a fonte inteira por cima nesses trechos.
     seguidor, rastreio = (None, None)
-    if trilha and sw and sh:
+    if trilha and sw and sh and not corte:
         seguidor, rastreio = zoompan_do_rosto(trilha, ww, wh, sw, sh,
                                               motion=bool(motion))
     tem_webcam = bool(seguidor or corte)
@@ -4807,14 +4943,28 @@ def cadeia_dividida(width, height, faixa, motion=True, length=None,
     partes = ["fps=30,split=%d[dvbg]%s[dvsc]%s" % (
         saidas, "[dvwc]" if tem_webcam else "",
         "[dvfl]" if quando_cheio else "")]
+    # O FUNDO NÃO PODE CLIPAR, e este é o conserto da "tarja preta" que o dono
+    # reprovou em 17/09/2026 -- que não era tarja nenhuma.
+    #
+    # Medido no quadro dos 4s do clipe entregue: 93,1% dos pixels do rodapé são
+    # exatamente 0. A fonte é uma cena de jogo escura, luma mediana 15 de 255, e
+    # `eq=brightness=-0.10` subtrai ~25: a cena inteira vai a zero e encosta no
+    # fundo da escala. O que se via como barra preta era o fundo borrado depois
+    # de ser escurecido para baixo do fim da régua.
+    #
+    # `colorlevels` faz a conta certa porque ela é AFIM e não aditiva:
+    # saída = 0,10 + entrada * 0,55. O preto absoluto da fonte vira 26 e não 0,
+    # o branco vira 166, e a textura do borrão sobrevive em cena escura. Um
+    # `eq=brightness` não tem como fazer isso: ele só desloca, e deslocar para
+    # baixo é exatamente o que clipa.
     partes.append(
         f"[dvbg]scale={width}:{height}:force_original_aspect_ratio=increase,"
         f"crop={width}:{height},boxblur=luma_radius=30:luma_power=2"
-        f":chroma_radius=15:chroma_power=2,eq=brightness=-0.10:saturation=0.75,"
+        f":chroma_radius=15:chroma_power=2,"
+        f"colorlevels=romin=0.10:gomin=0.10:bomin=0.10"
+        f":romax=0.65:gomax=0.65:bomax=0.65,eq=saturation=0.75,"
         f"setsar=1[dvbgb]")
-    if seguidor:
-        partes.append(f"[dvwc]{seguidor}[dvwcb]")
-    elif corte:
+    if corte:
         cx, cy, cw, ch = corte
         zoom = ""
         if motion:
@@ -4832,18 +4982,22 @@ def cadeia_dividida(width, height, faixa, motion=True, length=None,
             f"[dvwc]crop={cw}:{ch}:{cx}:{cy},"
             f"scale={ww}:{wh}:force_original_aspect_ratio=increase,"
             f"crop={ww}:{wh}{zoom},setsar=1[dvwcb]")
-    # A lasca da webcam sai ANTES do scale: recortar depois seria recortar a
-    # imagem já espremida, e a conta da proporção da faixa foi feita sobre o
-    # quadro recortado (ver `layout_dividido`).
+    elif seguidor:
+        partes.append(f"[dvwc]{seguidor}[dvwcb]")
+    # A lasca da webcam continua suportada aqui, mas `layout_dividido` não a
+    # produz mais desde 17/09/2026: nesta live a webcam está POR CIMA do jogo e
+    # tirar a lasca custaria um quarto da cena. O ramo fica porque
+    # `_corte_sem_webcam` continua certo para o caso lado a lado, e porque
+    # apagá-lo seria apagar a única saída que existe quando ele voltar.
     sem_webcam = ""
     if recorte_tela:
         rx, ry, rw, rh = recorte_tela
         sem_webcam = f"crop={rw}:{rh}:{rx}:{ry},"
-    # `increase` + `crop` e não um `scale` seco: quando a caixa da tela é mais
-    # alta do que o encaixe por largura daria -- é o que acontece sem legenda,
-    # com o teto da faixa da webcam -- um scale seco ESTICARIA a página. Com a
-    # caixa na proporção natural os dois filtros não fazem nada, então a conta
-    # é a mesma de antes onde ela já estava certa.
+    # `increase` + `crop` e não um `scale` seco: um scale seco ESTICARIA a
+    # página quando a caixa não estiver na proporção exata da fonte. Ela está,
+    # por construção -- `layout_dividido` a calcula por largura -- e o que sobra
+    # é o arredondamento para largura e altura pares: no máximo 1px de um lado.
+    # Um pixel não é o defeito que este layout conserta; 68% da largura era.
     partes.append(f"[dvsc]{sem_webcam}scale={tw}:{th}"
                   f":force_original_aspect_ratio=increase,"
                   f"crop={tw}:{th},setsar=1[dvscb]")
@@ -4854,17 +5008,34 @@ def cadeia_dividida(width, height, faixa, motion=True, length=None,
     partes.append(f"[{ultimo}][dvscb]overlay={tx}:{ty}[dvt2]")
     ultimo = "dvt2"
     if quando_cheio:
-        # A imagem inteira, do topo ao pé da imagem, enquadrada como um corte
-        # normal: encaixa por cobertura e recorta a faixa vertical no rosto.
-        # Cobre as duas faixas de propósito -- nesses trechos elas mostrariam a
-        # mesma pessoa duas vezes.
-        alto = int(faixa.get("pe_da_imagem") or (ty + th))
+        # Nos trechos em que a fonte NÃO é uma tela, a imagem inteira cobre as
+        # duas faixas: elas mostrariam a mesma pessoa duas vezes.
+        #
+        # ESTE RAMO ERA O DEFEITO 1, e ele custou o clipe que o dono reprovou
+        # em 17/09/2026. Ele desenhava de y=0 até `pe_da_imagem` (1240 de 1920)
+        # e deixava os 680px de baixo com o fundo e nada dentro. Naquela janela
+        # os trechos de câmera cobrem 15,3s de 20,9s -- 73% do clipe --, então
+        # o que se via não era "um pedaço": era o clipe inteiro com um rodapé
+        # órfão de 19,8%, que numa cena escura lê como tarja preta.
+        #
+        # O conserto é a MOLDURA FICAR PARADA. A imagem de câmera entra na
+        # mesma janela que as faixas ocupam, do topo da imagem ao pé dela, e
+        # não numa caixa própria começando em zero. Assim a composição não
+        # respira quando a fonte alterna, não sobra faixa órfã nenhuma, e o que
+        # está fora da janela é interface do app nos dois casos.
+        y0 = int(faixa.get("topo_da_imagem") or 0)
+        alto = max(2, int(faixa.get("pe_da_imagem") or (ty + th)) - y0)
         fx = min(1.0, max(0.0, float(cheio_x)))
+        # Cobertura, e aqui ela é a escolha CERTA: o assunto é uma pessoa, não
+        # uma tela, e recortar uma pessoa numa faixa vertical centrada no rosto
+        # é exatamente o que o caminho normal deste projeto já faz bem. "Nada
+        # cortado" é a regra da TELA, porque tela tem texto nas bordas.
         partes.append(
             f"[dvfl]scale={width}:{alto}:force_original_aspect_ratio=increase,"
             f"crop={width}:{alto}:(in_w-out_w)*{fx:.4f}:(in_h-out_h)*0.5,"
             f"setsar=1[dvflb]")
-        partes.append(f"[{ultimo}][dvflb]overlay=0:0:enable='{quando_cheio}'[dvt3]")
+        partes.append(
+            f"[{ultimo}][dvflb]overlay=0:{y0}:enable='{quando_cheio}'[dvt3]")
         ultimo = "dvt3"
     partes.append(f"[{ultimo}]setsar=1")
     return ";".join(partes), rastreio
@@ -5424,12 +5595,23 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         # outro pedaço do quadro. Os dois textos existem e não se encontram --
         # então isto vira nota, e não recusa. Recusar aqui mataria justamente
         # os clipes que este modo existe para salvar.
+        # A NOTA MUDOU EM 17/09/2026, junto com o layout, e ela dizia o
+        # contrário do que acontece agora. Ela afirmava "dois textos, dois
+        # lugares", o que era verdade quando a faixa da webcam ficava EM CIMA
+        # e o hook virava lower-third dentro dela: o texto do acervo caía na
+        # tela, lá embaixo, e os dois nunca se encontravam.
+        #
+        # Agora a tela é que está em cima, encostada na margem do app, e o
+        # hook voltou para o topo. Os dois ocupam a MESMA faixa nos primeiros
+        # três segundos. Continua sendo nota e não recusa -- o hook tem scrim
+        # e sai aos 3s --, mas ela tem de dizer a verdade, que é o oposto.
         notes.append(
             f"this footage carries burned text along the TOP "
-            f"({source_text['evidence']}), but in the split layout that band "
-            f"lands inside the screen strip and the hook sits on the webcam "
-            f"strip above it. Two texts, two places -- look at the contact "
-            f"sheet anyway.")
+            f"({source_text['evidence']}), and in this layout the screen strip "
+            f"starts right at the app margin, which is where the hook sits for "
+            f"its first 3s. The two OVERLAP: the hook's scrim covers the "
+            f"source's own top text until it fades. Look at the contact sheet "
+            f"and drop the hook if it buries something that matters.")
     elif source_text.get("top") and hook:
         # NÃO mata mais o clipe, e o motivo é uma medição.
         #
@@ -5924,7 +6106,7 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         # existe para não ter.
         if rastreio and not planos:
             notes.append(
-                f"the webcam band FOLLOWS THE FACE frame by frame across "
+                f"the person band FOLLOWS THE FACE frame by frame across "
                 f"{rastreio['pontos']} sampled positions, zooming "
                 f"{rastreio['zoom_min']:.1f}x to {rastreio['zoom_max']:.1f}x "
                 f"(ceiling {rastreio['zoom_teto']:.1f}x, which is how far this "
@@ -5933,7 +6115,7 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
                 f"held still on purpose: it is text, and text that drifts "
                 f"cannot be read.")
         elif (faixas_do_layout or {}).get("corte_webcam") and not planos:
-            notes.append("scale moves 1.00 to 1.06 inside the webcam band only. "
+            notes.append("scale moves 1.00 to 1.06 inside the person band only. "
                          "The screen band is held still on purpose: it is text, "
                          "and text that drifts cannot be read.")
         else:
@@ -5968,24 +6150,25 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         _wx, _wy, _ww, _wh = faixas_do_layout["webcam"]
         _tx, _ty, _tw, _th = faixas_do_layout["tela"]
         _corte_tela = faixas_do_layout.get("corte_tela")
-        _de_onde = ("the whole 16:9 fitted by width" if not _corte_tela else
+        _de_onde = ("the WHOLE source fitted by width, nothing cropped"
+                    if not _corte_tela else
                     f"the source MINUS the webcam corner ({_corte_tela[2]}x"
                     f"{_corte_tela[3]} at x{_corte_tela[0]} y{_corte_tela[1]}), "
                     f"fitted by width, so the person is not in frame twice")
         if rastreio:
-            onde = (f"webcam band {_ww}x{_wh} at the top, TRACKING the face over "
-                    f"{rastreio['pontos']} sampled positions ({rastreio['zoom_min']:.1f}x"
-                    f"-{rastreio['zoom_max']:.1f}x); screen band {_tw}x{_th} at "
-                    f"y{_ty}, {_de_onde}")
+            onde = (f"screen band {_tw}x{_th} at y{_ty}, {_de_onde}; person "
+                    f"band {_ww}x{_wh} BELOW it at y{_wy}, TRACKING the face "
+                    f"over {rastreio['pontos']} sampled positions "
+                    f"({rastreio['zoom_min']:.1f}x-{rastreio['zoom_max']:.1f}x)")
         elif faixas_do_layout.get("corte_webcam"):
             _cx, _cy, _cw, _ch = faixas_do_layout["corte_webcam"]
-            onde = (f"webcam band {_ww}x{_wh} at the top, cut from {_cw}x{_ch} "
+            onde = (f"screen band {_tw}x{_th} at y{_ty}, {_de_onde}; person "
+                    f"band {_ww}x{_wh} BELOW it at y{_wy}, cut from {_cw}x{_ch} "
                     f"of the source at x{_cx} y{_cy} (NO face track: not one "
-                    f"sampled frame gave a face to follow); screen band "
-                    f"{_tw}x{_th} at y{_ty}, {_de_onde}")
+                    f"sampled frame gave a face to follow)")
         else:
             onde = (f"screen band {_tw}x{_th} at y{_ty}, {_de_onde}, on a "
-                    f"blurred fill -- no webcam band")
+                    f"blurred fill -- no person band")
         notes.append(f"FRAMING: split screen ({enq['modo']}) -- {enq['porque']}. "
                      f"{onde}.")
         if cheios:
@@ -6006,17 +6189,28 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
             # em 5 dos 8 quadros do mosaico -- medido na janela 82-106. Quem
             # resolve isso é o rastreio; a nota fica dizendo o que a janela é,
             # e só vira aviso quando não há rastreio para segurá-la.
+            # A NOTA AFIRMAVA UMA CAUSA, E A CAUSA ESTAVA ERRADA.
+            #
+            # Ela dizia que os quadros de planura baixa "são uma webcam em
+            # tela cheia". Numa live de navegador eram; numa live de gameplay
+            # não são -- são o jogo, que é escuro e texturizado. Medido na
+            # janela 481-502: 21 dos 39 quadros ficam abaixo do limiar e o
+            # maior rosto de qualquer um deles é 0,0128, quatro vezes abaixo
+            # de PIP_ROSTO_AREA_MAX. Nenhum é uma pessoa em close.
+            #
+            # Quem afirma agora é `cheios`, que mede rosto grande e não
+            # planura. Esta nota voltou a ser o que devia: um relato do que
+            # foi medido, sem concluir o que a medida não sustenta.
             notes.append(
-                f"this window MIXES layouts: {_telas} of {_lidos} sampled frames "
-                f"are a shared screen and the rest are a full-frame webcam. "
-                + ("The top strip follows the face through both, so it lands on "
-                   "the corner webcam where there is one and on the full-frame "
-                   "face where there is not."
-                   if rastreio else
-                   "With no face track the top strip is a FIXED crop of the "
-                   "corner, which on the full-frame stretches is a blurred "
-                   "shoulder -- look at the contact sheet, and re-cut a window "
-                   "that stays on one layout if it reads badly."))
+                f"this window is not uniform: {_telas} of {_lidos} sampled "
+                f"frames read as a flat screen and the rest do not. Low "
+                f"flatness alone does NOT mean the camera took over -- dark "
+                f"game capture measures the same -- so what decides is whether "
+                f"a face big enough to be the subject shows up, and "
+                + (f"it does, in {len(cheios)} stretch(es), listed above."
+                   if cheios else
+                   "it never does here: the person stays in the corner webcam "
+                   "the whole way, and the person band is a fixed crop of it."))
     style_facts["framing"]["face_track"] = rastreio
     style_facts["framing"]["bands"] = None if not faixas_do_layout else {
         "webcam": list(faixas_do_layout["webcam"]),
@@ -6183,25 +6377,19 @@ def cut(source, out, rules, start, end, caption_srt=None, hook=None,
         marge = S.margens(width, height)
         leading = int(fitted * S.LEADING)
         hook_top = max(marge["top"], int(safe.get("y0", 0)))
-        if dividido and faixas_do_layout:
-            # O hook DESCE, e a aritmética manda, não o gosto.
-            #
-            # A faixa da webcam tem 616px num quadro de 1920, e o rosto ocupa
-            # ~46% dela: medido no PiP real desta live, 151px de rosto numa
-            # caixa de 360, ampliados 2,25x para encher 1080 de largura. Um
-            # bloco de hook tem 202px em duas linhas. Qualquer lugar que a
-            # margem de 280 permita DENTRO dessa faixa cai em cima dos olhos --
-            # a conta não fecha para nenhum valor, não é questão de ajustar.
-            #
-            # Então o hook vira lower-third: encostado no pé da faixa da
-            # webcam, logo acima da tela, onde o que há é peito e ombro. A
-            # margem do topo continua sendo respeitada (o portão reprova ABAIXO
-            # dela, e 402 > 280), e quando a faixa é curta demais para isso o
-            # hook volta para o topo, que é o comportamento de sempre.
-            _wy, _wh = faixas_do_layout["webcam"][1], faixas_do_layout["webcam"][3]
-            baixo = _wy + _wh - len(lines) * leading - max(6, height // 120)
-            if baixo > hook_top:
-                hook_top = baixo
+        # O LOWER-THIRD SAIU em 17/09/2026, junto com o layout que o pedia.
+        #
+        # Ele existia porque a faixa da webcam ficava EM CIMA e ocupava 616px:
+        # um bloco de hook de 202px dentro dela caía em cima dos olhos, desse
+        # jeito, e a saída era encostá-lo no pé da faixa, onde havia peito e
+        # ombro. No layout novo a faixa da pessoa ficou EMBAIXO, encostada no
+        # teto da legenda -- o mesmo cálculo agora põe o hook exatamente sobre
+        # a cara, que é o defeito que ele fora criado para evitar.
+        #
+        # Sem ele o hook volta para o topo, que é o comportamento do caminho
+        # normal e o que o corpus aprovado tem. Lá em cima ele cai sobre os
+        # primeiros pixels da tela durante 3 segundos, do mesmo jeito que cai
+        # sobre a imagem num corte normal.
         hook_y = hook_top + (len(lines) * leading) // 2
         png = os.path.join(art_dir, f"{stem}-hook.png")
         png, oy = S.text_png(lines, png, width, height, hook_y, fitted,
