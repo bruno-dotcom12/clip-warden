@@ -81,7 +81,7 @@ No host, dentro do checkout (`/Users/brunoarantes/Projetos/clip-warden`), com o
 ```sh
 cd /Users/brunoarantes/Projetos/clip-warden
 
-# O mesmo commit que a imagem usa (vendor/client.pin). O arquivo já está
+# O cliente do Agent Index (a imagem usa o da base). O arquivo já está
 # no .gitignore, então ele fica solto aqui sem entrar no repositório.
 curl -O https://raw.githubusercontent.com/plow-pbc/agent-index-client/3f116994930cb3d1c23a485851953dd6c1eef039/standalone/agent_index_client.py
 

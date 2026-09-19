@@ -532,14 +532,12 @@ cloud runs one container per person and its contract forbids, in those words,
 a side effect, since that image had its own 512 MiB ceiling and its own pull.
 
 **Only if you build locally** (`WARDEN_BUILD=1`, or `-f compose.build.yml`) it
-reaches four more hosts, all pinned by digest or sha256 in the repository:
+reaches three more hosts, all pinned by digest or sha256 in the repository:
 
 - `public.ecr.aws` — the Plow base image, pinned by digest.
 - `media.githubusercontent.com` — the YuNet face-detection model, pinned by
   commit and checked against `vendor/yunet.pin`. A model file is code the
   detector runs, so it gets the same discipline as a binary.
-- `raw.githubusercontent.com` — the Agent Index client, pinned in
-  `vendor/client.pin`.
 - `github.com` — the PO token generator's source, pinned by commit and checksum
   in `vendor/potprovider.pin`. This is the half that used to arrive as the
   Docker Hub image; building it into the agent is what let the second container

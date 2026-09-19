@@ -11,5 +11,4 @@ license and notices; nothing here relicenses them. "Plow" and the Plow logo are
 trademarks of The Plow Collective, Inc., and use of the base image grants no
 trademark rights.
 
-The shape of the image, the s6 service layout and the pinned agent-index client
-follow plow-pbc/life-assistant-hermes-agent, Apache-2.0.
+The shape of the image and the s6 service layout follow plow-pbc/life-assistant-hermes-agent, Apache-2.0.
