@@ -26,8 +26,10 @@ chown -R 10000:10000 /var/lib/hermes/warden /var/lib/hermes/models 2>/dev/null |
 # process, at every boot. That is privilege escalation, written by us. So a
 # symlink is refused outright, and `-h` is the second lock: even if the test
 # were wrong, chown acts on the link and never on what it points at. The same
-# guard, for the same reason, was in this repo's former agent-index service
-# (now shipped by the base image) -- this is that discipline, not a new one.
+# guard, for the same reason, is in the sibling service's `devolve_o_estado`
+# (image/s6-overlay/s6-rc.d/warden-index-estado/run, which keeps that repair
+# now that the reporter itself is the base image's) -- this is that discipline,
+# not a new one.
 #
 # `install -d` is inside the guard too: on a path that is already a symlink to
 # a directory it succeeds by following the link, and then applies -o and -m to

@@ -81,9 +81,14 @@ No host, dentro do checkout (`/Users/brunoarantes/Projetos/clip-warden`), com o
 ```sh
 cd /Users/brunoarantes/Projetos/clip-warden
 
-# O cliente do Agent Index (a imagem usa o da base). O arquivo já está
-# no .gitignore, então ele fica solto aqui sem entrar no repositório.
-curl -O https://raw.githubusercontent.com/plow-pbc/agent-index-client/3f116994930cb3d1c23a485851953dd6c1eef039/standalone/agent_index_client.py
+# O MESMO commit que roda dentro da imagem. O cliente vem da imagem base
+# agora, e a base o pina em /opt/plow/agent-index-client.pin -- este sha é o
+# que está lá (conferido no digest do FROM do Dockerfile, sha256
+# c3bf54ed37aec22704b8003a7ff6385a1fd3ef49207ce55613ddc41df36a1b01). Registrar
+# de um cliente mais novo que o que reporta é como as duas armadilhas abaixo
+# passam a valer para linhas que ninguém leu. O arquivo já está no .gitignore,
+# então ele fica solto aqui sem entrar no repositório.
+curl -O https://raw.githubusercontent.com/plow-pbc/agent-index-client/87901f8b182a8a7c65ee3dd7267f8f835ee2a545/standalone/agent_index_client.py
 
 set -a; . ./plow-credentials; set +a
 
@@ -111,7 +116,7 @@ conteúdo delas.
 ```
 
 Duas armadilhas medidas no código do cliente
-(`standalone/agent_index_client.py`, linhas 843-851):
+(`standalone/agent_index_client.py`, linhas 841-850):
 
 - **`--video` recebe o ID do vídeo no YouTube, NÃO a URL.** De
   `https://www.youtube.com/watch?v=Q_RAgwbsjGw`, o que entra é `Q_RAgwbsjGw`.

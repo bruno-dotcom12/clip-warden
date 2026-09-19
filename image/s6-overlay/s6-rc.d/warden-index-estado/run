@@ -1,0 +1,85 @@
+#!/bin/sh
+# Give the Agent Index reporter's own state back to the agent, every five
+# minutes, for as long as this container lives.
+#
+# WHY THIS SERVICE EXISTS, AND WHY IT IS SEPARATE FROM THE REPORTER
+#
+# The reporter is the base image's (`/etc/s6-overlay/s6-rc.d/agent-index`,
+# shipped with the base, running the client the base pins). This repo used to
+# carry its own copy of that service, and that copy did this repair inside its
+# loop. Handing the reporter over to the base -- which is the right call, one
+# reporter for every agent on the Index -- dropped the repair with it, because
+# the base's version does not have it.
+#
+# MEDIDO 15/09/2026: `/var/lib/hermes/.agent-index.json` was owned by root
+# since 14:15, because a `docker compose exec` that entered as root ran the
+# client and the client created its state as root. The client runs as hermes
+# (uid 10000); it exits 2, "Permission denied". And 2 is the one code the
+# reporter treats as "state is there and I cannot read it -- stand off rather
+# than register over it", which is correct and which means it never reports
+# again. The damage is silent: the service keeps looping, this install simply
+# stops being counted, and nothing in the chat says so.
+#
+# So the repair stays, as its own service, and the reporter stays the base's.
+# The alternative -- shipping our own `agent-index/run` again to get the repair
+# back -- puts this repo back in the business of maintaining a reporter that
+# somebody else maintains better.
+#
+# A NOTE ON ORDERING: nothing orders this before the base's reporter, and it
+# deliberately does not reach into the base's service directory to add itself
+# as a dependency -- a stray `dependencies.d` entry of ours would survive a
+# base that removed or renamed its own service, and a service directory with
+# dependencies and no `type` fails s6-rc at compile time, which is a container
+# that does not boot. The cost of not ordering is bounded and small: on a boot
+# that starts with root-owned state, the reporter can lose its first pass, five
+# minutes, and the pass after that finds the file repaired.
+
+# Absolute, for the same reason the sibling services' is: a service inherits
+# the supervision tree's PATH, not a login shell's.
+PATH=/command:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+export PATH
+
+# The agent's home, the same literal the base's reporter fixes on: this is
+# where the client keeps its ledger, beside the usage store it reads.
+HERMES_HOME=/var/lib/hermes
+
+# The uid the Dockerfile gives the agent. Numeric, and the same literal the
+# Dockerfile uses: `hermes` is a name this image assigns, and a chown by name
+# fails as an error nobody reads if a future base renames it.
+HERMES_UID=10000
+HERMES_GID=10000
+
+# WHY `-h`, AND WHY SYMLINKS ARE SKIPPED OUTRIGHT: $HERMES_HOME is a directory
+# the agent itself controls. A chown that FOLLOWS a symlink lets hermes point
+# `.agent-index.json` at /etc/shadow and be handed ownership of the target by a
+# root process, every five minutes. That is privilege escalation, written by
+# us. So this refuses to touch anything that is a symlink, and `-h` is kept as
+# the second lock: even if the test were wrong, chown would act on the link and
+# never on what it points at. The same guard, for the same reason, is in
+# warden-models/run -- this is that discipline, not a new one.
+#
+# Not fatal either way. A home where this cannot be fixed is a bad pass, and a
+# bad pass is reported here rather than crashing a longrun into a respawn loop.
+devolve_o_estado() {
+  for f in "$HERMES_HOME"/.agent-index*.json "$HERMES_HOME/.agent-index.lock"; do
+    # An unmatched glob stays literal in sh, so the path is tested, not assumed.
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    if [ -L "$f" ]; then
+      echo "warden-index-estado: $f is a symlink -- not touching it. The" >&2
+      echo "agent's own home is not a place root follows links into." >&2
+      continue
+    fi
+    /bin/chown -h "$HERMES_UID:$HERMES_GID" "$f" 2>/dev/null \
+      || echo "warden-index-estado: could not give $f back to uid $HERMES_UID" >&2
+  done
+}
+
+# In the loop, not once at boot: root can break this again at any point in an
+# install's life -- that is exactly how it broke -- and a repair that only ran
+# at boot would need a restart to take, which is the one thing an owner with a
+# session open should not have to do. Every five minutes, the reporter's own
+# cadence: repairing faster than it reports buys nothing.
+while :; do
+  devolve_o_estado
+  /bin/sleep 300
+done
