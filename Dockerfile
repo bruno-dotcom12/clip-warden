@@ -14,7 +14,7 @@
 # without the flag the same thing happens with a warning that reads like a
 # problem somebody should fix, and there is nothing to fix until the base ships
 # arm64.
-FROM --platform=linux/amd64 public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-51f83158a70a383f03a4d03dbd8b6ea102cf0361@sha256:253d7ed3409effa7fa59113d93b4b79bb731d8264cdaf4cd60294924d0110a2e
+FROM --platform=linux/amd64 public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-ef0019372ff8bca593611b31ebd2e08f9f1458ff@sha256:a8a2f97ad78b8192d80a984dce81d3bf5a9a883d18cb7b677704913a09b56aee
 
 # ffmpeg decides every number this agent states about a clip. The base carries
 # it; if a future base stops carrying it, the build is where that should be
@@ -239,7 +239,8 @@ ENV HF_HOME=/var/lib/hermes/models
 # lote de dois clipes de 20s levou 105s em fila e 54,7s em paralelo, com pico de
 # 1584 MiB contra 1815 MiB. Metade do tempo, e o pico ABAIXO do sequencial.
 #
-# `AGENT_ID` é o id no Agent Index. Sem ele o reporter de uso fica parado, e
+# `AGENT_ID` é o id no Agent Index. O reporter de uso é o da imagem base (o
+# cliente pinado e o serviço s6 `agent-index` vêm com ela). Sem o id ele fica parado, e
 # ficar parado por falta de um padrão que o repositório inteiro já conhece é
 # uma instalação que não conta.
 #
@@ -270,20 +271,6 @@ COPY SPECS/           /opt/hermes/skills/SPECS/
 RUN find /opt/hermes/skills -mindepth 1 -type d -exec chmod 0755 {} + \
  && find /opt/hermes/skills -mindepth 1 -type f ! -perm -u+x -exec chmod 0644 {} + \
  && find /opt/hermes/skills -mindepth 1 -type f -perm -u+x -exec chmod 0755 {} +
-
-# The usage reporter, fetched at build from the commit vendor/client.pin names
-# and checked against the hash beside it. A sha in a URL is only as good as the
-# host serving it, and this file runs inside an agent holding a live credential.
-COPY vendor/client.pin /opt/plow/agent-index-client.pin
-RUN set -eu; \
-    sha="$(sed -n 's/^sha=//p' /opt/plow/agent-index-client.pin)"; \
-    want="$(sed -n 's/^sha256=//p' /opt/plow/agent-index-client.pin)"; \
-    path="$(sed -n 's/^path=//p' /opt/plow/agent-index-client.pin)"; \
-    curl -fsS --max-time 60 -o /opt/plow/agent-index-client.py \
-      "https://raw.githubusercontent.com/plow-pbc/agent-index-client/${sha}/${path}"; \
-    got="$(sha256sum /opt/plow/agent-index-client.py | cut -d' ' -f1)"; \
-    [ "$got" = "$want" ] || { echo "agent-index client is $got, pin says $want" >&2; exit 1; }; \
-    chmod 0644 /opt/plow/agent-index-client.py
 
 # The command the skills and the persona call. Installed by the image, on the
 # PATH in two standard places, running the image's own copy: the runtime strips

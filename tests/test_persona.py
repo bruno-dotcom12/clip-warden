@@ -42,7 +42,7 @@ cortar regra para bater número.
 ## Por que o seed está vendorizado em tests/fixtures/ e não em vendor/
 
 `vendor/` guarda PINS: um sha de commit e um caminho que o build baixa de um
-repositório público (ver vendor/client.pin). O seed da Plow não tem URL: ele só
+repositório público (ver vendor/yunet.pin). O seed da Plow não tem URL: ele só
 existe dentro da imagem base, em /opt/hermes/plow-seed/SOUL.md, e nada no build
 o busca. Um .pin apontaria para o nada. Então é um FIXTURE de teste — uma cópia
 congelada, com o sha256 conferido a cada execução para que uma troca silenciosa

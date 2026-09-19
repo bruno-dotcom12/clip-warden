@@ -5,7 +5,7 @@ __pycache__/
 plow-credentials
 
 # Fetched by hand when registering on the Index. The image fetches its own
-# copy at build, pinned by sha in vendor/client.pin, so a loose copy here would
+# copy through the Plow base image, so a loose copy here would
 # only drift from the one that actually runs.
 agent_index_client.py
 

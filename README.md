@@ -130,7 +130,7 @@ reaches out, and why:
   provider; it is now inside the agent's own image, so Docker Hub is no longer
   contacted at all.
 - **Hugging Face**, once per install, for the two transcription models.
-- **The AI Worth Using Agent Index**, hourly, with day and model token counts
+- **The AI Worth Using Agent Index**, every 5 minutes, with day and model token counts
   and nothing else — no prompts, no file paths, no costs. It has no switch;
   an owner who does not want it edits the Dockerfile and builds their own with
   `docker compose -f compose.yml -f compose.build.yml up --build -d`.
